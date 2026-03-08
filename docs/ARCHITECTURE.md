@@ -1,227 +1,354 @@
 # QMD-VL Architecture
 
-A **Vision-Language Memory Search System** built on LanceDB with Qwen3-VL embeddings.
+QMD-VL is a Python vision-language memory search system built on LanceDB and Qwen3-VL-Embedding.
 
 ## Overview
 
-QMD-VL is a Python implementation of the QMD memory system, designed for storing, indexing, and retrieving multimodal content (text, images, video) using both lexical (BM25) and semantic (vector) search.
-
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         QMD-VL Architecture                     │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     │
-│   │   Document  │     │   Chunker   │     │   Qwen3-VL  │     │
-│   │   Ingest    │ ──► │   (Smart)   │ ──► │  Embedder   │     │
-│   └─────────────┘     └─────────────┘     └─────────────┘     │
-│          │                   │                   │            │
-│          ▼                   ▼                   ▼            │
-│   ┌─────────────────────────────────────────────────────────┐ │
-│   │                     LanceDB Store                        │ │
-│   │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐ │ │
-│   │  │Documents │  │ Content  │  │Embeddings│  │  Cache  │ │ │
-│   │  │ (meta)   │  │ (text)   │  │(vectors)│  │ (LLM)   │ │ │
-│   │  └──────────┘  └──────────┘  └──────────┘  └─────────┘ │ │
-│   └─────────────────────────────────────────────────────────┘ │
-│                              │                                 │
-│          ┌───────────────────┼───────────────────┐           │
-│          ▼                   ▼                   ▼           │
-│   ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     │
-│   │   BM25      │     │   Vector    │     │   Hybrid    │     │
-│   │   Search    │     │   Search    │     │   Search    │     │
-│   │  (Tantivy)  │     │   (ANN)     │     │  (RRF)      │     │
-│   └─────────────┘     └─────────────┘     └─────────────┘     │
-│          │                   │                   │            │
-│          └───────────────────┴───────────────────┘           │
-│                              ▼                                │
-│                     ┌─────────────┐                          │
-│                     │   Results   │                          │
-│                     │  (Scored)   │                          │
-│                     └─────────────┘                          │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           QMD-VL Pipeline                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────────┐   │
+│  │   Document   │───>│   Chunking   │───>│   Embedding (Qwen3-VL)   │   │
+│  │   Ingestion  │    │   + Smart    │    │   2048-dim vectors       │   │
+│  │              │    │   Breaks     │    │   MPS / CUDA / CPU      │   │
+│  └──────────────┘    └──────────────┘    └──────────────────────────┘   │
+│         │                   │                        │                   │
+│         ▼                   ▼                        ▼                   │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                     LanceDB Storage                               │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐  │   │
+│  │  │ embeddings  │  │  documents  │  │   content   │  │  cache  │  │   │
+│  │  │ + FTS index │  │  registry   │  │   (bodies)  │  │ (LLM)   │  │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                    │                                     │
+│                                    ▼                                     │
+│  ┌──────────────────────────────────────────────────────────────────┐   │
+│  │                     Search Pipeline                               │   │
+│  │                                                                   │   │
+│  │   Query ──┬──> BM25 (Tantivy FTS) ──┐                           │   │
+│  │           │                          │                            │   │
+│  │           └──> Vector Search ───────┼──> RRF Fusion ──> Rerank   │   │
+│  │                                       │                  │        │   │
+│  │                                       ▼                  ▼        │   │
+│  │                              Scored Results ──> Final Ranking    │   │
+│  └──────────────────────────────────────────────────────────────────┘   │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Core Components
+## Components
 
-### 1. Database Layer (`db.py`)
+### 1. Document Ingestion (`store.py`)
 
-LanceDB tables with Apache Arrow schemas:
+- **`insert_document()`**: Register document in `documents` table
+- **`insert_content()`**: Store full text in `content` table (content-addressed by hash)
+- **`insert_embedding()`**: Store chunk embedding in `embeddings` table
+- **`index_document()`**: Full pipeline - hash, chunk, embed, store
 
-| Table | Purpose | Key Fields |
-|-------|---------|------------|
-| **embeddings** | Chunk embeddings | `hash_seq` (PK), `content_hash`, `text_body`, `vector` (2048-dim) |
-| **documents** | Document registry | `id` (PK), `file_path`, `title`, `content_hash`, `active` |
-| **content** | Full document text | `hash` (PK), `doc` (full text), `content_type` |
-| **cache** | LLM response cache | `key` (PK), `value` (JSON), `created_at` |
+### 2. Smart Chunking (`store.py`)
 
-### 2. Store Layer (`store.py`)
+Breaks documents at natural boundaries, not arbitrary positions:
 
-Core operations:
-- `chunk_document(text)` → Smart chunking at natural break points
-- `insert_document_with_embedding(path, text, collection, embed_func)` → Full pipeline
-- `search_fts(query)` → BM25 lexical search via Tantivy
-- `search_vec(embedding)` → Vector similarity search via LanceDB ANN
+```
+Document Text
+     │
+     ▼
+┌────────────────────────────────────────┐
+│          Break Point Detection          │
+│  ┌──────────────────────────────────┐   │
+│  │  H1-H6 headings (100-50 pts)    │   │
+│  │  Code blocks (80 pts)            │   │
+│  │  Horizontal rules (60 pts)       │   │
+│  │  Blank lines (20 pts)            │   │
+│  │  List items (5 pts)              │   │
+│  │  Newlines (1 pt)                 │   │
+│  └──────────────────────────────────┘   │
+│                   │                      │
+│                   ▼                      │
+│  ┌──────────────────────────────────┐   │
+│  │  Code fence detection            │   │
+│  │  (avoid breaking inside ```...```) │ │
+│  └──────────────────────────────────┘   │
+│                   │                      │
+│                   ▼                      │
+│  ┌──────────────────────────────────┐   │
+│  │  Best cutoff finder              │   │
+│  │  - Window around target position │   │
+│  │  - Distance decay multiplier     │   │
+│  │  - Score × multiplier = priority │   │
+│  └──────────────────────────────────┘   │
+└────────────────────────────────────────┘
+     │
+     ▼
+[{text, pos}, {text, pos}, ...] chunks
+```
 
-### 3. Embedding Layer (`embed.py`)
+### 3. Embedding (`embed.py`)
 
 Qwen3-VL-Embedding-2B wrapper:
-- 2048-dimensional embeddings
-- MPS (Apple Silicon), CUDA, and CPU support
-- Float16 precision for memory efficiency
-- Supports text, image, and multimodal content
 
-## Search Pipeline
+```python
+from src.embed import get_embedder, embed_text
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Search Pipeline                              │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   Query (text)                                                   │
-│       │                                                          │
-│       ├─────────────────────────────────────────────┐           │
-│       │                                             │           │
-│       ▼                                             ▼           │
-│   ┌──────────────┐                         ┌──────────────┐   │
-│   │   Embed      │                         │   Tokenize   │   │
-│   │   Query      │                         │   Query      │   │
-│   └──────────────┘                         └──────────────┘   │
-│       │                                             │           │
-│       ▼                                             ▼           │
-│   ┌──────────────┐                         ┌──────────────┐   │
-│   │   Vector     │                         │   BM25        │   │
-│   │   ANN Search │                         │   FTS Search  │   │
-│   │   (LanceDB)  │                         │   (Tantivy)   │   │
-│   └──────────────┘                         └──────────────┘   │
-│       │                                             │           │
-│       │    Score = 1 - distance/2                  │           │
-│       │    (cosine-like normalization)             │           │
-│       │                                             │           │
-│       │    Score = raw / max_score                 │           │
-│       │    (normalize to [0, 1])                   │           │
-│       │                                             │           │
-│       ▼                                             ▼           │
-│   ┌──────────────────────────────────────────────────────┐     │
-│   │              Hybrid Search (Optional)                │     │
-│   │   Reciprocal Rank Fusion (RRF):                      │     │
-│   │   score = sum(1 / (k + rank)) for each list         │     │
-│   │   k = 60 (constant)                                  │     │
-│   └──────────────────────────────────────────────────────┘     │
-│       │                                                          │
-│       ▼                                                          │
-│   ┌──────────────────────────────────────────────────────┐     │
-│   │              Results (deduplicated by file_path)     │     │
-│   │   - hash_seq, content_hash, file_path, title         │     │
-│   │   - text_body (snippet), score, collection           │     │
-│   └──────────────────────────────────────────────────────┘     │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+# Initialize (lazy-loaded)
+embedder = get_embedder()
+
+# Embed single text
+vector = embedder.embed_text("query text")  # -> np.ndarray[2048]
+
+# Embed multiple texts
+vectors = embedder.embed_texts(["text1", "text2"])  # -> np.ndarray[N, 2048]
+
+# Embed images
+vector = embedder.embed_image("path/to/image.jpg")
+
+# Mixed content
+vectors = embedder.embed_mixed([
+    {"text": "query"},
+    {"image": "url"},
+    {"text": "caption", "image": "path"}
+])
 ```
 
-## Chunking Strategy
+### 4. LanceDB Tables (`db.py`)
 
-Smart document chunking preserves semantic boundaries:
-
+#### embeddings (main table)
+```python
+{
+    "hash_seq": "{content_hash}_{seq}",  # PK
+    "content_hash": "sha256...",
+    "collection": "my-docs",
+    "file_path": "notes/example.md",
+    "content_type": "text",
+    "title": "Example Document",
+    "text_body": "chunk text for BM25...",
+    "seq": 0,
+    "pos": 0,
+    "model": "Qwen/Qwen3-VL-Embedding-2B",
+    "embedded_at": 1709847234567,
+    "vector": [0.123, -0.456, ...],  # 2048 floats
+}
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                    Chunking Pipeline                            │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│   Document (full text)                                         │
-│       │                                                        │
-│       ▼                                                        │
-│   ┌────────────────────────────────────────────────────────┐  │
-│   │   Scan for Natural Break Points                         │  │
-│   │   - Headings (h1=100, h2=90, h3=80, ...)               │  │
-│   │   - Code blocks (``` ... ```)                          │  │
-│   │   - Horizontal rules (---, ***, ___)                   │  │
-│   │   - Paragraph breaks (double newline)                  │  │
-│   │   - List items (-, *, 1.)                              │  │
-│   │   - Regular newlines                                    │  │
-│   └────────────────────────────────────────────────────────┘  │
-│       │                                                        │
-│       ▼                                                        │
-│   ┌────────────────────────────────────────────────────────┐  │
-│   │   Find Best Cutoff Points                              │  │
-│   │   - Target: 512 tokens (~2048 chars)                  │  │
-│   │   - Window: 200 chars before target                   │  │
-│   │   - Score: break_score * distance_multiplier          │  │
-│   │   - Skip: inside code fences                          │  │
-│   └────────────────────────────────────────────────────────┘  │
-│       │                                                        │
-│       ▼                                                        │
-│   ┌────────────────────────────────────────────────────────┐  │
-│   │   Create Overlapping Chunks                            │  │
-│   │   - Overlap: 64 tokens (~256 chars)                   │  │
-│   │   - Position tracking for citation                    │  │
-│   │   - Sequence numbers for ordering                     │  │
-│   └────────────────────────────────────────────────────────┘  │
-│       │                                                        │
-│       ▼                                                        │
-│   Chunks: [{text, pos}, {text, pos}, ...]                     │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
+
+#### documents (registry)
+```python
+{
+    "id": "uuid",
+    "collection": "my-docs",
+    "file_path": "notes/example.md",
+    "title": "Example Document",
+    "content_hash": "sha256...",
+    "content_type": "text",
+    "active": 1,
+    "created_at": 1709847234567,
+    "updated_at": 1709847234567,
+}
+```
+
+#### content (bodies)
+```python
+{
+    "hash": "sha256...",
+    "doc": "full document text...",
+    "content_type": "text",
+    "created_at": 1709847234567,
+}
+```
+
+#### cache (LLM results)
+```python
+{
+    "key": "sha256(url+body)",
+    "value": "JSON result...",
+    "created_at": 1709847234567,
+}
+```
+
+### 5. Search Pipeline
+
+#### BM25 (FTS)
+
+```python
+from src.store import search_fts
+
+results = search_fts(
+    query="graph database knowledge",
+    limit=20,
+    collection="my-docs"  # optional
+)
+
+# Returns: List[SearchResult]
+# - filepath, display_path, title, body, score
+# - source: 'fts'
+```
+
+#### Vector Search
+
+```python
+from src.store import search_vec
+from src.embed import embed_text
+
+query_vector = embed_text("how do AI agents remember things")
+results = search_vec(
+    vector=query_vector,
+    limit=20,
+    collection="my-docs"
+)
+
+# Score = 1 - distance/2 (for cosine-like distance)
+```
+
+#### Hybrid (BM25 + Vector)
+
+Future Stage will implement:
+
+```python
+# Query expansion
+expanded_queries = expand_query("how do AI agents remember things")
+# -> [
+#      {"type": "lex", "text": "AI agent memory systems"},
+#      {"type": "vec", "text": "episodic memory knowledge graphs"},
+#      {"type": "hyde", "text": "generated hypothetical answer..."}
+#    ]
+
+# Parallel retrieval
+bm25_results = search_fts(original_query)
+vec_results = search_vec(embedded_query)
+
+# Reranking with Qwen3-VL-Reranker
+final_results = rerank(query, candidates)
 ```
 
 ## Data Flow
 
-### Document Ingestion
-
-```python
-# Full pipeline
-content_hash = await insert_document_with_embedding(
-    path="notes/meeting.md",
-    text=document_content,
-    collection="work",
-    embed_func=my_embed_function,  # async (text) -> List[float]
-    model="qwen3-vl-embedding-2b"
-)
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    Document Indexing Flow                          │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  path: "docs/architecture.md"                                    │
+│  text: "## Architecture\n\nThe system uses..."                   │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────┐                                             │
+│  │ hash_content()  │ ──> "abc123..."                             │
+│  └─────────────────┘                                             │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────┐                                             │
+│  │ extract_title() │ ──> "Architecture"                          │
+│  └─────────────────┘                                             │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────┐     ┌─────────────────┐                    │
+│  │ insert_content  │ ──> │ content table   │                    │
+│  └─────────────────┘     └─────────────────┘                    │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────┐     ┌─────────────────┐                    │
+│  │ insert_document │ ──> │ documents table │                    │
+│  └─────────────────┘     └─────────────────┘                    │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────┐                                             │
+│  │ chunk_document  │ ──> [{text, pos}, ...]                     │
+│  │  - Break points │                                             │
+│  │  - Overlap      │                                             │
+│  └─────────────────┘                                             │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────┐     ┌─────────────────┐                    │
+│  │ embed_text()    │ ──> │ [0.1, -0.2, ...] │ (2048 floats)     │
+│  └─────────────────┘     └─────────────────┘                    │
+│         │                                                        │
+│         ▼                                                        │
+│  ┌─────────────────┐     ┌─────────────────┐                    │
+│  │ insert_embedding│ ──> │ embeddings table│                    │
+│  └─────────────────┘     └─────────────────┘                    │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### Search Query
+## Storage Layout
 
-```python
-# Hybrid search (recommended)
-fts_results = await search_fts("graph memory agent")
-vec_results = await search_vec(query_embedding)
-
-# Combine with RRF or use separately
-all_results = merge_results(fts_results, vec_results)
+```
+~/.qmd/
+└── store.lance/
+    ├── embeddings/
+    │   ├── data/
+    │   │   └── *.parquet
+    │   ├── _indices/
+    │   │   └── text_body_fts/      # Tantivy FTS index
+    │   └── _metadata/
+    ├── documents/
+    │   └── ...
+    ├── content/
+    │   └── ...
+    └── cache/
+        └── ...
 ```
 
-## Future Stages
+## Performance Considerations
+
+### Chunking
+- Default: 512 tokens (~2048 chars) with 64 token overlap
+- Smart breaks at headings, code blocks, paragraphs
+- Avoids splitting inside code fences
+
+### Embedding
+- Qwen3-VL-Embedding-2B: 2048-dim vectors
+- MPS (Apple Silicon): float16, eager attention (no flash_attention_2)
+- CUDA: bfloat16, flash_attention_2
+- Batch embedding for efficiency
+
+### Search
+- BM25: Tantivy FTS index on `text_body` column
+- Vector: LanceDB ANN (IVF_HNSW_SQ for large collections)
+- Hybrid: RRF fusion + Qwen3-VL-Reranker
+
+## Stage Roadmap
 
 | Stage | Feature | Status |
-|-------|---------|--------|
-| **Stage 1** | Foundation + Text Embedding + BM25 | ✅ Complete |
-| **Stage 2** | Image/Video Embedding + Multimodal Search | 🔜 Planned |
-| **Stage 3** | Graph Memory (Neo4j/NetworkX) | 🔜 Planned |
-| **Stage 4** | LLM Integration + MCP Server | 🔜 Planned |
-| **Stage 5** | GraphRAG + Temporal Memory | 🔜 Planned |
+|-------|----------|--------|
+| 1 | Foundation + Text Embedding + BM25 | ✅ Complete |
+| 2 | Image embedding + multimodal search | 🔲 Planned |
+| 3 | MCP server for IDE integration | 🔲 Planned |
+| 4 | Query expansion (HyDE) | 🔲 Planned |
+| 5 | Reranker integration | 🔲 Planned |
+| 6 | Hybrid retrieval pipeline | 🔲 Planned |
 
-## Dependencies
+## Usage
 
-- **lancedb**: Vector database with built-in FTS (Tantivy)
-- **pyarrow**: Apache Arrow for columnar storage
-- **torch**: Tensor operations for embeddings
-- **transformers**: HuggingFace model loading
-- **qwen-vl-utils**: Qwen3-VL utilities
-- **pillow**: Image processing
-- **numpy**: Numerical operations
+```python
+from src import db, store, embed
 
-## Performance Notes
+# Initialize database
+db.initialize_database("/path/to/store")
 
-- **Embedding dimension**: 2048 (Qwen3-VL-Embedding-2B)
-- **Chunk size**: ~512 tokens (~2048 characters)
-- **Chunk overlap**: ~64 tokens (~256 characters)
-- **Vector search**: ANN via LanceDB IVF-PQ index
-- **FTS**: Tantivy BM25 with inverted index
-- **Deduplication**: By file_path in search results
+# Index a document
+content_hash = store.index_document(
+    path="docs/example.md",
+    text=open("docs/example.md").read(),
+    collection="my-docs",
+    model="Qwen/Qwen3-VL-Embedding-2B",
+    embed_func=embed.embed_text,
+)
 
-## Storage Location
+# BM25 search
+results = store.search_fts("knowledge graph", limit=10)
+for r in results:
+    print(f"{r.title}: {r.score:.3f}")
 
-Default: `~/.qmd/store.lance/`
+# Vector search
+query_vec = embed.embed_text("how to store relationships")
+results = store.search_vec(query_vec, limit=10)
+for r in results:
+    print(f"{r.title}: {r.score:.3f}")
 
-Override with `INDEX_PATH` environment variable or pass custom path to `initialize_database()`.
+# Check if embeddings exist
+has_vectors = store.has_vectors()
+print(f"Index has embeddings: {has_vectors}")
+```
