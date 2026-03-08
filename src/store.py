@@ -5,6 +5,9 @@ Document CRUD, chunking, embedding storage, and search (FTS + vector).
 """
 
 import hashlib
+import math
+import os
+import re
 import time
 import uuid
 from typing import Optional, List, Dict, Any
@@ -79,7 +82,6 @@ def escape_sql(s: str) -> str:
 def extract_title(content: str, filename: str) -> str:
     """Extract title from content or filename."""
     # Try markdown heading
-    import re
     match = re.match(r"^##?\s+(.+)$", content, re.MULTILINE)
     if match:
         title = match.group(1).strip()
@@ -134,7 +136,6 @@ BREAK_PATTERNS = [
 
 def scan_break_points(text: str) -> List[BreakPoint]:
     """Find all potential break points in text."""
-    import re
     seen: Dict[int, BreakPoint] = {}
     
     for pattern, score, btype in BREAK_PATTERNS:
@@ -149,7 +150,6 @@ def scan_break_points(text: str) -> List[BreakPoint]:
 
 def find_code_fences(text: str) -> List[CodeFenceRegion]:
     """Find all code fence regions in text."""
-    import re
     regions: List[CodeFenceRegion] = []
     in_fence = False
     fence_start = 0
@@ -475,7 +475,7 @@ def has_vectors() -> bool:
     if db.embeddings_table is None:
         return False
     try:
-        count = db.embeddings_table.count_rows
+        count = db.embeddings_table.count_rows()
         return count > 0
     except Exception:
         return False
@@ -529,14 +529,75 @@ def set_cached_result(key: str, value: str) -> None:
 # Search - FTS (BM25 via Tantivy)
 # =============================================================================
 
+def _bm25_fallback(
+    query: str,
+    limit: int = 20,
+    collection: Optional[str] = None,
+) -> List[SearchResult]:
+    """In-memory BM25 fallback when LanceDB FTS index fails."""
+    if db.embeddings_table is None:
+        return []
+
+    try:
+        rows = db.embeddings_table.to_pandas()
+    except Exception:
+        return []
+
+    if rows.empty:
+        return []
+
+    if collection:
+        rows = rows[rows["collection"] == collection]
+        if rows.empty:
+            return []
+
+    query_terms = re.findall(r'\w+', query.lower())
+    if not query_terms:
+        return []
+
+    from collections import defaultdict
+    N = len(rows)
+    avgdl = rows["text_body"].str.len().mean() or 1
+    k1, b = 1.5, 0.75
+
+    doc_freqs: Dict[str, int] = defaultdict(int)
+    for text in rows["text_body"]:
+        seen_terms = set(re.findall(r'\w+', (text or "").lower()))
+        for t in seen_terms:
+            doc_freqs[t] += 1
+
+    results: List[SearchResult] = []
+    for _, row in rows.iterrows():
+        text = row.get("text_body") or ""
+        text_lower = text.lower()
+        doc_len = len(text)
+        score = 0.0
+        for term in query_terms:
+            df_t = doc_freqs.get(term, 0)
+            if df_t == 0:
+                continue
+            idf = math.log((N - df_t + 0.5) / (df_t + 0.5) + 1)
+            tf = len(re.findall(r'\b' + re.escape(term) + r'\b', text_lower))
+            tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avgdl))
+            score += idf * tf_comp
+        if score > 0:
+            results.append(_make_search_result(dict(row), score, "fts"))
+
+    results.sort(key=lambda x: x.score, reverse=True)
+    if results:
+        max_s = results[0].score
+        for r in results:
+            r.score = r.score / max_s if max_s > 0 else 0
+    return results[:limit]
+
+
 def search_fts(
     query: str,
     limit: int = 20,
     collection: Optional[str] = None
 ) -> List[SearchResult]:
-    """Full-text search using LanceDB Tantivy on embeddings.text_body."""
-    import re
-    
+    """Full-text search using LanceDB Tantivy on embeddings.text_body.
+    Falls back to in-memory BM25 if Tantivy fails."""
     if db.embeddings_table is None:
         raise RuntimeError("Database not initialized")
     
@@ -559,11 +620,11 @@ def search_fts(
         
         results = builder.to_list()
     except Exception as e:
-        print(f"FTS search error: {e}")
-        return []
+        print(f"FTS search error, falling back to in-memory BM25: {e}")
+        return _bm25_fallback(trimmed, limit, collection)
     
     if not results:
-        return []
+        return _bm25_fallback(trimmed, limit, collection)
     
     # Normalize scores to [0, 1]
     max_score = max(r.get("_score", 0) for r in results) or 1
@@ -604,8 +665,8 @@ def search_vec(
     if collection:
         filter_clause = f"collection = '{escape_sql(collection)}'"
     
-    # Run vector search
-    builder = db.embeddings_table.search(vector).limit(limit * 2)
+    # Run vector search with cosine metric (distance in [0, 2])
+    builder = db.embeddings_table.search(vector).metric("cosine").limit(limit * 2)
     if filter_clause:
         builder = builder.where(filter_clause)
     
@@ -690,8 +751,8 @@ def index_document(
             content_type=content_type,
         )
     
-    # 6. Ensure FTS index
-    db.ensure_fts_index()
+    # 6. Rebuild FTS index to include new data
+    db.ensure_fts_index(force_rebuild=True)
     
     return content_hash
 
@@ -746,5 +807,4 @@ def _make_search_result(row: Dict[str, Any], score: float, source: str) -> Searc
     )
 
 
-# Required import
-import os
+# (os imported at top)

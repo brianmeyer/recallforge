@@ -15,14 +15,26 @@ QWEN_REPO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Qwen3
 if os.path.exists(QWEN_REPO_PATH):
     sys.path.insert(0, QWEN_REPO_PATH)
 
+# Monkey-patch for transformers 5.x compatibility
+try:
+    import transformers.utils.generic as _generic
+    if not hasattr(_generic, 'check_model_inputs'):
+        _generic.check_model_inputs = lambda *a, **kw: None
+except Exception:
+    pass
+
 try:
     from qwen3_vl_embedding import Qwen3VLEmbedder
 except ImportError:
-    # Try alternate import path
     try:
-        Qwen3VLEmbedder = None
-        # Will fall back to error message
-    except:
+        # Try src/models path (alternate repo layout)
+        _models_path = os.path.join(QWEN_REPO_PATH, "src")
+        if os.path.exists(_models_path):
+            sys.path.insert(0, _models_path)
+            from models.qwen3_vl_embedding import Qwen3VLEmbedder
+        else:
+            Qwen3VLEmbedder = None
+    except ImportError:
         Qwen3VLEmbedder = None
 
 

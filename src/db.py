@@ -160,9 +160,19 @@ def _ensure_indices() -> None:
         pass
 
 
-def ensure_fts_index() -> None:
+def ensure_fts_index(force_rebuild: bool = False) -> None:
     """Ensure the Tantivy full-text index exists on embeddings.text_body."""
     if embeddings_table is None:
+        return
+    
+    if embeddings_table.count_rows() == 0:
+        return
+    
+    if force_rebuild:
+        try:
+            embeddings_table.create_fts_index("text_body", replace=True)
+        except Exception:
+            pass
         return
     
     indices = embeddings_table.list_indices()
@@ -174,7 +184,7 @@ def ensure_fts_index() -> None:
     if has_fts:
         return
     
-    embeddings_table.create_fts_index("text_body")
+    embeddings_table.create_fts_index("text_body", replace=True)
 
 
 def rebuild_fts_index() -> None:
@@ -182,7 +192,7 @@ def rebuild_fts_index() -> None:
     if embeddings_table is None:
         return
     
-    row_count = embeddings_table.count_rows
+    row_count = embeddings_table.count_rows()
     if row_count == 0:
         return
     
