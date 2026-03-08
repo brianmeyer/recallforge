@@ -1,99 +1,186 @@
 """
 store.py - Core data access and retrieval functions for QMD-VL
 
-LanceDB-based storage with BM25 full-text search and vector similarity search.
+Document CRUD, chunking, embedding storage, and search (FTS + vector).
 """
 
 import hashlib
 import time
-import re
-from typing import Optional, List, Dict, Any, Tuple
-from pathlib import Path
 import uuid
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass
 
-import numpy as np
+from . import db
 
-import db
-from db import (
-    initialize_database,
-    ensure_indices,
-    has_vector_index,
-    escape_sql,
-    EMBED_DIM,
-    get_lance_store_path,
-)
-
-
-# -----------------------------------------------------------------------------
-# Chunking
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Configuration
+# =============================================================================
 
 CHUNK_SIZE_TOKENS = 512
-CHUNK_OVERLAP_TOKENS = 64
+CHUNK_OVERLAP_TOKENS = 64  # ~12.5% overlap
 CHUNK_SIZE_CHARS = CHUNK_SIZE_TOKENS * 4  # ~2048 chars
 CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * 4  # ~256 chars
-CHUNK_WINDOW_CHARS = 200
+CHUNK_WINDOW_CHARS = 200  # window for break point detection
 
-BREAK_PATTERNS: List[Tuple[re.Pattern, int, str]] = [
-    (re.compile(r'\n#{1}(?!#)'), 100, 'h1'),
-    (re.compile(r'\n#{2}(?!#)'), 90, 'h2'),
-    (re.compile(r'\n#{3}(?!#)'), 80, 'h3'),
-    (re.compile(r'\n#{4}(?!#)'), 70, 'h4'),
-    (re.compile(r'\n#{5}(?!#)'), 60, 'h5'),
-    (re.compile(r'\n#{6}(?!#)'), 50, 'h6'),
-    (re.compile(r'\n```'), 80, 'codeblock'),
-    (re.compile(r'\n(?:---|\*\*\*|___)\s*\n'), 60, 'hr'),
-    (re.compile(r'\n\n+'), 20, 'blank'),
-    (re.compile(r'\n[-*]\s'), 5, 'list'),
-    (re.compile(r'\n\d+\.\s'), 5, 'numlist'),
-    (re.compile(r'\n'), 1, 'newline'),
+# =============================================================================
+# Document Types
+# =============================================================================
+
+@dataclass
+class DocumentResult:
+    filepath: str
+    display_path: str
+    title: str
+    context: Optional[str]
+    hash: str
+    docid: str
+    collection: str
+    modified_at: str
+    body_length: int
+    body: Optional[str] = None
+
+
+@dataclass
+class SearchResult:
+    filepath: str
+    display_path: str
+    title: str
+    context: Optional[str]
+    hash: str
+    docid: str
+    collection: str
+    modified_at: str
+    body_length: int
+    score: float
+    source: str  # 'fts' | 'vec'
+    chunk_pos: int = 0
+    body: Optional[str] = None
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+def get_docid(hash_str: str) -> str:
+    """Generate short docid from hash."""
+    return hash_str[:6]
+
+
+def hash_content(content: str) -> str:
+    """Compute SHA-256 hash of content."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def escape_sql(s: str) -> str:
+    """Escape single quotes for SQL filters."""
+    return s.replace("'", "''")
+
+
+def extract_title(content: str, filename: str) -> str:
+    """Extract title from content or filename."""
+    # Try markdown heading
+    import re
+    match = re.match(r"^##?\s+(.+)$", content, re.MULTILINE)
+    if match:
+        title = match.group(1).strip()
+        if title not in ("📝 Notes", "Notes"):
+            return title
+        # Skip "Notes" header, try next heading
+        match = re.search(r"\n##\s+(.+)$", content, re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+    
+    # Try org-mode
+    title_prop = re.search(r"^#\+TITLE:\s*(.+)$", content, re.MULTILINE)
+    if title_prop:
+        return title_prop.group(1).strip()
+    
+    # Fallback to filename
+    return os.path.splitext(os.path.basename(filename))[0]
+
+
+# =============================================================================
+# Chunking
+# =============================================================================
+
+@dataclass
+class BreakPoint:
+    pos: int
+    score: int
+    type: str
+
+
+@dataclass
+class CodeFenceRegion:
+    start: int
+    end: int
+
+
+BREAK_PATTERNS = [
+    (r"\n#{1}(?!#)", 100, "h1"),
+    (r"\n#{2}(?!#)", 90, "h2"),
+    (r"\n#{3}(?!#)", 80, "h3"),
+    (r"\n#{4}(?!#)", 70, "h4"),
+    (r"\n#{5}(?!#)", 60, "h5"),
+    (r"\n#{6}(?!#)", 50, "h6"),
+    (r"\n```", 80, "codeblock"),
+    (r"\n(?:---|\*\*\*|___)\s*\n", 60, "hr"),
+    (r"\n\n+", 20, "blank"),
+    (r"\n[-*]\s", 5, "list"),
+    (r"\n\d+\.\s", 5, "numlist"),
+    (r"\n", 1, "newline"),
 ]
 
 
-def scan_break_points(text: str) -> List[Dict[str, Any]]:
-    """Find natural break points in text."""
-    seen = {}
+def scan_break_points(text: str) -> List[BreakPoint]:
+    """Find all potential break points in text."""
+    import re
+    seen: Dict[int, BreakPoint] = {}
+    
     for pattern, score, btype in BREAK_PATTERNS:
-        for match in pattern.finditer(text):
+        for match in re.finditer(pattern, text):
             pos = match.start()
-            if pos not in seen or score > seen[pos]['score']:
-                seen[pos] = {'pos': pos, 'score': score, 'type': btype}
-    return sorted(seen.values(), key=lambda x: x['pos'])
+            existing = seen.get(pos)
+            if existing is None or score > existing.score:
+                seen[pos] = BreakPoint(pos, score, btype)
+    
+    return sorted(seen.values(), key=lambda b: b.pos)
 
 
-def find_code_fences(text: str) -> List[Dict[str, int]]:
-    """Find code fence regions in text."""
-    regions = []
+def find_code_fences(text: str) -> List[CodeFenceRegion]:
+    """Find all code fence regions in text."""
+    import re
+    regions: List[CodeFenceRegion] = []
     in_fence = False
     fence_start = 0
-    for match in re.finditer(r'\n```', text):
+    
+    for match in re.finditer(r"\n```", text):
         if not in_fence:
             fence_start = match.start()
             in_fence = True
         else:
-            regions.append({'start': fence_start, 'end': match.end()})
+            regions.append(CodeFenceRegion(fence_start, match.end()))
             in_fence = False
+    
     if in_fence:
-        regions.append({'start': fence_start, 'end': len(text)})
+        regions.append(CodeFenceRegion(fence_start, len(text)))
+    
     return regions
 
 
-def is_inside_code_fence(pos: int, fences: List[Dict[str, int]]) -> bool:
+def is_inside_code_fence(pos: int, fences: List[CodeFenceRegion]) -> bool:
     """Check if position is inside a code fence."""
-    for f in fences:
-        if f['start'] < pos < f['end']:
-            return True
-    return False
+    return any(f.start < pos < f.end for f in fences)
 
 
 def find_best_cutoff(
-    break_points: List[Dict[str, Any]],
+    break_points: List[BreakPoint],
     target_pos: int,
     window_chars: int = CHUNK_WINDOW_CHARS,
     decay_factor: float = 0.7,
-    code_fences: Optional[List[Dict[str, int]]] = None
+    code_fences: List[CodeFenceRegion] = None
 ) -> int:
-    """Find the best break point within a window."""
+    """Find the best break point near target position."""
     if code_fences is None:
         code_fences = []
     
@@ -102,22 +189,21 @@ def find_best_cutoff(
     best_pos = target_pos
     
     for bp in break_points:
-        pos = bp['pos']
-        if pos < window_start:
+        if bp.pos < window_start:
             continue
-        if pos > target_pos:
+        if bp.pos > target_pos:
             break
-        if is_inside_code_fence(pos, code_fences):
+        if is_inside_code_fence(bp.pos, code_fences):
             continue
         
-        distance = target_pos - pos
+        distance = target_pos - bp.pos
         normalized_dist = distance / window_chars
         multiplier = 1.0 - (normalized_dist * normalized_dist) * decay_factor
-        final_score = bp['score'] * multiplier
+        final_score = bp.score * multiplier
         
         if final_score > best_score:
             best_score = final_score
-            best_pos = pos
+            best_pos = bp.pos
     
     return best_pos
 
@@ -130,11 +216,11 @@ def chunk_document(
 ) -> List[Dict[str, Any]]:
     """Split document into overlapping chunks at natural break points."""
     if len(content) <= max_chars:
-        return [{'text': content, 'pos': 0}]
+        return [{"text": content, "pos": 0}]
     
     break_points = scan_break_points(content)
     code_fences = find_code_fences(content)
-    chunks = []
+    chunks: List[Dict[str, Any]] = []
     char_pos = 0
     
     while char_pos < len(content):
@@ -142,420 +228,523 @@ def chunk_document(
         end_pos = target_end
         
         if end_pos < len(content):
-            best_cutoff = find_best_cutoff(break_points, target_end, window_chars, 0.7, code_fences)
-            if best_cutoff > char_pos and best_cutoff <= target_end:
-                end_pos = best_cutoff
+            best = find_best_cutoff(break_points, target_end, window_chars, 0.7, code_fences)
+            if best > char_pos and best <= target_end:
+                end_pos = best
         
         if end_pos <= char_pos:
             end_pos = min(char_pos + max_chars, len(content))
         
-        chunks.append({'text': content[char_pos:end_pos], 'pos': char_pos})
+        chunks.append({"text": content[char_pos:end_pos], "pos": char_pos})
         
         if end_pos >= len(content):
             break
         
         char_pos = end_pos - overlap_chars
-        last_chunk_pos = chunks[-1]['pos']
+        last_chunk_pos = chunks[-1]["pos"]
         if char_pos <= last_chunk_pos:
             char_pos = end_pos
     
     return chunks
 
 
-# -----------------------------------------------------------------------------
-# Document operations
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Content Storage
+# =============================================================================
 
-def hash_content(content: str) -> str:
-    """Compute SHA-256 hash of content."""
-    return hashlib.sha256(content.encode()).hexdigest()
-
-
-def extract_title(content: str, filename: str) -> str:
-    """Extract title from document content or filename."""
-    # Try markdown heading
-    md_match = re.match(r'^##?\s+(.+)$', content, re.MULTILINE)
-    if md_match:
-        title = md_match.group(1).strip()
-        if title and title != "📝 Notes" and title != "Notes":
-            return title
-    
-    # Try org-mode title
-    org_match = re.match(r'^#\+TITLE:\s*(.+)$', content, re.MULTILINE | re.IGNORECASE)
-    if org_match:
-        return org_match.group(1).strip()
-    
-    # Fallback to filename
-    return Path(filename).stem
-
-
-async def insert_content(hash_val: str, content: str) -> None:
-    """Insert content into the content table (deduplicated)."""
+def insert_content(hash_str: str, content: str, content_type: str = "text") -> None:
+    """Insert content into content table (deduped by hash)."""
     if db.content_table is None:
         raise RuntimeError("Database not initialized")
     
-    # Check if already exists
-    existing = db.content_table.search().where(f"hash = '{escape_sql(hash_val)}'").limit(1).to_list()
-    if existing:
-        return
+    # Check if exists using search
+    try:
+        existing = list(db.content_table.search().where(f"hash = '{escape_sql(hash_str)}'").limit(1).to_list())
+        if len(existing) > 0:
+            return  # Content-addressable: skip if already stored
+    except Exception:
+        # Table may be empty or error on search, just try insert
+        pass
     
     db.content_table.add([{
-        'hash': hash_val,
-        'doc': content,
-        'content_type': 'text',
-        'created_at': int(time.time() * 1000),
+        "hash": hash_str,
+        "doc": content,
+        "content_type": content_type,
+        "created_at": int(time.time() * 1000),
     }])
 
 
-async def insert_document(
+def get_content(hash_str: str) -> Optional[str]:
+    """Retrieve content by hash."""
+    if db.content_table is None:
+        raise RuntimeError("Database not initialized")
+    
+    try:
+        rows = list(db.content_table.search().where(f"hash = '{escape_sql(hash_str)}'").limit(1).to_list())
+        if len(rows) == 0:
+            return None
+        return rows[0]["doc"]
+    except Exception:
+        return None
+
+
+# =============================================================================
+# Document Registry
+# =============================================================================
+
+def insert_document(
     collection: str,
     file_path: str,
     title: str,
     content_hash: str,
-    content_type: str = 'text',
+    content_type: str = "text",
     created_at: Optional[int] = None,
-    updated_at: Optional[int] = None,
+    modified_at: Optional[int] = None
 ) -> str:
-    """Insert or update a document record. Returns document ID."""
+    """Insert or update document in registry. Returns document ID."""
     if db.documents_table is None:
         raise RuntimeError("Database not initialized")
     
     now = int(time.time() * 1000)
-    created = created_at or now
-    updated = updated_at or now
+    created_ts = created_at or now
+    modified_ts = modified_at or now
     
     # Check for existing
-    existing = db.documents_table.search().where(
-        f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}'"
-    ).limit(1).to_list()
+    try:
+        existing = list(db.documents_table.search()
+            .where(f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}'")
+            .limit(1)
+            .to_list())
+        
+        if len(existing) > 0:
+            doc_id = existing[0]["id"]
+            # Update existing
+            db.documents_table.update(
+                where=f"id = '{escape_sql(doc_id)}'",
+                values={
+                    "title": title,
+                    "content_hash": content_hash,
+                    "content_type": content_type,
+                    "active": 1,
+                    "updated_at": modified_ts,
+                }
+            )
+            return doc_id
+    except Exception:
+        pass  # Table may be empty
     
-    if existing:
-        doc_id = existing[0]['id']
-        # Update existing
-        db.documents_table.merge_insert('id').when_matched_update_all().when_not_matched_insert_all().execute([{
-            'id': doc_id,
-            'collection': collection,
-            'file_path': file_path,
-            'title': title,
-            'content_hash': content_hash,
-            'content_type': content_type,
-            'active': 1,
-            'created_at': existing[0]['created_at'],
-            'updated_at': updated,
-        }])
-        return doc_id
-    
-    # Create new
+    # Insert new
     doc_id = str(uuid.uuid4())
     db.documents_table.add([{
-        'id': doc_id,
-        'collection': collection,
-        'file_path': file_path,
-        'title': title,
-        'content_hash': content_hash,
-        'content_type': content_type,
-        'active': 1,
-        'created_at': created,
-        'updated_at': updated,
+        "id": doc_id,
+        "collection": collection,
+        "file_path": file_path,
+        "title": title,
+        "content_hash": content_hash,
+        "content_type": content_type,
+        "active": 1,
+        "created_at": created_ts,
+        "updated_at": modified_ts,
     }])
+    
     return doc_id
 
 
-async def get_document(collection: str, file_path: str) -> Optional[Dict[str, Any]]:
-    """Get active document by collection and path."""
+def find_active_document(collection: str, file_path: str) -> Optional[Dict[str, Any]]:
+    """Find active document by collection and path."""
     if db.documents_table is None:
         raise RuntimeError("Database not initialized")
     
-    rows = db.documents_table.search().where(
-        f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}' AND active = 1"
-    ).limit(1).to_list()
-    
-    if not rows:
+    try:
+        rows = list(db.documents_table.search()
+            .where(f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}' AND active = 1")
+            .limit(1)
+            .to_list())
+        
+        if len(rows) == 0:
+            return None
+        
+        r = rows[0]
+        return {
+            "id": r["id"],
+            "hash": r["content_hash"],
+            "title": r["title"],
+        }
+    except Exception:
         return None
-    
-    return rows[0]
 
 
-async def get_content(hash_val: str) -> Optional[str]:
-    """Get document content by hash."""
-    if db.content_table is None:
+def get_active_document_paths(collection: str) -> List[str]:
+    """Get all active document paths in a collection."""
+    if db.documents_table is None:
         raise RuntimeError("Database not initialized")
     
-    rows = db.content_table.search().where(f"hash = '{escape_sql(hash_val)}'").limit(1).to_list()
-    if not rows:
-        return None
-    return rows[0]['doc']
+    try:
+        rows = list(db.documents_table.search()
+            .where(f"collection = '{escape_sql(collection)}' AND active = 1")
+            .select(["file_path"])
+            .to_list())
+        return [r["file_path"] for r in rows]
+    except Exception:
+        return []
 
 
-async def delete_document(collection: str, file_path: str) -> bool:
-    """Deactivate a document (soft delete)."""
+def deactivate_document(collection: str, file_path: str) -> None:
+    """Mark document as inactive."""
     if db.documents_table is None:
-        return False
+        raise RuntimeError("Database not initialized")
     
-    rows = db.documents_table.search().where(
-        f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}' AND active = 1"
-    ).limit(1).to_list()
-    
-    if not rows:
-        return False
-    
-    doc = rows[0]
-    db.documents_table.merge_insert('id').when_matched_update_all().execute([{
-        **doc,
-        'active': 0,
-        'updated_at': int(time.time() * 1000),
-    }])
-    return True
+    db.documents_table.update(
+        where=f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}' AND active = 1",
+        values={"active": 0, "updated_at": int(time.time() * 1000)}
+    )
 
 
-# -----------------------------------------------------------------------------
-# Embedding operations
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Embedding Storage
+# =============================================================================
 
-async def insert_embedding(
+def insert_embedding(
     content_hash: str,
     seq: int,
     pos: int,
     vector: List[float],
     model: str,
-    text_body: str,
-    collection: str = '',
-    file_path: str = '',
-    content_type: str = 'text',
-    title: str = '',
+    collection: str = "",
+    file_path: str = "",
+    title: str = "",
+    text_body: str = "",
+    content_type: str = "text"
 ) -> None:
-    """Insert an embedding for a document chunk."""
+    """Insert embedding for a chunk."""
     if db.embeddings_table is None:
         raise RuntimeError("Database not initialized")
     
     hash_seq = f"{content_hash}_{seq}"
     now = int(time.time() * 1000)
     
-    # Delete existing if any
+    # Delete existing
     try:
         db.embeddings_table.delete(f"hash_seq = '{escape_sql(hash_seq)}'")
     except Exception:
         pass
     
     db.embeddings_table.add([{
-        'hash_seq': hash_seq,
-        'content_hash': content_hash,
-        'collection': collection,
-        'file_path': file_path,
-        'content_type': content_type,
-        'title': title,
-        'text_body': text_body,
-        'seq': seq,
-        'pos': pos,
-        'model': model,
-        'embedded_at': now,
-        'vector': vector,
+        "hash_seq": hash_seq,
+        "content_hash": content_hash,
+        "collection": collection,
+        "file_path": file_path,
+        "content_type": content_type,
+        "title": title,
+        "text_body": text_body,
+        "seq": seq,
+        "pos": pos,
+        "model": model,
+        "embedded_at": now,
+        "vector": vector,
     }])
 
 
-# -----------------------------------------------------------------------------
-# Search operations
-# -----------------------------------------------------------------------------
-
-def normalize_scores(results: List[Dict[str, Any]], score_key: str = '_score') -> List[Dict[str, Any]]:
-    """Normalize scores to [0, 1] range based on max score."""
-    if not results:
-        return results
-    
-    max_score = max(r.get(score_key, 0) for r in results)
-    if max_score <= 0:
-        return results
-    
-    for r in results:
-        r['score'] = r.get(score_key, 0) / max_score
-    
-    return results
-
-
-async def search_fts(query: str, limit: int = 20, collection: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Full-text search using Tantivy BM25 on embeddings.text_body."""
+def get_embeddings_for_hash(content_hash: str) -> List[Dict[str, Any]]:
+    """Get all embeddings for a content hash."""
     if db.embeddings_table is None:
         raise RuntimeError("Database not initialized")
     
-    if not query.strip():
+    try:
+        rows = list(db.embeddings_table.search()
+            .where(f"content_hash = '{escape_sql(content_hash)}'")
+            .select(["hash_seq", "seq", "pos", "vector", "model"])
+            .to_list())
+        
+        return [
+            {
+                "hash_seq": r["hash_seq"],
+                "seq": r["seq"],
+                "pos": r["pos"],
+                "vector": r["vector"],
+                "model": r["model"],
+            }
+            for r in rows
+        ]
+    except Exception:
         return []
-    
-    # Build search
-    search = db.embeddings_table.search(query, query_type="fts")
-    
-    if collection:
-        search = search.where(f"collection = '{escape_sql(collection)}'")
-    
-    # Add fts column
-    search = search.select(["hash_seq", "content_hash", "collection", "file_path", "title", "text_body", "seq", "pos", "model"])
-    
-    rows = search.limit(limit).to_list()
-    
-    # Normalize scores
-    rows = normalize_scores(rows, '_score')
-    
-    # Dedupe by file_path
-    seen = {}
-    for r in rows:
-        fp = r.get('file_path', '')
-        if fp and fp not in seen:
-            seen[fp] = r
-    
-    return list(seen.values())[:limit]
 
 
-async def search_vec(
-    query_embedding: List[float],
-    limit: int = 20,
-    collection: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """Vector similarity search using LanceDB ANN."""
-    if db.embeddings_table is None:
-        raise RuntimeError("Database not initialized")
-    
-    # Build search - specify vector column explicitly
-    search = db.embeddings_table.search(query_embedding, query_type="vector", vector_column_name="vector")
-    
-    if collection:
-        search = search.where(f"collection = '{escape_sql(collection)}'")
-    
-    rows = search.limit(limit).to_list()
-    
-    # Convert distance to score (1 - distance/2 for cosine-like)
-    for r in rows:
-        dist = r.get('_distance', 1.0)
-        r['score'] = max(0, 1 - dist / 2)
-    
-    # Dedupe by file_path
-    seen = {}
-    for r in rows:
-        fp = r.get('file_path', '')
-        if fp and fp not in seen:
-            seen[fp] = r
-    
-    return list(seen.values())[:limit]
-
-
-async def has_vectors() -> bool:
-    """Check if there are any vectors in the embeddings table."""
+def has_vectors() -> bool:
+    """Check if index has any vector embeddings."""
     if db.embeddings_table is None:
         return False
     try:
-        return db.embeddings_table.count_rows() > 0
+        count = db.embeddings_table.count_rows
+        return count > 0
     except Exception:
         return False
 
 
-# -----------------------------------------------------------------------------
-# Cache operations
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Cache Operations
+# =============================================================================
 
 def get_cache_key(prefix: str, data: Any) -> str:
-    """Generate a cache key from prefix and data."""
-    h = hashlib.sha256()
-    h.update(prefix.encode())
-    h.update(str(data).encode())
-    return h.hexdigest()
+    """Generate cache key from prefix and data."""
+    import json
+    hash_obj = hashlib.sha256()
+    hash_obj.update(prefix.encode("utf-8"))
+    hash_obj.update(json.dumps(data, sort_keys=True).encode("utf-8"))
+    return hash_obj.hexdigest()
 
 
-async def get_cached(key: str) -> Optional[str]:
-    """Get cached value."""
+def get_cached_result(key: str) -> Optional[str]:
+    """Get cached result by key."""
     if db.cache_table is None:
         return None
     
-    rows = db.cache_table.search().where(f"key = '{escape_sql(key)}'").limit(1).to_list()
-    if not rows:
+    try:
+        rows = list(db.cache_table.search()
+            .where(f"key = '{escape_sql(key)}'")
+            .limit(1)
+            .to_list())
+        
+        if len(rows) == 0:
+            return None
+        
+        return rows[0]["value"]
+    except Exception:
         return None
-    return rows[0].get('value')
 
 
-async def set_cached(key: str, value: str) -> None:
-    """Set cached value."""
+def set_cached_result(key: str, value: str) -> None:
+    """Cache a result."""
     if db.cache_table is None:
         return
     
-    db.cache_table.merge_insert('key').when_matched_update_all().when_not_matched_insert_all().execute([{
-        'key': key,
-        'value': value,
-        'created_at': int(time.time() * 1000),
+    db.cache_table.merge_insert("key").when_matched_update_all().when_not_matched_insert_all().execute([{
+        "key": key,
+        "value": value,
+        "created_at": int(time.time() * 1000),
     }])
 
 
-async def clear_cache() -> None:
-    """Clear all cached values."""
-    if db.cache_table is None:
-        return
+# =============================================================================
+# Search - FTS (BM25 via Tantivy)
+# =============================================================================
+
+def search_fts(
+    query: str,
+    limit: int = 20,
+    collection: Optional[str] = None
+) -> List[SearchResult]:
+    """Full-text search using LanceDB Tantivy on embeddings.text_body."""
+    import re
+    
+    if db.embeddings_table is None:
+        raise RuntimeError("Database not initialized")
+    
+    trimmed = query.strip()
+    if not trimmed:
+        return []
+    
+    db.ensure_fts_index()
+    
+    # Build filter
+    filter_clause = None
+    if collection:
+        filter_clause = f"collection = '{escape_sql(collection)}'"
+    
+    # Run FTS search
     try:
-        db.cache_table.delete("1 = 1")
-    except Exception:
-        pass
+        builder = db.embeddings_table.search(trimmed, query_type="fts").limit(limit * 2)
+        if filter_clause:
+            builder = builder.where(filter_clause)
+        
+        results = builder.to_list()
+    except Exception as e:
+        print(f"FTS search error: {e}")
+        return []
+    
+    if not results:
+        return []
+    
+    # Normalize scores to [0, 1]
+    max_score = max(r.get("_score", 0) for r in results) or 1
+    
+    # Dedupe by filepath, keep best score
+    seen: Dict[str, SearchResult] = {}
+    for r in results:
+        filepath = f"qmd://{r['collection']}/{r['file_path']}"
+        score = r.get("_score", 0) / max_score
+        
+        if filepath in seen:
+            if score > seen[filepath].score:
+                seen[filepath] = _make_search_result(r, score, "fts")
+        else:
+            seen[filepath] = _make_search_result(r, score, "fts")
+    
+    return sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
 
 
-# -----------------------------------------------------------------------------
-# Convenience: Full indexing pipeline
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Search - Vector (ANN via LanceDB)
+# =============================================================================
 
-async def insert_document_with_embedding(
+def search_vec(
+    vector: List[float],
+    limit: int = 20,
+    collection: Optional[str] = None
+) -> List[SearchResult]:
+    """Vector nearest-neighbor search."""
+    if db.embeddings_table is None:
+        raise RuntimeError("Database not initialized")
+    
+    if not has_vectors():
+        return []
+    
+    # Build filter
+    filter_clause = None
+    if collection:
+        filter_clause = f"collection = '{escape_sql(collection)}'"
+    
+    # Run vector search
+    builder = db.embeddings_table.search(vector).limit(limit * 2)
+    if filter_clause:
+        builder = builder.where(filter_clause)
+    
+    results = builder.to_list()
+    
+    if not results:
+        return []
+    
+    # Dedupe by filepath, keep best (smallest) distance
+    seen: Dict[str, SearchResult] = {}
+    for r in results:
+        filepath = f"qmd://{r['collection']}/{r['file_path']}"
+        distance = r.get("_distance", 1.0)
+        # Convert distance to similarity score (1 - dist/2 for cosine-like)
+        score = 1.0 - distance / 2.0
+        
+        if filepath in seen:
+            if score > seen[filepath].score:
+                seen[filepath] = _make_search_result(r, score, "vec")
+        else:
+            seen[filepath] = _make_search_result(r, score, "vec")
+    
+    return sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
+
+
+# =============================================================================
+# Full Document Indexing Pipeline
+# =============================================================================
+
+def index_document(
     path: str,
     text: str,
     collection: str,
-    embed_func,  # Callable: text -> List[float]
-    model: str = 'qwen3-vl-embedding-2b',
-    max_chars: int = CHUNK_SIZE_CHARS,
-    overlap_chars: int = CHUNK_OVERLAP_CHARS,
+    model: str,
+    embed_func,
+    content_type: str = "text"
 ) -> str:
     """
-    Full pipeline: hash content, insert document, chunk, embed, and store.
+    Full document indexing pipeline.
     
     Args:
-        path: File path or identifier
+        path: File path within collection
         text: Full document text
         collection: Collection name
-        embed_func: Async function(text) -> List[float]
         model: Embedding model name
-        max_chars: Max chunk size in characters
-        overlap_chars: Overlap between chunks
+        embed_func: Function(text) -> List[float]
+        content_type: 'text' or 'image'
     
     Returns:
         Content hash
     """
-    # Hash and store content
+    # 1. Hash content
     content_hash = hash_content(text)
-    await insert_content(content_hash, text)
     
-    # Extract title
-    title = extract_title(text, Path(path).name)
+    # 2. Extract title
+    title = extract_title(text, path)
     
-    # Insert document record
-    await insert_document(
-        collection=collection,
-        file_path=path,
-        title=title,
-        content_hash=content_hash,
-    )
+    # 3. Store content
+    insert_content(content_hash, text, content_type)
     
-    # Chunk document
-    chunks = chunk_document(text, max_chars, overlap_chars)
+    # 4. Insert document registry
+    insert_document(collection, path, title, content_hash, content_type)
     
-    # Embed each chunk
-    for seq, chunk in enumerate(chunks):
-        chunk_text = chunk['text']
-        pos = chunk['pos']
-        
-        # Get embedding
-        embedding = await embed_func(chunk_text)
+    # 5. Chunk and embed
+    chunks = chunk_document(text)
+    
+    for i, chunk in enumerate(chunks):
+        # Embed chunk
+        vector = embed_func(chunk["text"])
         
         # Store embedding
-        await insert_embedding(
+        insert_embedding(
             content_hash=content_hash,
-            seq=seq,
-            pos=pos,
-            vector=embedding,
+            seq=i,
+            pos=chunk["pos"],
+            vector=vector,
             model=model,
-            text_body=chunk_text,
             collection=collection,
             file_path=path,
             title=title,
+            text_body=chunk["text"],
+            content_type=content_type,
         )
     
+    # 6. Ensure FTS index
+    db.ensure_fts_index()
+    
     return content_hash
+
+
+def delete_document(collection: str, path: str) -> None:
+    """Delete document and all its embeddings."""
+    # Find document
+    doc = find_active_document(collection, path)
+    if not doc:
+        return
+    
+    content_hash = doc["hash"]
+    
+    # Deactivate document
+    deactivate_document(collection, path)
+    
+    # Delete embeddings
+    if db.embeddings_table:
+        try:
+            db.embeddings_table.delete(f"content_hash = '{escape_sql(content_hash)}'")
+        except Exception:
+            pass
+
+
+# =============================================================================
+# Helper
+# =============================================================================
+
+def _make_search_result(row: Dict[str, Any], score: float, source: str) -> SearchResult:
+    """Convert LanceDB row to SearchResult."""
+    collection = row.get("collection", "")
+    file_path = row.get("file_path", "")
+    content_hash = row.get("content_hash", "")
+    
+    # Get body from content table
+    body = get_content(content_hash) or row.get("text_body", "")
+    
+    return SearchResult(
+        filepath=f"qmd://{collection}/{file_path}",
+        display_path=f"{collection}/{file_path}",
+        title=row.get("title", file_path) or "",
+        context=None,  # Would need collections config
+        hash=content_hash,
+        docid=get_docid(content_hash),
+        collection=collection,
+        modified_at="",
+        body_length=len(body),
+        score=score,
+        source=source,
+        chunk_pos=row.get("pos", 0) or 0,
+        body=body,
+    )
+
+
+# Required import
+import os
