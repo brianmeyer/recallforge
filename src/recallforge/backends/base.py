@@ -1,0 +1,167 @@
+"""
+base.py - Abstract Base Class for Model Backends.
+
+Defines the interface that all backends must implement.
+Backends handle model loading, device selection, and inference.
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import List, Dict, Any, Optional
+import numpy as np
+
+
+@dataclass
+class BackendInfo:
+    """Information about a backend's capabilities and state."""
+    name: str
+    device: str
+    dtype: str
+    embedder_loaded: bool = False
+    reranker_loaded: bool = False
+    expander_loaded: bool = False
+    memory_allocated_gb: float = 0.0
+    supports_images: bool = True
+    quantization: Optional[str] = None  # "4bit", "8bit", or None
+
+
+class ModelBackend(ABC):
+    """
+    Abstract base class for model backends.
+    
+    All backends must implement:
+    - embed_text: Embed text strings
+    - embed_image: Embed images
+    - rerank: Rerank documents
+    - expand_query: Generate query expansions
+    - warm_up: Preload all models
+    - get_info: Return backend status
+    
+    Model IDs are defined per backend:
+    - Torch: Qwen/Qwen3-VL-Embedding-2B, Qwen/Qwen3-VL-Reranker-2B, tobil/qmd-query-expansion-qwen3.5-2B
+    - MLX BF16: arthurcollet/Qwen3-VL-Embedding-2B-mlx, arthurcollet/Qwen3-VL-Reranker-2B-mlx, torch expander
+    - MLX 4-bit: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit, arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit, torch expander
+    """
+    
+    @abstractmethod
+    def embed_text(self, text: str) -> np.ndarray:
+        """
+        Embed a single text string.
+        
+        Args:
+            text: Text to embed
+        
+        Returns:
+            2048-dimensional numpy array (float32)
+        """
+        pass
+    
+    @abstractmethod
+    def embed_texts(self, texts: List[str]) -> np.ndarray:
+        """
+        Embed multiple text strings in a batch.
+        
+        Args:
+            texts: List of texts to embed
+        
+        Returns:
+            N x 2048 numpy array (float32)
+        """
+        pass
+    
+    @abstractmethod
+    def embed_image(self, image_path: str) -> np.ndarray:
+        """
+        Embed a single image.
+        
+        Args:
+            image_path: Path to image file
+        
+        Returns:
+            2048-dimensional numpy array (float32)
+        """
+        pass
+    
+    @abstractmethod
+    def embed_images(self, image_paths: List[str]) -> np.ndarray:
+        """
+        Embed multiple images in a batch.
+        
+        Args:
+            image_paths: List of image paths
+        
+        Returns:
+            N x 2048 numpy array (float32)
+        """
+        pass
+    
+    @abstractmethod
+    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
+        """
+        Rerank documents for a query.
+        
+        Args:
+            query: Search query
+            documents: List of document dicts with 'text' or 'text_body' field
+        
+        Returns:
+            List of relevance scores (0.0 to 1.0) in same order as documents
+        """
+        pass
+    
+    @abstractmethod
+    def expand_query(self, query: str) -> Dict[str, str]:
+        """
+        Generate query expansions.
+        
+        Args:
+            query: Original search query
+        
+        Returns:
+            Dict with keys: 'lex', 'vec', 'hyde' (each a string expansion)
+        """
+        pass
+    
+    @abstractmethod
+    def warm_up(self) -> None:
+        """
+        Preload all models.
+        
+        Call this at server startup to avoid slow first queries.
+        """
+        pass
+    
+    @abstractmethod
+    def get_info(self) -> BackendInfo:
+        """
+        Return information about the backend.
+        """
+        pass
+    
+    # Mode support: which models are active
+    # Modes: embed (embedder only), hybrid (embedder + reranker), full (all three)
+    
+    _mode: str = "full"  # Default to full mode
+    
+    def set_mode(self, mode: str) -> None:
+        """
+        Set the search mode (tiered model loading).
+        
+        Args:
+            mode: One of 'embed', 'hybrid', 'full'
+        """
+        if mode not in ("embed", "hybrid", "full"):
+            raise ValueError(f"Invalid mode: {mode}. Must be 'embed', 'hybrid', or 'full'")
+        self._mode = mode
+    
+    def get_mode(self) -> str:
+        """Get current search mode."""
+        return self._mode
+    
+    def needs_reranker(self) -> bool:
+        """Check if current mode needs reranker."""
+        return self._mode in ("hybrid", "full")
+    
+    def needs_expander(self) -> bool:
+        """Check if current mode needs query expander."""
+        return self._mode == "full"
