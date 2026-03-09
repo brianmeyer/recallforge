@@ -601,7 +601,8 @@ def _bm25_fallback(
 def search_fts(
     query: str,
     limit: int = 20,
-    collection: Optional[str] = None
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None
 ) -> List[SearchResult]:
     """Full-text search using LanceDB Tantivy on embeddings.text_body.
     Falls back to in-memory BM25 if Tantivy fails."""
@@ -618,6 +619,11 @@ def search_fts(
     filter_clause = None
     if collection:
         filter_clause = f"collection = '{escape_sql(collection)}'"
+    if content_type:
+        if filter_clause:
+            filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
+        else:
+            filter_clause = f"content_type = '{escape_sql(content_type)}'"
     
     # Run FTS search
     try:
@@ -628,10 +634,10 @@ def search_fts(
         results = builder.to_list()
     except Exception as e:
         print(f"FTS search error, falling back to in-memory BM25: {e}")
-        return _bm25_fallback(trimmed, limit, collection, content_type=content_type)
+        return _bm25_fallback(trimmed, limit, collection, content_type)
     
     if not results:
-        return _bm25_fallback(trimmed, limit, collection, content_type=content_type)
+        return _bm25_fallback(trimmed, limit, collection, content_type)
     
     # Normalize scores to [0, 1]
     max_score = max(r.get("_score", 0) for r in results) or 1
@@ -829,7 +835,8 @@ def _make_search_result(row: Dict[str, Any], score: float, source: str) -> Searc
 def insert_image(
     path: str,
     collection: str,
-    embed_func
+    embed_func,
+    model: str = "Qwen3-VL-Embedding-2B"
 ) -> str:
     """
     Index an image file.
@@ -838,27 +845,20 @@ def insert_image(
         path: Absolute path to image file
         collection: Collection name
         embed_func: Function(path) -> List[float]
+        model: Embedding model name
     
     Returns:
         Content hash of the indexed image
     """
-    import os
-    import time
-    from pathlib import Path
-    
-    # Generate content hash from file
-    content_hash = hash_content(path)  # Hash of file path for dedup
+    # Generate content hash from file path for dedup
+    content_hash = hash_content(path)
     
     # Extract metadata
     title = os.path.splitext(os.path.basename(path))[0]
     modified_at = int(os.path.getmtime(path) * 1000)
     created_at = int(os.path.getctime(path) * 1000)
-    file_size = os.path.getsize(path)
     
-    # Extract extension
-    ext = Path(path).suffix.lower()
-    
-    # Store content (as path reference)
+    # Store content (as path reference for images)
     insert_content(content_hash, path, content_type="image")
     
     # Insert document registry
@@ -897,7 +897,7 @@ def insert_image(
             "text_body": "",  # Images don't have text body
             "seq": 0,
             "pos": 0,
-            "model": "Qwen3-VL-Embedding-2B",
+            "model": model,
             "embedded_at": now,
             "vector": vector,
         }])
@@ -906,117 +906,69 @@ def insert_image(
     db.ensure_fts_index(force_rebuild=True)
     
     return content_hash
-    
-    return content_hash
 
 
-def search_fts(
+# =============================================================================
+# Cross-Modal Search
+# =============================================================================
+
+def search_cross_modal(
     query: str,
-    limit: int = 20,
-    collection: Optional[str] = None,
-    content_type: Optional[str] = None
-) -> List[SearchResult]:
-    """Full-text search using LanceDB Tantivy on embeddings.text_body.
-    Falls back to in-memory BM25 if Tantivy fails."""
-    if db.embeddings_table is None:
-        raise RuntimeError("Database not initialized")
-    
-    trimmed = query.strip()
-    if not trimmed:
-        return []
-    
-    db.ensure_fts_index()
-    
-    # Build filter
-    filter_clause = None
-    if collection:
-        filter_clause = f"collection = '{escape_sql(collection)}'"
-    if content_type:
-        if filter_clause:
-            filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
-        else:
-            filter_clause = f"content_type = '{escape_sql(content_type)}'"
-    
-    # Run FTS search
-    try:
-        builder = db.embeddings_table.search(trimmed, query_type="fts").limit(limit * 2)
-        if filter_clause:
-            builder = builder.where(filter_clause)
-        
-        results = builder.to_list()
-    except Exception as e:
-        print(f"FTS search error, falling back to in-memory BM25: {e}")
-        return _bm25_fallback(trimmed, limit, collection, content_type=content_type)
-    
-    if not results:
-        return _bm25_fallback(trimmed, limit, collection, content_type=content_type)
-    
-    # Normalize scores to [0, 1]
-    max_score = max(r.get("_score", 0) for r in results) or 1
-    
-    # Dedupe by filepath, keep best score
-    seen: Dict[str, SearchResult] = {}
-    for r in results:
-        filepath = f"qmd://{r['collection']}/{r['file_path']}"
-        score = r.get("_score", 0) / max_score
-        
-        if filepath in seen:
-            if score > seen[filepath].score:
-                seen[filepath] = _make_search_result(r, score, "fts")
-        else:
-            seen[filepath] = _make_search_result(r, score, "fts")
-    
-    return sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
-
-
-def search_vec(
     vector: List[float],
     limit: int = 20,
     collection: Optional[str] = None,
     content_type: Optional[str] = None
 ) -> List[SearchResult]:
-    """Vector nearest-neighbor search."""
-    if db.embeddings_table is None:
-        raise RuntimeError("Database not initialized")
+    """
+    Cross-modal search combining FTS and vector search.
     
-    if not has_vectors():
-        return []
+    Text queries find relevant images via vector similarity.
+    Image queries find relevant text via vector similarity.
     
-    # Build filter
-    filter_clause = None
-    if collection:
-        filter_clause = f"collection = '{escape_sql(collection)}'"
-    if content_type:
-        if filter_clause:
-            filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
-        else:
-            filter_clause = f"content_type = '{escape_sql(content_type)}'"
+    Args:
+        query: Text query (for FTS)
+        vector: Embedding vector (for semantic search)
+        limit: Max results
+        collection: Optional collection filter
+        content_type: Optional content type filter ('text' or 'image')
     
-    # Run vector search with cosine metric (distance in [0, 2])
-    builder = db.embeddings_table.search(vector).metric("cosine").limit(limit * 2)
-    if filter_clause:
-        builder = builder.where(filter_clause)
+    Returns:
+        Merged and ranked results
+    """
+    from typing import Dict
     
-    results = builder.to_list()
+    # Run both searches
+    fts_results = search_fts(query, limit=limit, collection=collection, content_type=content_type)
+    vec_results = search_vec(vector, limit=limit, collection=collection, content_type=content_type)
     
-    if not results:
-        return []
-    
-    # Dedupe by filepath, keep best (smallest) distance
+    # Merge with RRF-style fusion
     seen: Dict[str, SearchResult] = {}
-    for r in results:
-        filepath = f"qmd://{r['collection']}/{r['file_path']}"
-        distance = r.get("_distance", 1.0)
-        # Convert distance to similarity score (1 - dist/2 for cosine-like)
-        score = 1.0 - distance / 2.0
-        
-        if filepath in seen:
-            if score > seen[filepath].score:
-                seen[filepath] = _make_search_result(r, score, "vec")
-        else:
-            seen[filepath] = _make_search_result(r, score, "vec")
+    k = 60  # RRF constant
     
-    return sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
-
-
-# (os imported at top)
+    # Process FTS results
+    for rank, result in enumerate(fts_results):
+        key = result.filepath
+        rrf_score = 1.0 / (k + rank + 1)
+        if key in seen:
+            seen[key].score += rrf_score
+        else:
+            result.score = rrf_score
+            result.source = "fts+vec" if any(r.filepath == key for r in vec_results) else "fts"
+            seen[key] = result
+    
+    # Process vector results
+    for rank, result in enumerate(vec_results):
+        key = result.filepath
+        rrf_score = 1.0 / (k + rank + 1)
+        if key in seen:
+            seen[key].score += rrf_score
+            seen[key].source = "fts+vec"
+        else:
+            result.score = rrf_score
+            result.source = "vec"
+            seen[key] = result
+    
+    # Sort by combined score
+    results = sorted(seen.values(), key=lambda x: x.score, reverse=True)
+    
+    return results[:limit]
