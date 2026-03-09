@@ -56,6 +56,7 @@ class SearchResult:
     body_length: int
     score: float
     source: str  # 'fts' | 'vec'
+    content_type: str = "text"  # 'text' | 'image'
     chunk_pos: int = 0
     body: Optional[str] = None
 
@@ -533,6 +534,7 @@ def _bm25_fallback(
     query: str,
     limit: int = 20,
     collection: Optional[str] = None,
+    content_type: Optional[str] = None,
 ) -> List[SearchResult]:
     """In-memory BM25 fallback when LanceDB FTS index fails."""
     if db.embeddings_table is None:
@@ -548,6 +550,11 @@ def _bm25_fallback(
 
     if collection:
         rows = rows[rows["collection"] == collection]
+        if rows.empty:
+            return []
+
+    if content_type:
+        rows = rows[rows["content_type"] == content_type]
         if rows.empty:
             return []
 
@@ -594,7 +601,8 @@ def _bm25_fallback(
 def search_fts(
     query: str,
     limit: int = 20,
-    collection: Optional[str] = None
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None
 ) -> List[SearchResult]:
     """Full-text search using LanceDB Tantivy on embeddings.text_body.
     Falls back to in-memory BM25 if Tantivy fails."""
@@ -611,6 +619,11 @@ def search_fts(
     filter_clause = None
     if collection:
         filter_clause = f"collection = '{escape_sql(collection)}'"
+    if content_type:
+        if filter_clause:
+            filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
+        else:
+            filter_clause = f"content_type = '{escape_sql(content_type)}'"
     
     # Run FTS search
     try:
@@ -621,10 +634,10 @@ def search_fts(
         results = builder.to_list()
     except Exception as e:
         print(f"FTS search error, falling back to in-memory BM25: {e}")
-        return _bm25_fallback(trimmed, limit, collection)
+        return _bm25_fallback(trimmed, limit, collection, content_type)
     
     if not results:
-        return _bm25_fallback(trimmed, limit, collection)
+        return _bm25_fallback(trimmed, limit, collection, content_type)
     
     # Normalize scores to [0, 1]
     max_score = max(r.get("_score", 0) for r in results) or 1
@@ -651,7 +664,8 @@ def search_fts(
 def search_vec(
     vector: List[float],
     limit: int = 20,
-    collection: Optional[str] = None
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None
 ) -> List[SearchResult]:
     """Vector nearest-neighbor search."""
     if db.embeddings_table is None:
@@ -664,6 +678,11 @@ def search_vec(
     filter_clause = None
     if collection:
         filter_clause = f"collection = '{escape_sql(collection)}'"
+    if content_type:
+        if filter_clause:
+            filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
+        else:
+            filter_clause = f"content_type = '{escape_sql(content_type)}'"
     
     # Run vector search with cosine metric (distance in [0, 2])
     builder = db.embeddings_table.search(vector).metric("cosine").limit(limit * 2)
@@ -786,6 +805,7 @@ def _make_search_result(row: Dict[str, Any], score: float, source: str) -> Searc
     collection = row.get("collection", "")
     file_path = row.get("file_path", "")
     content_hash = row.get("content_hash", "")
+    content_type = row.get("content_type", "text")
     
     # Get body from content table
     body = get_content(content_hash) or row.get("text_body", "")
@@ -802,9 +822,153 @@ def _make_search_result(row: Dict[str, Any], score: float, source: str) -> Searc
         body_length=len(body),
         score=score,
         source=source,
+        content_type=content_type,
         chunk_pos=row.get("pos", 0) or 0,
         body=body,
     )
 
 
-# (os imported at top)
+# =============================================================================
+# Image Indexing
+# =============================================================================
+
+def insert_image(
+    path: str,
+    collection: str,
+    embed_func,
+    model: str = "Qwen3-VL-Embedding-2B"
+) -> str:
+    """
+    Index an image file.
+    
+    Args:
+        path: Absolute path to image file
+        collection: Collection name
+        embed_func: Function(path) -> List[float]
+        model: Embedding model name
+    
+    Returns:
+        Content hash of the indexed image
+    """
+    # Generate content hash from file path for dedup
+    content_hash = hash_content(path)
+    
+    # Extract metadata
+    title = os.path.splitext(os.path.basename(path))[0]
+    modified_at = int(os.path.getmtime(path) * 1000)
+    created_at = int(os.path.getctime(path) * 1000)
+    
+    # Store content (as path reference for images)
+    insert_content(content_hash, path, content_type="image")
+    
+    # Insert document registry
+    insert_document(
+        collection=collection,
+        file_path=path,
+        title=title,
+        content_hash=content_hash,
+        content_type="image",
+        created_at=created_at,
+        modified_at=modified_at,
+    )
+    
+    # Embed the image
+    vector = embed_func(path)
+    
+    # Insert embedding with content_type='image'
+    now = int(time.time() * 1000)
+    hash_seq = f"{content_hash}_0"
+    
+    # Clean up existing
+    try:
+        if db.embeddings_table:
+            db.embeddings_table.delete(f"hash_seq = '{escape_sql(hash_seq)}'")
+    except Exception:
+        pass
+    
+    if db.embeddings_table:
+        db.embeddings_table.add([{
+            "hash_seq": hash_seq,
+            "content_hash": content_hash,
+            "collection": collection,
+            "file_path": path,
+            "content_type": "image",
+            "title": title,
+            "text_body": "",  # Images don't have text body
+            "seq": 0,
+            "pos": 0,
+            "model": model,
+            "embedded_at": now,
+            "vector": vector,
+        }])
+    
+    # Rebuild FTS index
+    db.ensure_fts_index(force_rebuild=True)
+    
+    return content_hash
+
+
+# =============================================================================
+# Cross-Modal Search
+# =============================================================================
+
+def search_cross_modal(
+    query: str,
+    vector: List[float],
+    limit: int = 20,
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None
+) -> List[SearchResult]:
+    """
+    Cross-modal search combining FTS and vector search.
+    
+    Text queries find relevant images via vector similarity.
+    Image queries find relevant text via vector similarity.
+    
+    Args:
+        query: Text query (for FTS)
+        vector: Embedding vector (for semantic search)
+        limit: Max results
+        collection: Optional collection filter
+        content_type: Optional content type filter ('text' or 'image')
+    
+    Returns:
+        Merged and ranked results
+    """
+    from typing import Dict
+    
+    # Run both searches
+    fts_results = search_fts(query, limit=limit, collection=collection, content_type=content_type)
+    vec_results = search_vec(vector, limit=limit, collection=collection, content_type=content_type)
+    
+    # Merge with RRF-style fusion
+    seen: Dict[str, SearchResult] = {}
+    k = 60  # RRF constant
+    
+    # Process FTS results
+    for rank, result in enumerate(fts_results):
+        key = result.filepath
+        rrf_score = 1.0 / (k + rank + 1)
+        if key in seen:
+            seen[key].score += rrf_score
+        else:
+            result.score = rrf_score
+            result.source = "fts+vec" if any(r.filepath == key for r in vec_results) else "fts"
+            seen[key] = result
+    
+    # Process vector results
+    for rank, result in enumerate(vec_results):
+        key = result.filepath
+        rrf_score = 1.0 / (k + rank + 1)
+        if key in seen:
+            seen[key].score += rrf_score
+            seen[key].source = "fts+vec"
+        else:
+            result.score = rrf_score
+            result.source = "vec"
+            seen[key] = result
+    
+    # Sort by combined score
+    results = sorted(seen.values(), key=lambda x: x.score, reverse=True)
+    
+    return results[:limit]

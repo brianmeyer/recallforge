@@ -12,30 +12,39 @@ import numpy as np
 
 # Add Qwen3-VL-Embedding repo to path
 QWEN_REPO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Qwen3-VL-Embedding")
-if os.path.exists(QWEN_REPO_PATH):
-    sys.path.insert(0, QWEN_REPO_PATH)
 
-# Monkey-patch for transformers 5.x compatibility
-try:
-    import transformers.utils.generic as _generic
-    if not hasattr(_generic, 'check_model_inputs'):
-        _generic.check_model_inputs = lambda *a, **kw: None
-except Exception:
-    pass
-
-try:
-    from qwen3_vl_embedding import Qwen3VLEmbedder
-except ImportError:
+# Monkey-patch for transformers 5.x compatibility BEFORE any imports
+# The qwen3_vl_embedding module imports check_model_inputs directly
+def _apply_transformers_patch():
+    """Apply compatibility patch for transformers 5.x."""
     try:
-        # Try src/models path (alternate repo layout)
-        _models_path = os.path.join(QWEN_REPO_PATH, "src")
-        if os.path.exists(_models_path):
-            sys.path.insert(0, _models_path)
+        import transformers.utils.generic as _generic
+        if not hasattr(_generic, 'check_model_inputs'):
+            _generic.check_model_inputs = lambda *args, **kwargs: None
+    except Exception:
+        pass
+    
+    # Also add to module-level if it doesn't exist
+    try:
+        import transformers.utils
+        if not hasattr(transformers.utils, 'check_model_inputs'):
+            transformers.utils.check_model_inputs = lambda *args, **kwargs: None
+    except Exception:
+        pass
+
+_apply_transformers_patch()
+
+# Now add paths and import
+Qwen3VLEmbedder = None
+if os.path.exists(QWEN_REPO_PATH):
+    _src_path = os.path.join(QWEN_REPO_PATH, "src")
+    if os.path.exists(_src_path):
+        sys.path.insert(0, _src_path)
+        try:
             from models.qwen3_vl_embedding import Qwen3VLEmbedder
-        else:
+        except ImportError as e:
+            print(f"Warning: Could not import Qwen3VLEmbedder: {e}")
             Qwen3VLEmbedder = None
-    except ImportError:
-        Qwen3VLEmbedder = None
 
 
 class Embedder:
