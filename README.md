@@ -1,8 +1,8 @@
 # RecallForge
 
-**Every modality, one search.**
+**Every modality, one search. Local first.**
 
-Images, text, and video frames live in the same semantic space. Search across all of them.
+Images, text, and video frames live in the same semantic space. Search across all of them. Nothing leaves your machine.
 
 ![RecallForge Architecture](docs/architecture.png)
 
@@ -28,6 +28,7 @@ recallforge search --image photo.jpg  # find docs related to this image
 - **Runs on anything:** MLX 4-bit on a MacBook (~2GB), PyTorch fp16 on CUDA, MPS, or CPU
 - **Pick your tradeoff:** embed mode (1 model, fast), hybrid (+ reranker), full (+ query expansion)
 - **MCP server** for agent/tool integration
+- **100% local:** All models run on-device. Your data never leaves your machine.
 - **Swappable storage:** LanceDB default, ChromaDB and Qdrant coming
 
 ## Attribution
