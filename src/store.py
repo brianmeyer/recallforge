@@ -685,7 +685,8 @@ def search_vec(
             filter_clause = f"content_type = '{escape_sql(content_type)}'"
     
     # Run vector search with cosine metric (distance in [0, 2])
-    builder = db.embeddings_table.search(vector).metric("cosine").limit(limit * 2)
+    # query_type="vector" required because table also has an FTS index
+    builder = db.embeddings_table.search(vector, query_type="vector").metric("cosine").limit(limit * 2)
     if filter_clause:
         builder = builder.where(filter_clause)
     
