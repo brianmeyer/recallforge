@@ -62,14 +62,14 @@ class TestExpandQuery(unittest.TestCase):
         self.assertNotEqual(key1, key3)
     
     def test_strong_signal_detected_no_results(self):
-        """Test strong signal detection with no results."""
-        self.assertTrue(strong_signal_detected([]))
+        """Test no strong signal with no results (expansion needed)."""
+        self.assertFalse(strong_signal_detected([]))
     
     def test_strong_signal_detected_single_result(self):
-        """Test strong signal detection with single result."""
+        """Test no strong signal with single result (not enough evidence)."""
         mock_result = MagicMock()
         mock_result.score = 0.9
-        self.assertTrue(strong_signal_detected([mock_result]))
+        self.assertFalse(strong_signal_detected([mock_result]))
     
     def test_strong_signal_detected_strong(self):
         """Test strong signal detection with clear winner."""

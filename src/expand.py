@@ -198,9 +198,12 @@ def strong_signal_detected(fts_results: List) -> bool:
     Detect if BM25 search returned a strong signal (skip expansion).
     
     Strong signal: top score >> second score (score gap > 0.3)
+    No results or single result = NOT a strong signal (expansion needed).
     """
+    if len(fts_results) == 0:
+        return False  # No results = expansion is most needed
     if len(fts_results) < 2:
-        return True  # Single result = strong signal
+        return False  # Single result = not enough evidence for strong signal
     
     top_score = fts_results[0].score
     second_score = fts_results[1].score

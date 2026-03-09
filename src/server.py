@@ -13,8 +13,7 @@ import json
 import os
 import signal
 import sys
-from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -370,31 +369,6 @@ async def _handle_rebuild_fts(arguments: dict) -> list[TextContent]:
         output = {"success": False, "error": str(e)}
     
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
-
-
-@asynccontextmanager
-async def app_lifespan(server: Server) -> AsyncIterator[None]:
-    """Manage application lifecycle."""
-    # Startup
-    print("QMD-VL MCP server starting...", file=sys.stderr)
-    
-    # Initialize database
-    db.initialize_database()
-    
-    # Warm up models (loads all three at once)
-    print("Warming up models...", file=sys.stderr)
-    try:
-        warm_up()
-        print("Models ready.", file=sys.stderr)
-    except Exception as e:
-        print(f"Warning: Model warm-up failed: {e}", file=sys.stderr)
-        print("Models will load on first use.", file=sys.stderr)
-    
-    yield
-    
-    # Shutdown
-    print("QMD-VL MCP server shutting down...", file=sys.stderr)
-    db.close_database()
 
 
 async def main() -> None:

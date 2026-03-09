@@ -143,15 +143,13 @@ class TestHybridSearcher(unittest.TestCase):
         """Test candidate reranking."""
         candidates = self.mock_fts_results[:1]
         
-        with patch('src.search.rerank') as mock_rerank:
-            mock_rerank.return_value = [
-                MagicMock(document={'filepath': 'qmd://test/file1.txt'}, score=0.8)
-            ]
-            
+        with patch.object(self.searcher._registry, 'rerank', return_value=[0.8]):
             rerank_scores = self.searcher._rerank_candidates(candidates, "test query")
             
             # Should return scores for each candidate
             self.assertIsInstance(rerank_scores, dict)
+            self.assertIn("qmd://test/file1.txt", rerank_scores)
+            self.assertAlmostEqual(rerank_scores["qmd://test/file1.txt"], 0.8)
     
     def test_blend_scores(self):
         """Test score blending."""

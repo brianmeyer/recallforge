@@ -27,7 +27,7 @@ from src import db
 from src.store import SearchResult, search_fts, search_vec
 from src.models import get_registry
 from src.expand import expand_query, strong_signal_detected
-from src.rerank import rerank, RerankResult
+from src.rerank import RerankResult
 
 
 @dataclass
@@ -112,64 +112,6 @@ class HybridSearcher:
             collection=self.collection,
             content_type=self.content_type,
         )
-    
-    def _run_parallel_searches(
-        self,
-        query: str,
-        expansions: List[Dict[str, str]],
-    ) -> Dict[str, List[SearchResult]]:
-        """
-        Run all search variants in TRUE PARALLEL using ThreadPoolExecutor.
-        
-        All searches fire simultaneously:
-        - BM25(original) + BM25(lex expansions)
-        - Vector(original) + Vector(vec/hyde expansions)
-        
-        Returns dict mapping search type to results.
-        """
-        # Build list of all search tasks
-        search_tasks: List[tuple] = []
-        
-        # Original query - both BM25 and vector
-        search_tasks.append(('original_fts', self._bm25_search, (query,)))
-        search_tasks.append(('original_vec', self._vector_search, (query,)))
-        
-        # Lexical expansions - BM25 only
-        lex_queries = [exp['text'] for exp in expansions if exp['type'] == 'lex']
-        for i, lex_q in enumerate(lex_queries[:3]):
-            search_tasks.append((f'lex_{i}', self._bm25_search, (lex_q,)))
-        
-        # Vector expansions - vector search
-        vec_queries = [exp['text'] for exp in expansions if exp['type'] == 'vec']
-        for i, vec_q in enumerate(vec_queries[:3]):
-            search_tasks.append((f'vec_{i}', self._vector_search, (vec_q,)))
-        
-        # Hyde expansions - vector search
-        hyde_queries = [exp['text'] for exp in expansions if exp['type'] == 'hyde']
-        for i, hyde_q in enumerate(hyde_queries[:3]):
-            search_tasks.append((f'hyde_{i}', self._vector_search, (hyde_q,)))
-        
-        # Execute all searches in parallel
-        all_results: Dict[str, List[SearchResult]] = {}
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all tasks
-            future_to_key = {
-                executor.submit(func, *args): key 
-                for key, func, args in search_tasks
-            }
-            
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(future_to_key):
-                key = future_to_key[future]
-                try:
-                    result = future.result(timeout=30)  # 30s timeout per search
-                    all_results[key] = result
-                except Exception as e:
-                    print(f"Search task {key} failed: {e}")
-                    all_results[key] = []
-        
-        return all_results
     
     def _run_parallel_searches_with_batch_embed(
         self,

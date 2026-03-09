@@ -47,8 +47,6 @@ def test_embed_image_methods():
     
     print("✓ embed_image and embed_images methods exist")
     print("✓ Methods use correct input format: {\"image\": path}")
-    
-    return True
 
 
 def test_insert_image_function():
@@ -78,8 +76,6 @@ def test_insert_image_function():
     finally:
         db.close_database()
         shutil.rmtree(temp_dir, ignore_errors=True)
-    
-    return True
 
 
 def test_content_type_filter():
