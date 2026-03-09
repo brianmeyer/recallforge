@@ -29,7 +29,7 @@ __version__ = "0.1.0"
 # Backend selection via environment
 RECALLFORGE_BACKEND = os.environ.get("RECALLFORGE_BACKEND", "auto")
 RECALLFORGE_MODE = os.environ.get("RECALLFORGE_MODE", "full")
-RECALLFORGE_MLX_QUANTIZE = os.environ.get("RECALLFORGE_MLX_QUANTIZE", "bf16")
+RECALLFORGE_MLX_QUANTIZE = os.environ.get("RECALLFORGE_MLX_QUANTIZE", "4bit")
 RECALLFORGE_STORAGE = os.environ.get("RECALLFORGE_STORAGE", "lancedb")
 
 

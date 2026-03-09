@@ -1,25 +1,40 @@
 # RecallForge
 
-**Cross-Modal Vision-Language Search Engine**
+**Every modality, one search.**
 
-RecallForge is a powerful semantic search system that combines BM25 full-text search, vector similarity search, query expansion, and cross-encoder reranking. It supports both text and image content, enabling truly cross-modal retrieval.
-
-## Attribution
-
-**RecallForge is inspired by and builds upon [QMD](https://github.com/tobil/qmd) by [Tobi](https://github.com/tobil).**
+Images, text, and video frames live in the same semantic space. Search across all of them.
 
 ![RecallForge Architecture](docs/architecture.png)
 
-QMD pioneered the multi-stage retrieval pipeline pattern: embedding, reranking, and query expansion working together for high-quality semantic search. RecallForge takes that architecture and extends it into the vision-language domain:
+Type a text query, find the relevant photo. Submit an image, find related documents. Search image-to-image for visual similarity. RecallForge puts every modality into a shared Qwen3-VL embedding space so cross-modal retrieval just works.
 
-- Cross-modal search (text↔image in all four directions)
-- Qwen3-VL native embeddings and reranking
-- Multi-backend (PyTorch CUDA/MPS + Apple Silicon MLX with 4-bit quantization)
-- Tiered modes so you pick your resource/quality tradeoff
-- LanceDB for scalable vector storage
-- MCP server for agent integration
+```bash
+pip install recallforge            # works everywhere (PyTorch)
+pip install recallforge[mlx]       # Apple Silicon 4-bit (default on Mac, ~2GB)
+pip install recallforge[cuda]      # NVIDIA GPU acceleration
+```
 
-Huge thanks to Tobi for the original vision that inspired this project.
+```bash
+recallforge index ./photos ./docs  # index images and text together
+recallforge search "whiteboard diagram from last meeting"
+recallforge search --image photo.jpg  # find docs related to this image
+```
+
+## What makes RecallForge different
+
+- **Cross-modal search in all four directions:** Text→Text, Text→Image, Image→Text, Image→Image
+- **Shared vision-language embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
+- **3-stage retrieval pipeline:** embedding → reranking → query expansion (all multimodal)
+- **Runs on anything:** MLX 4-bit on a MacBook (~2GB), PyTorch fp16 on CUDA, MPS, or CPU
+- **Pick your tradeoff:** embed mode (1 model, fast), hybrid (+ reranker), full (+ query expansion)
+- **MCP server** for agent/tool integration
+- **Swappable storage:** LanceDB default, ChromaDB and Qdrant coming
+
+## Attribution
+
+**RecallForge is inspired by [QMD](https://github.com/tobil/qmd) by [Tobi](https://github.com/tobil).**
+
+QMD pioneered the multi-stage retrieval pipeline: embedding, reranking, and query expansion working together for high-quality search. RecallForge takes that pattern into the vision-language domain with cross-modal retrieval, multi-backend support, and tiered resource modes. Huge thanks to Tobi for the original architecture that made this possible.
 
 ---
 
