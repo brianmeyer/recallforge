@@ -1,8 +1,11 @@
 """
 server.py - MCP Server for QMD-VL.
 
-Implements Model Context Protocol (MCP) server with stdio transport.
-Tools: search, search_fts, search_vec, index_document, index_image, status, rebuild_fts
+MCP protocol server with stdio transport.
+Tools: search (hybrid), search_fts, search_vec, index_document, index_image, status, rebuild_fts
+
+Calls models.warm_up() on server start so first query isn't slow.
+Proper error handling and graceful shutdown.
 """
 
 import asyncio
@@ -10,593 +13,422 @@ import json
 import os
 import signal
 import sys
-from typing import Any, Dict, List, Optional
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Optional
+
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
 
 from src import db
-from src.db import rebuild_fts_index
-from src.models import get_registry, warm_up, status as model_status
-from src.store import (
-    index_document,
-    insert_image,
-    search_fts,
-    search_vec,
-)
-from src.search import hybrid_query
+from src.models import warm_up, status as model_status
+from src.store import index_document as store_index_document, insert_image
+from src.search import hybrid_query, HybridSearcher
+from src.store import search_fts, search_vec
 
 
-# =============================================================================
-# MCP Protocol Implementation
-# =============================================================================
+# Global server state
+_server: Optional[Server] = None
+_shutdown_requested = False
 
-class MCPServer:
-    """MCP Server for QMD-VL."""
+
+def _signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    global _shutdown_requested
+    print(f"Received signal {signum}, initiating graceful shutdown...", file=sys.stderr)
+    _shutdown_requested = True
+
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, _signal_handler)
+signal.signal(signal.SIGINT, _signal_handler)
+
+
+async def create_server() -> Server:
+    """Create and configure the MCP server."""
+    server = Server("qmd-vl")
     
-    def __init__(self):
-        self.name = "qmd-vl"
-        self.version = "0.1.0"
-        self.running = False
-        self._initialized = False
-    
-    def _get_tools(self) -> List[Dict[str, Any]]:
-        """Return list of available MCP tools."""
+    @server.list_tools()
+    async def list_tools() -> list[Tool]:
+        """List available tools."""
         return [
-            {
-                "name": "search",
-                "description": "Hybrid search combining BM25, vector search, query expansion, and reranking. Best for general queries.",
-                "inputSchema": {
+            Tool(
+                name="search",
+                description="Full hybrid search combining BM25, vector search, query expansion, and reranking",
+                inputSchema={
                     "type": "object",
                     "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum results (default: 10)",
-                            "default": 10
-                        },
-                        "collection": {
-                            "type": "string",
-                            "description": "Filter by collection"
-                        },
-                        "content_type": {
-                            "type": "string",
-                            "enum": ["text", "image"],
-                            "description": "Filter by content type"
-                        }
+                        "query": {"type": "string", "description": "Search query"},
+                        "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
                     },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "search_fts",
-                "description": "Full-text search using BM25 via Tantivy. Fast keyword matching.",
-                "inputSchema": {
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="search_fts",
+                description="Full-text search (BM25) using Tantivy",
+                inputSchema={
                     "type": "object",
                     "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum results (default: 20)",
-                            "default": 20
-                        },
-                        "collection": {
-                            "type": "string",
-                            "description": "Filter by collection"
-                        },
-                        "content_type": {
-                            "type": "string",
-                            "enum": ["text", "image"],
-                            "description": "Filter by content type"
-                        }
+                        "query": {"type": "string", "description": "Search query"},
+                        "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
                     },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "search_vec",
-                "description": "Vector semantic search. Good for conceptual queries.",
-                "inputSchema": {
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="search_vec",
+                description="Vector search using embeddings and ANN",
+                inputSchema={
                     "type": "object",
                     "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "Search query"
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum results (default: 20)",
-                            "default": 20
-                        },
-                        "collection": {
-                            "type": "string",
-                            "description": "Filter by collection"
-                        },
-                        "content_type": {
-                            "type": "string",
-                            "enum": ["text", "image"],
-                            "description": "Filter by content type"
-                        }
+                        "query": {"type": "string", "description": "Search query"},
+                        "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
                     },
-                    "required": ["query"]
-                }
-            },
-            {
-                "name": "index_document",
-                "description": "Index a text document for search.",
-                "inputSchema": {
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="index_document",
+                description="Index a text document for search",
+                inputSchema={
                     "type": "object",
                     "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File path within collection"
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": "Document content"
-                        },
-                        "collection": {
-                            "type": "string",
-                            "description": "Collection name (default: default)",
-                            "default": "default"
-                        }
+                        "path": {"type": "string", "description": "File path within collection"},
+                        "text": {"type": "string", "description": "Document text content"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
                     },
-                    "required": ["path", "text"]
-                }
-            },
-            {
-                "name": "index_image",
-                "description": "Index an image for search.",
-                "inputSchema": {
+                    "required": ["path", "text"],
+                },
+            ),
+            Tool(
+                name="index_image",
+                description="Index an image file for cross-modal search",
+                inputSchema={
                     "type": "object",
                     "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Absolute path to image file"
-                        },
-                        "collection": {
-                            "type": "string",
-                            "description": "Collection name (default: default)",
-                            "default": "default"
-                        }
+                        "path": {"type": "string", "description": "Absolute path to image file"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
                     },
-                    "required": ["path"]
-                }
-            },
-            {
-                "name": "status",
-                "description": "Get server status including model loading and index statistics.",
-                "inputSchema": {
+                    "required": ["path"],
+                },
+            ),
+            Tool(
+                name="status",
+                description="Get server status including model loading and database info",
+                inputSchema={
                     "type": "object",
-                    "properties": {}
-                }
-            },
-            {
-                "name": "rebuild_fts",
-                "description": "Rebuild the full-text search index. Use after bulk updates.",
-                "inputSchema": {
+                    "properties": {},
+                },
+            ),
+            Tool(
+                name="rebuild_fts",
+                description="Rebuild the full-text search (Tantivy) index",
+                inputSchema={
                     "type": "object",
-                    "properties": {}
-                }
-            }
+                    "properties": {},
+                },
+            ),
         ]
     
-    async def handle_initialize(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle initialize request."""
-        self._initialized = True
-        
-        return {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {}
-            },
-            "serverInfo": {
-                "name": self.name,
-                "version": self.version
-            }
-        }
-    
-    async def handle_list_tools(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/list request."""
-        return {"tools": self._get_tools()}
-    
-    async def handle_call_tool(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tools/call request."""
-        tool_name = params.get("name", "")
-        arguments = params.get("arguments", {})
-        
+    @server.call_tool()
+    async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageContent | EmbeddedResource]:
+        """Execute a tool."""
         try:
-            if tool_name == "search":
-                return await self._tool_search(arguments)
-            elif tool_name == "search_fts":
-                return await self._tool_search_fts(arguments)
-            elif tool_name == "search_vec":
-                return await self._tool_search_vec(arguments)
-            elif tool_name == "index_document":
-                return await self._tool_index_document(arguments)
-            elif tool_name == "index_image":
-                return await self._tool_index_image(arguments)
-            elif tool_name == "status":
-                return await self._tool_status(arguments)
-            elif tool_name == "rebuild_fts":
-                return await self._tool_rebuild_fts(arguments)
+            if name == "search":
+                return await _handle_search(arguments)
+            elif name == "search_fts":
+                return await _handle_search_fts(arguments)
+            elif name == "search_vec":
+                return await _handle_search_vec(arguments)
+            elif name == "index_document":
+                return await _handle_index_document(arguments)
+            elif name == "index_image":
+                return await _handle_index_image(arguments)
+            elif name == "status":
+                return await _handle_status(arguments)
+            elif name == "rebuild_fts":
+                return await _handle_rebuild_fts(arguments)
             else:
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"Unknown tool: {tool_name}"
-                    }],
-                    "isError": True
-                }
+                raise ValueError(f"Unknown tool: {name}")
         except Exception as e:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": f"Error: {str(e)}"
-                }],
-                "isError": True
-            }
+            return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
     
-    async def _tool_search(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute hybrid search."""
-        query = args.get("query", "")
-        limit = args.get("limit", 10)
-        collection = args.get("collection")
-        content_type = args.get("content_type")
-        
-        if not query:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": "Error: query is required"
-                }],
-                "isError": True
-            }
-        
-        results = hybrid_query(
-            query=query,
-            limit=limit,
-            collection=collection,
-            content_type=content_type,
-        )
-        
-        # Format results
-        output = []
-        for r in results:
-            output.append({
+    return server
+
+
+async def _handle_search(arguments: dict) -> list[TextContent]:
+    """Handle hybrid search."""
+    query = arguments.get("query", "")
+    limit = arguments.get("limit", 10)
+    collection = arguments.get("collection")
+    content_type = arguments.get("content_type")
+    
+    if not query:
+        return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
+    
+    results = hybrid_query(
+        query=query,
+        limit=limit,
+        collection=collection,
+        content_type=content_type,
+    )
+    
+    output = {
+        "query": query,
+        "count": len(results),
+        "results": [
+            {
                 "filepath": r.filepath,
                 "title": r.title,
                 "score": round(r.score, 4),
                 "rerank_score": round(r.rerank_score, 4),
                 "rrf_rank": r.rrf_rank,
                 "source": r.source,
-                "snippet": (r.body[:300] + "...") if r.body and len(r.body) > 300 else r.body,
-            })
-        
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps(output, indent=2)
-            }]
-        }
-    
-    async def _tool_search_fts(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute FTS search."""
-        query = args.get("query", "")
-        limit = args.get("limit", 20)
-        collection = args.get("collection")
-        content_type = args.get("content_type")
-        
-        if not query:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": "Error: query is required"
-                }],
-                "isError": True
+                "snippet": (r.body or "")[:500] if r.body else None,
             }
-        
-        results = search_fts(
-            query=query,
-            limit=limit,
-            collection=collection,
-            content_type=content_type,
-        )
-        
-        output = []
-        for r in results:
-            output.append({
+            for r in results
+        ],
+    }
+    
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_search_fts(arguments: dict) -> list[TextContent]:
+    """Handle FTS search."""
+    query = arguments.get("query", "")
+    limit = arguments.get("limit", 20)
+    collection = arguments.get("collection")
+    content_type = arguments.get("content_type")
+    
+    if not query:
+        return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
+    
+    results = search_fts(
+        query=query,
+        limit=limit,
+        collection=collection,
+        content_type=content_type,
+    )
+    
+    output = {
+        "query": query,
+        "count": len(results),
+        "results": [
+            {
                 "filepath": r.filepath,
                 "title": r.title,
                 "score": round(r.score, 4),
                 "source": r.source,
-                "snippet": (r.body[:300] + "...") if r.body and len(r.body) > 300 else r.body,
-            })
-        
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps(output, indent=2)
-            }]
-        }
-    
-    async def _tool_search_vec(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute vector search."""
-        query = args.get("query", "")
-        limit = args.get("limit", 20)
-        collection = args.get("collection")
-        content_type = args.get("content_type")
-        
-        if not query:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": "Error: query is required"
-                }],
-                "isError": True
             }
-        
-        # Embed query
-        registry = get_registry()
-        vector = registry.embed_text(query)
-        
-        results = search_vec(
-            vector=vector.tolist() if hasattr(vector, 'tolist') else list(vector),
-            limit=limit,
-            collection=collection,
-            content_type=content_type,
-        )
-        
-        output = []
-        for r in results:
-            output.append({
+            for r in results
+        ],
+    }
+    
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_search_vec(arguments: dict) -> list[TextContent]:
+    """Handle vector search."""
+    from src.models import embed_text
+    
+    query = arguments.get("query", "")
+    limit = arguments.get("limit", 20)
+    collection = arguments.get("collection")
+    content_type = arguments.get("content_type")
+    
+    if not query:
+        return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
+    
+    # Embed query
+    vector = embed_text(query)
+    
+    results = search_vec(
+        vector=vector.tolist() if hasattr(vector, 'tolist') else list(vector),
+        limit=limit,
+        collection=collection,
+        content_type=content_type,
+    )
+    
+    output = {
+        "query": query,
+        "count": len(results),
+        "results": [
+            {
                 "filepath": r.filepath,
                 "title": r.title,
                 "score": round(r.score, 4),
                 "source": r.source,
-                "snippet": (r.body[:300] + "...") if r.body and len(r.body) > 300 else r.body,
-            })
-        
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps(output, indent=2)
-            }]
-        }
-    
-    async def _tool_index_document(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Index a document."""
-        path = args.get("path", "")
-        text = args.get("text", "")
-        collection = args.get("collection", "default")
-        
-        if not path or not text:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": "Error: path and text are required"
-                }],
-                "isError": True
             }
-        
-        registry = get_registry()
-        content_hash = index_document(
-            path=path,
-            text=text,
-            collection=collection,
-            model="Qwen3-VL-Embedding-2B",
-            embed_func=registry.embed_text,
-        )
-        
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps({
-                    "success": True,
-                    "path": path,
-                    "collection": collection,
-                    "hash": content_hash[:12] + "...",
-                })
-            }]
-        }
+            for r in results
+        ],
+    }
     
-    async def _tool_index_image(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Index an image."""
-        path = args.get("path", "")
-        collection = args.get("collection", "default")
-        
-        if not path:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": "Error: path is required"
-                }],
-                "isError": True
-            }
-        
-        if not os.path.exists(path):
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": f"Error: Image not found: {path}"
-                }],
-                "isError": True
-            }
-        
-        registry = get_registry()
-        content_hash = insert_image(
-            path=path,
-            collection=collection,
-            embed_func=registry.embed_image,
-        )
-        
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps({
-                    "success": True,
-                    "path": path,
-                    "collection": collection,
-                    "hash": content_hash[:12] + "...",
-                })
-            }]
-        }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_index_document(arguments: dict) -> list[TextContent]:
+    """Handle document indexing."""
+    from src.models import get_registry
     
-    async def _tool_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get server status."""
-        models = model_status()
-        
-        db_info = {}
-        if db.embeddings_table is not None:
-            try:
-                db_info["embeddings_count"] = db.embeddings_table.count_rows()
-            except:
-                db_info["embeddings_count"] = 0
-        if db.documents_table is not None:
-            try:
-                db_info["documents_count"] = db.documents_table.count_rows()
-            except:
-                db_info["documents_count"] = 0
-        
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps({
-                    "server": {
-                        "name": self.name,
-                        "version": self.version,
-                        "initialized": self._initialized,
-                    },
-                    "models": models,
-                    "database": db_info,
-                }, indent=2)
-            }]
-        }
+    path = arguments.get("path", "")
+    text = arguments.get("text", "")
+    collection = arguments.get("collection", "default")
     
-    async def _tool_rebuild_fts(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Rebuild FTS index."""
-        rebuild_fts_index()
-        
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps({
-                    "success": True,
-                    "message": "FTS index rebuilt",
-                })
-            }]
-        }
+    if not path or not text:
+        return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
     
-    async def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Handle a single MCP request."""
-        method = request.get("method", "")
-        params = request.get("params", {})
-        request_id = request.get("id")
-        
-        handlers = {
-            "initialize": self.handle_initialize,
-            "tools/list": self.handle_list_tools,
-            "tools/call": self.handle_call_tool,
-        }
-        
-        handler = handlers.get(method)
-        if handler is None:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {
-                    "code": -32601,
-                    "message": f"Method not found: {method}"
-                }
-            }
-        
+    registry = get_registry()
+    
+    content_hash = store_index_document(
+        path=path,
+        text=text,
+        collection=collection,
+        model="Qwen3-VL-Embedding-2B",
+        embed_func=registry.embed_text,
+    )
+    
+    output = {
+        "success": True,
+        "path": path,
+        "collection": collection,
+        "hash": content_hash,
+    }
+    
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_index_image(arguments: dict) -> list[TextContent]:
+    """Handle image indexing."""
+    from src.models import get_registry
+    
+    path = arguments.get("path", "")
+    collection = arguments.get("collection", "default")
+    
+    if not path:
+        return [TextContent(type="text", text=json.dumps({"error": "path is required"}))]
+    
+    if not os.path.exists(path):
+        return [TextContent(type="text", text=json.dumps({"error": f"File not found: {path}"}))]
+    
+    registry = get_registry()
+    
+    content_hash = insert_image(
+        path=path,
+        collection=collection,
+        embed_func=registry.embed_image,
+    )
+    
+    output = {
+        "success": True,
+        "path": path,
+        "collection": collection,
+        "hash": content_hash,
+    }
+    
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_status(arguments: dict) -> list[TextContent]:
+    """Handle status request."""
+    # Get model status
+    models = model_status()
+    
+    # Get database info
+    db_info = {}
+    if db.embeddings_table is not None:
         try:
-            result = await handler(params)
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": result
-            }
-        except Exception as e:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {
-                    "code": -32603,
-                    "message": str(e)
-                }
-            }
+            db_info["embeddings_count"] = db.embeddings_table.count_rows()
+        except:
+            db_info["embeddings_count"] = 0
+    if db.documents_table is not None:
+        try:
+            db_info["documents_count"] = db.documents_table.count_rows()
+        except:
+            db_info["documents_count"] = 0
     
-    async def run(self):
-        """Run the MCP server on stdin/stdout."""
-        self.running = True
-        
-        # Setup signal handlers for graceful shutdown
-        def signal_handler(sig, frame):
-            self.running = False
-        
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-        
-        # Main loop: read from stdin, write to stdout
-        loop = asyncio.get_event_loop()
-        reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-        
-        writer = await loop.connect_write_pipe(
-            asyncio.streams.FlowControlMixin,
-            sys.stdout
-        )
-        
-        while self.running:
-            try:
-                line = await reader.readline()
-                if not line:
-                    break
-                
-                request = json.loads(line.decode('utf-8').strip())
-                response = await self.handle_request(request)
-                
-                if response:
-                    response_str = json.dumps(response) + "\n"
-                    writer.write(response_str.encode('utf-8'))
-                    await writer.drain()
-            
-            except json.JSONDecodeError as e:
-                error_response = {
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {
-                        "code": -32700,
-                        "message": f"Parse error: {e}"
-                    }
-                }
-                writer.write((json.dumps(error_response) + "\n").encode('utf-8'))
-                await writer.drain()
-            
-            except Exception as e:
-                break
-        
-        writer.close()
+    output = {
+        "models": models,
+        "database": db_info,
+    }
+    
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
-def run_server():
-    """Entry point for MCP server."""
+async def _handle_rebuild_fts(arguments: dict) -> list[TextContent]:
+    """Handle FTS rebuild."""
+    try:
+        db.rebuild_fts_index()
+        output = {"success": True, "message": "FTS index rebuilt"}
+    except Exception as e:
+        output = {"success": False, "error": str(e)}
+    
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+@asynccontextmanager
+async def app_lifespan(server: Server) -> AsyncIterator[None]:
+    """Manage application lifecycle."""
+    # Startup
+    print("QMD-VL MCP server starting...", file=sys.stderr)
+    
     # Initialize database
     db.initialize_database()
     
+    # Warm up models (loads all three at once)
+    print("Warming up models...", file=sys.stderr)
+    try:
+        warm_up()
+        print("Models ready.", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Model warm-up failed: {e}", file=sys.stderr)
+        print("Models will load on first use.", file=sys.stderr)
+    
+    yield
+    
+    # Shutdown
+    print("QMD-VL MCP server shutting down...", file=sys.stderr)
+    db.close_database()
+
+
+async def main() -> None:
+    """Main entry point for MCP server."""
+    global _server
+    
+    # Initialize database first (before model warm-up)
+    db.initialize_database()
+    
     # Warm up models
-    print("QMD-VL MCP Server starting...")
-    warm_up()
-    print("QMD-VL MCP Server ready")
+    print("Warming up QMD-VL models...", file=sys.stderr)
+    try:
+        warm_up()
+        print("All models warmed up and resident.", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Model warm-up failed: {e}", file=sys.stderr)
+        print("Models will load on first use (slower first query).", file=sys.stderr)
+    
+    # Create server
+    server = await create_server()
+    _server = server
     
     # Run server
-    server = MCPServer()
-    asyncio.run(server.run())
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(
+            read_stream,
+            write_stream,
+            server.create_initialization_options(),
+        )
+
+
+def run_server() -> None:
+    """Entry point for CLI."""
+    asyncio.run(main())
 
 
 if __name__ == "__main__":

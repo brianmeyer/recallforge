@@ -25,6 +25,9 @@ dev = [
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
+[project.scripts]
+qmd-vl = "src.cli:main"
+
 [tool.setuptools]
 packages = ["src"]
 
