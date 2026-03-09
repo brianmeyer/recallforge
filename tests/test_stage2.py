@@ -12,11 +12,25 @@ import os
 import sys
 import tempfile
 import shutil
+import hashlib
+import time
 
 # Add src to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import db, store, embed
+
+
+def mock_embed(text: str) -> list:
+    """Mock embedding that creates deterministic pseudo-random vectors."""
+    h = hashlib.sha256(text.encode()).hexdigest()
+    values = []
+    for i in range(2048):
+        chunk = h[(i * 2) % 64:(i * 2) % 64 + 4]
+        val = int(chunk, 16) / 65536.0 - 0.5
+        values.append(val)
+    norm = sum(v * v for v in values) ** 0.5
+    return [v / norm for v in values]
 
 
 def test_embed_image_methods():
@@ -31,9 +45,6 @@ def test_embed_image_methods():
     # Verify they use correct input format for Qwen3VLEmbedder
     # The input format should be [{"image": "/path/to/img.jpg"}]
     
-    # We'll just verify the code structure without actually running it
-    # (actual embedding requires model weights and can be slow)
-    
     print("✓ embed_image and embed_images methods exist")
     print("✓ Methods use correct input format: {\"image\": path}")
     
@@ -47,22 +58,9 @@ def test_insert_image_function():
     temp_dir = tempfile.mkdtemp(prefix="qmd-vl-stage2-")
     
     try:
+        # Reset singleton
+        db.close_database()
         db.initialize_database(temp_dir)
-        
-        # Mock embedding function (return deterministic pseudo-random vectors)
-        def mock_embed_image(path: str) -> list:
-            import hashlib
-            h = hashlib.sha256(path.encode()).hexdigest()
-            values = []
-            for i in range(2048):
-                chunk = h[(i * 2) % 64:(i * 2) % 64 + 4]
-                val = int(chunk, 16) / 65536.0 - 0.5
-                values.append(val)
-            norm = sum(v * v for v in values) ** 0.5
-            return [v / norm for v in values]
-        
-        # Create a test image path (we don't need actual image file for the test)
-        test_image_path = "/Users/brianmeyer/test-linkedin-avatar.png"
         
         # Verify insert_image function exists and has correct signature
         assert hasattr(store, 'insert_image'), "insert_image function missing"
@@ -76,9 +74,6 @@ def test_insert_image_function():
         assert 'embed_func' in params, "insert_image missing 'embed_func' parameter"
         
         print("✓ insert_image function exists with correct signature")
-        
-        # Verify it stores content_type='image'
-        # (We'll mock the actual embedding call for this test)
         
     finally:
         db.close_database()
@@ -94,19 +89,9 @@ def test_content_type_filter():
     temp_dir = tempfile.mkdtemp(prefix="qmd-vl-stage2-")
     
     try:
+        # Reset singleton
+        db.close_database()
         db.initialize_database(temp_dir)
-        
-        # Mock embedding function
-        def mock_embed(text: str) -> list:
-            import hashlib
-            h = hashlib.sha256(text.encode()).hexdigest()
-            values = []
-            for i in range(2048):
-                chunk = h[(i * 2) % 64:(i * 2) % 64 + 4]
-                val = int(chunk, 16) / 65536.0 - 0.5
-                values.append(val)
-            norm = sum(v * v for v in values) ** 0.5
-            return [v / norm for v in values]
         
         # Create test text documents
         text_docs = [
@@ -135,12 +120,9 @@ def test_content_type_filter():
                 content_type="text",
             )
         
-        # Create mock image documents (we'll create entries directly in embeddings table)
+        # Create mock image documents
         print("  Creating mock image entries...")
-        import time
-        now = int(time.time() * 1000)
         
-        # Simulate image embeddings with content_type='image'
         test_images = [
             ("diagram-architecture.png", "Architecture Diagram", 
              "architecture system design network infrastructure cloud deployment"),
@@ -204,12 +186,9 @@ def test_content_type_filter():
         
         print("✓ content_type filter on search methods works")
         
-        return temp_dir
-        
-    except Exception as e:
+    finally:
         db.close_database()
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise
 
 
 def test_cross_modal_search():
@@ -219,19 +198,9 @@ def test_cross_modal_search():
     temp_dir = tempfile.mkdtemp(prefix="qmd-vl-crossmodal-")
     
     try:
+        # Reset singleton
+        db.close_database()
         db.initialize_database(temp_dir)
-        
-        # Mock embedding function
-        def mock_embed(text: str) -> list:
-            import hashlib
-            h = hashlib.sha256(text.encode()).hexdigest()
-            values = []
-            for i in range(2048):
-                chunk = h[(i * 2) % 64:(i * 2) % 64 + 4]
-                val = int(chunk, 16) / 65536.0 - 0.5
-                values.append(val)
-            norm = sum(v * v for v in values) ** 0.5
-            return [v / norm for v in values]
         
         # Create text documents about images
         print("  Indexing text documents about image content...")
@@ -291,12 +260,12 @@ def test_cross_modal_search():
         print("  Testing cross-modal queries...")
         
         test_queries = [
-            ("architecture diagram", "architecture"),
-            ("system design", "system architecture"),
-            ("knowledge graph", "graph entities"),
+            "architecture diagram",
+            "system design",
+            "knowledge graph",
         ]
         
-        for query, related_text in test_queries:
+        for query in test_queries:
             query_vec = mock_embed(query)
             
             # Search across all content types
@@ -304,10 +273,6 @@ def test_cross_modal_search():
             
             print(f"    Query: '{query}'")
             print(f"      Found {len(results)} results")
-            
-            # Check if relevant images are returned
-            has_image_results = any(r.content_type == "image" if hasattr(r, 'content_type') else False 
-                                   for r in results)
             
             for i, r in enumerate(results[:5]):
                 print(f"      {i+1}. {r.display_path} ({r.source}) - {r.title}")
@@ -317,12 +282,9 @@ def test_cross_modal_search():
         
         print("✓ Cross-modal search works")
         
-        return True
-        
-    except Exception as e:
+    finally:
         db.close_database()
         shutil.rmtree(temp_dir, ignore_errors=True)
-        raise
 
 
 def run_all_tests():
