@@ -160,8 +160,9 @@ class HybridSearcher:
         # Build search tasks
         search_tasks: List[tuple] = []
         
-        # Original query - BM25
-        search_tasks.append(('original_fts', self._bm25_search, (query,)))
+        # NOTE: original BM25 is run separately via _bm25_probe() in search()
+        # and injected into all_results after this method returns.
+        # Do NOT duplicate it here.
         
         # Original vector
         if query in vectors_by_query:

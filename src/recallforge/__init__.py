@@ -24,7 +24,7 @@ Tiered Search Modes:
 import os
 from typing import Optional
 
-__version__ = "1.0.0"
+__version__ = "0.1.0"
 
 # Backend selection via environment
 RECALLFORGE_BACKEND = os.environ.get("RECALLFORGE_BACKEND", "auto")

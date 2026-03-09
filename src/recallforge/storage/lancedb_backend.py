@@ -608,7 +608,7 @@ class LanceDBBackend(StorageBackend):
         
         indices = self._embeddings_table.list_indices()
         for idx in indices:
-            if "text_body" in (idx.columns or []) and "FTS" in str(idx.index_type or i.type or "").upper():
+            if "text_body" in (idx.columns or []) and "FTS" in str(idx.index_type or idx.type or "").upper():
                 self._embeddings_table.drop_index(idx.name)
                 break
         
