@@ -106,7 +106,8 @@ class TestHybridSearcher(unittest.TestCase):
         import numpy as np
         mock_vector = np.random.rand(2048).astype(np.float32)
         
-        with patch('src.search.embed_text', return_value=mock_vector), \
+        # Mock the registry's embed_text method
+        with patch.object(self.searcher._registry, 'embed_text', return_value=mock_vector), \
              patch('src.search.search_vec', return_value=self.mock_vec_results):
             query = "test query"
             results = self.searcher._vector_search(query)
@@ -176,16 +177,12 @@ class TestHybridSearcher(unittest.TestCase):
         import numpy as np
         mock_vector = np.random.rand(2048).astype(np.float32)
         
+        # Mock the registry methods and store functions
         with patch('src.search.search_fts', return_value=self.mock_fts_results), \
              patch('src.search.search_vec', return_value=self.mock_vec_results), \
-             patch('src.search.embed_text', return_value=mock_vector), \
-             patch('src.search.rerank') as mock_rerank, \
-             patch('src.search.expand_query', return_value=[]):
-            
-            mock_rerank.return_value = [
-                MagicMock(document={'filepath': 'qmd://test/file1.txt'}, score=0.8),
-                MagicMock(document={'filepath': 'qmd://test/file2.txt'}, score=0.7),
-            ]
+             patch.object(self.searcher._registry, 'embed_texts', return_value=np.array([mock_vector])), \
+             patch.object(self.searcher._registry, 'rerank', return_value=[0.8, 0.7]), \
+             patch('src.search.strong_signal_detected', return_value=True):
             
             results = self.searcher.search(query)
             
