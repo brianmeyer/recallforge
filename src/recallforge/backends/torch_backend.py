@@ -1,14 +1,13 @@
 """
-models.py - Model Registry for QMD-VL.
+torch_backend.py - PyTorch Backend for RecallForge.
 
-Singleton holding ALL THREE models resident in memory simultaneously:
-- Qwen3-VL-Embedding-2B (~4GB fp16) — embedder
-- Qwen3-VL-Reranker-2B (~4GB fp16) — reranker
-- Qwen2.5-0.5B-Instruct (~1GB fp16) — query expander
+Uses transformers + torch for model inference.
+Device selection: CUDA > MPS > CPU.
 
-Total ~9GB. Mac mini handles this with headroom. NO swapping/unloading.
-
-All modules (embed.py, rerank.py, expand.py) should import from models.py.
+Model IDs:
+- Embedder: Qwen/Qwen3-VL-Embedding-2B
+- Reranker: Qwen/Qwen3-VL-Reranker-2B
+- Expander: tobil/qmd-query-expansion-qwen3.5-2B (MULTIMODAL Image-Text-to-Text)
 """
 
 import os
@@ -18,50 +17,49 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# =============================================================================
-# Model Registry
-# =============================================================================
-
-@dataclass
-class ModelStatus:
-    """Status of a loaded model."""
-    name: str
-    loaded: bool
-    memory_mb: float = 0.0
+from .base import ModelBackend, BackendInfo
 
 
-class ModelRegistry:
+class TorchBackend(ModelBackend):
     """
-    Singleton registry holding all models resident in memory.
+    PyTorch-based model backend.
     
-    Models load lazily on first use, then stay resident forever.
-    warm_up() loads all three at once for predictable latency.
-    
-    Total memory: ~9GB for all three models (4GB + 4GB + 1GB).
+    Supports CUDA, MPS (Apple Silicon), and CPU.
+    Uses float16 for efficiency on GPU/MPS.
     """
     
-    _instance: Optional['ModelRegistry'] = None
-    
-    def __new__(cls) -> 'ModelRegistry':
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-    
-    def __init__(self):
-        if self._initialized:
-            return
+    def __init__(
+        self,
+        mode: str = "full",
+        device: str = "auto",
+        dtype: str = "float16",
+    ):
+        """
+        Initialize PyTorch backend.
         
-        self._initialized = True
+        Args:
+            mode: Search mode - 'embed', 'hybrid', or 'full'
+            device: 'auto', 'cuda', 'mps', or 'cpu'
+            dtype: 'float16', 'bfloat16', or 'float32'
+        """
+        self._mode = mode
+        self._device_requested = device
+        self._dtype_requested = dtype
         
-        # Lazy-loaded model instances
+        # Lazy-loaded models
         self._embedder = None
         self._reranker = None
         self._expander = None
+        self._expander_tokenizer = None
         
-        # Device and dtype
+        # Resolved device/dtype
         self._device = None
         self._dtype = None
+        
+        # Model IDs
+        self.EMBEDDER_MODEL = "Qwen/Qwen3-VL-Embedding-2B"
+        self.RERANKER_MODEL = "Qwen/Qwen3-VL-Reranker-2B"
+        self.EXPANDER_MODEL = "tobil/qmd-query-expansion-qwen3.5-2B"
         
         # Apply transformers compatibility patch
         self._apply_transformers_patch()
@@ -87,7 +85,8 @@ class ModelRegistry:
     
     def _add_qwen_repo_to_path(self):
         """Add Qwen3-VL-Embedding repo to sys.path."""
-        qwen_repo = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Qwen3-VL-Embedding")
+        # Find the repo relative to this file
+        qwen_repo = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "Qwen3-VL-Embedding")
         qwen_src = os.path.join(qwen_repo, "src")
         
         if os.path.exists(qwen_src) and qwen_src not in sys.path:
@@ -100,10 +99,14 @@ class ModelRegistry:
         
         import torch
         
-        if torch.backends.mps.is_available():
-            self._device = "mps"
-        elif torch.cuda.is_available():
+        if self._device_requested != "auto":
+            self._device = self._device_requested
+            return self._device
+        
+        if torch.cuda.is_available():
             self._device = "cuda"
+        elif torch.backends.mps.is_available():
+            self._device = "mps"
         else:
             self._device = "cpu"
         
@@ -116,15 +119,31 @@ class ModelRegistry:
         if self._dtype is not None:
             return self._dtype
         
+        dtype_map = {
+            "float16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "float32": torch.float32,
+        }
+        
+        requested = dtype_map.get(self._dtype_requested, torch.float16)
+        
+        # MPS doesn't support bfloat16
         device = self._get_device()
+        if device == "mps" and requested == torch.bfloat16:
+            requested = torch.float16
         
-        # MPS doesn't support bfloat16 well
-        if device == "mps":
-            self._dtype = torch.float16
-        else:
-            self._dtype = torch.float16  # Consistent across devices
-        
+        self._dtype = requested
         return self._dtype
+    
+    def _get_attention_implementation(self) -> str:
+        """Get attention implementation for device."""
+        device = self._get_device()
+        if device == "mps":
+            return "eager"
+        elif device == "cuda":
+            return "flash_attention_2"
+        else:
+            return "eager"
     
     # =========================================================================
     # Embedder (Qwen3-VL-Embedding-2B, ~4GB)
@@ -136,36 +155,34 @@ class ModelRegistry:
             return
         
         import torch
-        from models.qwen3_vl_embedding import Qwen3VLEmbedder
+        
+        # Import from Qwen3-VL-Embedding repo
+        try:
+            from models.qwen3_vl_embedding import Qwen3VLEmbedder
+        except ImportError:
+            # Try alternate import path
+            from qwen3_vl_embedding import Qwen3VLEmbedder
         
         device = self._get_device()
         dtype = self._get_dtype()
-        
-        # MPS doesn't support flash attention
-        attn = "eager" if device == "mps" else "flash_attention_2"
+        attn = self._get_attention_implementation()
         
         self._embedder = Qwen3VLEmbedder(
-            model_name_or_path="Qwen/Qwen3-VL-Embedding-2B",
+            model_name_or_path=self.EMBEDDER_MODEL,
             torch_dtype=dtype,
             attn_implementation=attn,
         )
         
-        print(f"[ModelRegistry] Loaded embedder on {device} with {dtype}")
+        print(f"[TorchBackend] Loaded embedder on {device} with {dtype}")
     
     def embed_text(self, text: str) -> np.ndarray:
         """Embed a single text string."""
         return self.embed_texts([text])[0]
     
     def embed_texts(self, texts: List[str]) -> np.ndarray:
-        """
-        Embed multiple text strings in a SINGLE MPS call.
-        
-        This is the key optimization: batch all text embeddings together
-        for much better throughput than sequential calls.
-        """
+        """Embed multiple text strings in a batch."""
         self._load_embedder()
         
-        # Format inputs for Qwen3VLEmbedder
         inputs = [
             {
                 "text": text,
@@ -174,10 +191,8 @@ class ModelRegistry:
             for text in texts
         ]
         
-        # Get embeddings
         embeddings = self._embedder.process(inputs)
         
-        # Convert to numpy float32
         if isinstance(embeddings, np.ndarray):
             return embeddings.astype(np.float32)
         else:
@@ -191,7 +206,7 @@ class ModelRegistry:
         return self.embed_images([image_path])[0]
     
     def embed_images(self, image_paths: List[str]) -> np.ndarray:
-        """Embed multiple images in a single call."""
+        """Embed multiple images in a batch."""
         self._load_embedder()
         
         inputs = [
@@ -201,29 +216,6 @@ class ModelRegistry:
             }
             for path in image_paths
         ]
-        
-        embeddings = self._embedder.process(inputs)
-        
-        if isinstance(embeddings, np.ndarray):
-            return embeddings.astype(np.float32)
-        else:
-            import torch
-            if isinstance(embeddings, torch.Tensor):
-                return embeddings.cpu().numpy().astype(np.float32)
-            return np.array(embeddings, dtype=np.float32)
-    
-    def embed_mixed(self, items: List[Dict[str, Any]]) -> np.ndarray:
-        """Embed mixed text/image content."""
-        self._load_embedder()
-        
-        inputs = []
-        for item in items:
-            inp = {"instruction": "Retrieve content relevant to the query."}
-            if "text" in item:
-                inp["text"] = item["text"]
-            if "image" in item:
-                inp["image"] = item["image"]
-            inputs.append(inp)
         
         embeddings = self._embedder.process(inputs)
         
@@ -245,15 +237,18 @@ class ModelRegistry:
             return
         
         import torch
-        from models.qwen3_vl_reranker import Qwen3VLReranker
+        
+        try:
+            from models.qwen3_vl_reranker import Qwen3VLReranker
+        except ImportError:
+            from qwen3_vl_reranker import Qwen3VLReranker
         
         device = self._get_device()
         dtype = self._get_dtype()
-        
-        attn = "eager" if device == "mps" else "flash_attention_2"
+        attn = self._get_attention_implementation()
         
         self._reranker = Qwen3VLReranker(
-            model_name_or_path="Qwen/Qwen3-VL-Reranker-2B",
+            model_name_or_path=self.RERANKER_MODEL,
             torch_dtype=dtype,
             attn_implementation=attn,
         )
@@ -263,20 +258,19 @@ class ModelRegistry:
         self._reranker.model.to(self._reranker.device)
         self._reranker.score_linear.to(self._reranker.device)
         
-        print(f"[ModelRegistry] Loaded reranker on {device} with {dtype}")
+        print(f"[TorchBackend] Loaded reranker on {device} with {dtype}")
     
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
-        """
-        Rerank documents for a query.
-        
-        Returns list of relevance scores (0.0 to 1.0) in same order as documents.
-        """
+        """Rerank documents for a query."""
         if not documents:
             return []
         
+        if not self.needs_reranker():
+            # Hybrid/full mode not active, return neutral scores
+            return [0.5] * len(documents)
+        
         self._load_reranker()
         
-        # Build inputs
         doc_texts = [
             d.get("text", "") or d.get("text_body", "") or ""
             for d in documents
@@ -292,11 +286,11 @@ class ModelRegistry:
             scores = self._reranker.process(inputs)
             return list(scores) if scores else [0.0] * len(documents)
         except Exception as e:
-            print(f"[ModelRegistry] Rerank error: {e}")
-            return [0.5] * len(documents)  # Neutral fallback
+            print(f"[TorchBackend] Rerank error: {e}")
+            return [0.5] * len(documents)
     
     # =========================================================================
-    # Query Expander (Qwen2.5-0.5B-Instruct, ~1GB)
+    # Query Expander (tobil/qmd-query-expansion-qwen3.5-2B, ~4GB)
     # =========================================================================
     
     def _load_expander(self):
@@ -309,38 +303,34 @@ class ModelRegistry:
         
         device = self._get_device()
         dtype = self._get_dtype()
+        attn = self._get_attention_implementation()
         
-        attn = "eager" if device == "mps" else "flash_attention_2"
+        model_name = self.EXPANDER_MODEL
         
-        model_name = "Qwen/Qwen2.5-0.5B-Instruct"
+        self._expander_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self._expander = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            attn_implementation=attn,
+        ).to(device)
         
-        self._expander = {
-            "tokenizer": AutoTokenizer.from_pretrained(model_name),
-            "model": AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=dtype,
-                attn_implementation=attn,
-            ).to(device),
-        }
+        self._expander.eval()
         
-        self._expander["model"].eval()
-        
-        print(f"[ModelRegistry] Loaded expander ({model_name}) on {device} with {dtype}")
+        print(f"[TorchBackend] Loaded expander ({model_name}) on {device} with {dtype}")
     
     def expand_query(self, query: str) -> Dict[str, str]:
-        """
-        Generate query expansions.
+        """Generate query expansions."""
+        if not self.needs_expander():
+            # Full mode not active, return original query
+            return {"lex": query, "vec": query, "hyde": query}
         
-        Returns dict with keys: 'lex', 'vec', 'hyde'
-        Each value is a string expansion.
-        """
         self._load_expander()
         
         import torch
         import json
         
-        tokenizer = self._expander["tokenizer"]
-        model = self._expander["model"]
+        tokenizer = self._expander_tokenizer
+        model = self._expander
         
         prompt = f"""<|im_start|>system
 You are a query expansion assistant. Given a search query, generate 3 variations:
@@ -402,104 +392,66 @@ Query: {query}<|im_end|>
     # Warm-up and Status
     # =========================================================================
     
-    def warm_up(self):
-        """
-        Load all three models at once.
-        
-        Call this on server start so first query isn't slow.
-        """
+    def warm_up(self) -> None:
+        """Preload all models for current mode."""
         import time
         
-        print("[ModelRegistry] Warming up all models...")
+        print(f"[TorchBackend] Warming up models (mode={self._mode})...")
         start = time.time()
         
-        # Load embedder first (largest, most commonly used)
+        # Always load embedder
         self._load_embedder()
         t1 = time.time()
-        print(f"[ModelRegistry]   Embedder loaded in {t1 - start:.1f}s")
+        print(f"[TorchBackend]   Embedder loaded in {t1 - start:.1f}s")
         
-        # Load reranker
-        self._load_reranker()
-        t2 = time.time()
-        print(f"[ModelRegistry]   Reranker loaded in {t2 - t1:.1f}s")
+        # Load reranker for hybrid/full
+        if self.needs_reranker():
+            self._load_reranker()
+            t2 = time.time()
+            print(f"[TorchBackend]   Reranker loaded in {t2 - t1:.1f}s")
         
-        # Load expander
-        self._load_expander()
-        t3 = time.time()
-        print(f"[ModelRegistry]   Expander loaded in {t3 - t2:.1f}s")
+        # Load expander for full
+        if self.needs_expander():
+            self._load_expander()
+            t3 = time.time()
+            print(f"[TorchBackend]   Expander loaded in {t3 - t2:.1f}s")
         
-        print(f"[ModelRegistry] All models ready in {t3 - start:.1f}s total")
+        print(f"[TorchBackend] All models ready in {time.time() - start:.1f}s total")
     
-    def status(self) -> Dict[str, Any]:
-        """Get status of all models."""
+    def get_info(self) -> BackendInfo:
+        """Return backend information."""
         import torch
         
-        result = {
-            "embedder_loaded": self._embedder is not None,
-            "reranker_loaded": self._reranker is not None,
-            "expander_loaded": self._expander is not None,
-            "device": self._get_device(),
-            "dtype": str(self._get_dtype()),
-        }
+        device = self._get_device()
+        dtype = str(self._get_dtype())
         
-        # Memory usage
-        if torch.backends.mps.is_available():
-            try:
-                # MPS doesn't have a direct memory query, estimate from loaded models
-                mem = 0
-                if self._embedder:
-                    mem += 4000  # ~4GB
-                if self._reranker:
-                    mem += 4000  # ~4GB
-                if self._expander:
-                    mem += 1000  # ~1GB
-                result["memory_allocated_gb"] = mem / 1000
-            except:
-                pass
+        # Estimate memory
+        mem = 0
+        if self._embedder:
+            mem += 4000  # ~4GB
+        if self._reranker:
+            mem += 4000  # ~4GB
+        if self._expander:
+            mem += 4000  # ~4GB (larger model)
         
-        return result
-
-
-# =============================================================================
-# Module-level convenience functions
-# =============================================================================
-
-_registry: Optional[ModelRegistry] = None
-
-
-def get_registry() -> ModelRegistry:
-    """Get the singleton ModelRegistry instance."""
-    global _registry
-    if _registry is None:
-        _registry = ModelRegistry()
-    return _registry
-
-
-def warm_up():
-    """Load all models at once."""
-    get_registry().warm_up()
-
-
-def status() -> Dict[str, Any]:
-    """Get model status."""
-    return get_registry().status()
-
-
-def embed_text(text: str) -> np.ndarray:
-    """Convenience: embed single text."""
-    return get_registry().embed_text(text)
-
-
-def embed_texts(texts: List[str]) -> np.ndarray:
-    """Convenience: embed multiple texts (batch)."""
-    return get_registry().embed_texts(texts)
-
-
-def embed_image(image_path: str) -> np.ndarray:
-    """Convenience: embed single image."""
-    return get_registry().embed_image(image_path)
-
-
-def embed_images(image_paths: List[str]) -> np.ndarray:
-    """Convenience: embed multiple images (batch)."""
-    return get_registry().embed_images(image_paths)
+        return BackendInfo(
+            name="torch",
+            device=device,
+            dtype=dtype,
+            embedder_loaded=self._embedder is not None,
+            reranker_loaded=self._reranker is not None,
+            expander_loaded=self._expander is not None,
+            memory_allocated_gb=mem / 1000,
+            supports_images=True,
+            quantization=None,
+        )
+    
+    def set_mode(self, mode: str) -> None:
+        """Set the search mode."""
+        if mode not in ("embed", "hybrid", "full"):
+            raise ValueError(f"Invalid mode: {mode}")
+        self._mode = mode
+    
+    def get_mode(self) -> str:
+        """Get current search mode."""
+        return self._mode

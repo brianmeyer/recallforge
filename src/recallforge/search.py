@@ -1,33 +1,23 @@
 """
-search.py - Full hybrid search pipeline for QMD-VL.
+search.py - Hybrid Search Pipeline for RecallForge.
 
-Combines BM25, vector search, query expansion, reranking, and RRF fusion.
-Uses TRUE CONCURRENCY with ThreadPoolExecutor for parallel searches.
+Combines BM25, vector search, query expansion, and reranking
+with tiered modes:
+- embed: Embedder only (fastest, lowest memory)
+- hybrid: Embedder + Reranker
+- full: Embedder + Reranker + Query Expander (best quality)
 
-Pipeline:
-1. BM25 probe (20 results) + query expansion concurrently (expansion doesn't need probe results)
-2. All searches via ThreadPoolExecutor(max_workers=8):
-   - BM25(original) + BM25(lex expansions)
-   - Vector(original) + Vector(vec/hyde expansions)  
-3. RRF fusion - combine result lists
-4. Chunk selection - pick best chunk per document
-5. Cross-encoder reranking - refine relevance
-6. Score blending - combine RRF and reranker scores
-7. Return top K
-
-Target latency: 300-400ms total (down from 800-1200ms sequential)
+Uses true concurrency with ThreadPoolExecutor for parallel searches.
 """
 
 import concurrent.futures
-import math
+import json
+import os
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 
-from src import db
-from src.store import SearchResult, search_fts, search_vec
-from src.models import get_registry
-from src.expand import expand_query, strong_signal_detected
-from src.rerank import RerankResult
+from .backends.base import ModelBackend
+from .storage.base import StorageBackend, SearchResult
 
 
 @dataclass
@@ -51,14 +41,20 @@ class HybridResult:
 
 class HybridSearcher:
     """
-    Full hybrid search pipeline with true concurrency.
+    Full hybrid search pipeline with tiered modes.
     
-    Uses ThreadPoolExecutor for parallel execution of all search variants.
-    LanceDB is thread-safe for concurrent reads (confirmed).
+    Modes:
+    - embed: Embedder only. Vector + FTS, no reranking or expansion.
+    - hybrid: + Reranker. Cross-encoder refinement.
+    - full: + Query Expander. Lex/vec/hyde expansions.
+    
+    Uses ThreadPoolExecutor for concurrent searches.
     """
     
     def __init__(
         self,
+        backend: ModelBackend,
+        storage: StorageBackend,
         limit: int = 10,
         fts_probe_limit: int = 20,
         rrf_k: int = 60,
@@ -70,24 +66,27 @@ class HybridSearcher:
         Initialize hybrid searcher.
         
         Args:
+            backend: Model backend (TorchBackend or MLXBackend)
+            storage: Storage backend (LanceDBBackend)
             limit: Final number of results to return
-            fts_probe_limit: How many BM25 results to get for probing
-            rrf_k: RRF fusion constant (higher = more weight to lower ranks)
+            fts_probe_limit: How many BM25 results to retrieve
+            rrf_k: RRF fusion constant
             collection: Optional collection filter
-            content_type: Optional content type filter ('text' or 'image')
-            max_workers: ThreadPoolExecutor max_workers for parallel searches
+            content_type: Optional content type filter
+            max_workers: ThreadPoolExecutor workers for parallel searches
         """
+        self.backend = backend
+        self.storage = storage
         self.limit = limit
         self.fts_probe_limit = fts_probe_limit
         self.rrf_k = rrf_k
         self.collection = collection
         self.content_type = content_type
         self.max_workers = max_workers
-        self._registry = get_registry()
     
     def _bm25_probe(self, query: str) -> List[SearchResult]:
-        """Run initial BM25 probe to detect strong signal."""
-        return search_fts(
+        """Run initial BM25 probe."""
+        return self.storage.search_fts(
             query,
             limit=self.fts_probe_limit,
             collection=self.collection,
@@ -95,8 +94,8 @@ class HybridSearcher:
         )
     
     def _bm25_search(self, query: str) -> List[SearchResult]:
-        """Run BM25 search for a query."""
-        return search_fts(
+        """Run BM25 search."""
+        return self.storage.search_fts(
             query,
             limit=self.fts_probe_limit,
             collection=self.collection,
@@ -104,45 +103,59 @@ class HybridSearcher:
         )
     
     def _vector_search(self, query: str) -> List[SearchResult]:
-        """Run vector search for a query."""
-        vector = self._registry.embed_text(query)
-        return search_vec(
+        """Run vector search."""
+        vector = self.backend.embed_text(query)
+        return self.storage.search_vec(
             vector.tolist() if hasattr(vector, 'tolist') else list(vector),
             limit=self.fts_probe_limit,
             collection=self.collection,
             content_type=self.content_type,
         )
     
-    def _run_parallel_searches_with_batch_embed(
+    def _expand_query(self, query: str) -> List[Dict[str, str]]:
+        """Expand query into variants (full mode only)."""
+        if not self.backend.needs_expander():
+            return []
+        
+        expansions = self.backend.expand_query(query)
+        return [
+            {"type": "lex", "text": expansions.get("lex", query)},
+            {"type": "vec", "text": expansions.get("vec", query)},
+            {"type": "hyde", "text": expansions.get("hyde", query)},
+        ]
+    
+    def _strong_signal_detected(self, fts_results: List[SearchResult]) -> bool:
+        """Detect if BM25 has strong signal (skip expansion)."""
+        if len(fts_results) < 2:
+            return False
+        top_score = fts_results[0].score
+        second_score = fts_results[1].score
+        return (top_score - second_score) > 0.3
+    
+    def _run_parallel_searches(
         self,
         query: str,
         expansions: List[Dict[str, str]],
     ) -> Dict[str, List[SearchResult]]:
-        """
-        Optimized parallel search with batch embedding.
-        
-        First embed all vector queries in a single batch, then run searches.
-        This is faster than embedding sequentially during search.
-        """
+        """Run all searches in parallel with batch embedding optimization."""
         all_results: Dict[str, List[SearchResult]] = {}
         
-        # Collect all unique queries for vector search
-        vec_queries = [query]  # original
-        vec_expansions = [exp['text'] for exp in expansions if exp['type'] == 'vec'][:3]
-        hyde_expansions = [exp['text'] for exp in expansions if exp['type'] == 'hyde'][:3]
+        # Collect all queries for vector search
+        all_vec_queries = [query]
+        if expansions:
+            vec_expansions = [e["text"] for e in expansions if e["type"] == "vec"][:3]
+            hyde_expansions = [e["text"] for e in expansions if e["type"] == "hyde"][:3]
+            all_vec_queries.extend(vec_expansions)
+            all_vec_queries.extend(hyde_expansions)
         
-        all_vec_queries = vec_queries + vec_expansions + hyde_expansions
-        
-        # Batch embed all at once (single MPS call)
+        # Batch embed all vector queries
+        vectors_by_query = {}
         if all_vec_queries:
             try:
-                all_vectors = self._registry.embed_texts(all_vec_queries)
+                all_vectors = self.backend.embed_texts(all_vec_queries)
                 vectors_by_query = {q: v for q, v in zip(all_vec_queries, all_vectors)}
             except Exception as e:
-                print(f"Batch embedding failed, falling back to sequential: {e}")
-                vectors_by_query = {}
-        else:
-            vectors_by_query = {}
+                print(f"Batch embedding failed: {e}")
         
         # Build search tasks
         search_tasks: List[tuple] = []
@@ -150,59 +163,59 @@ class HybridSearcher:
         # Original query - BM25
         search_tasks.append(('original_fts', self._bm25_search, (query,)))
         
-        # Original vector (use pre-computed if available)
+        # Original vector
         if query in vectors_by_query:
             vec = vectors_by_query[query]
-            search_tasks.append(
-                ('original_vec', 
-                 lambda v: search_vec(
-                     v.tolist() if hasattr(v, 'tolist') else list(v),
-                     limit=self.fts_probe_limit,
-                     collection=self.collection,
-                     content_type=self.content_type,
-                 ),
-                 (vec,))
-            )
+            search_tasks.append((
+                'original_vec',
+                lambda v: self.storage.search_vec(
+                    v.tolist() if hasattr(v, 'tolist') else list(v),
+                    limit=self.fts_probe_limit,
+                    collection=self.collection,
+                    content_type=self.content_type,
+                ),
+                (vec,)
+            ))
         
         # Lexical expansions - BM25 only
-        lex_queries = [exp['text'] for exp in expansions if exp['type'] == 'lex']
+        lex_queries = [e["text"] for e in expansions if e["type"] == "lex"] if expansions else []
         for i, lex_q in enumerate(lex_queries[:3]):
             search_tasks.append((f'lex_{i}', self._bm25_search, (lex_q,)))
         
-        # Vector expansions - use pre-computed vectors
-        for i, vec_q in enumerate(vec_expansions):
+        # Vector expansions
+        for i, vec_q in enumerate([e["text"] for e in expansions if e["type"] == "vec"][:3] if expansions else []):
             if vec_q in vectors_by_query:
                 vec = vectors_by_query[vec_q]
-                search_tasks.append(
-                    (f'vec_{i}',
-                     lambda v: search_vec(
-                         v.tolist() if hasattr(v, 'tolist') else list(v),
-                         limit=self.fts_probe_limit,
-                         collection=self.collection,
-                         content_type=self.content_type,
-                     ),
-                     (vec,))
-                )
+                search_tasks.append((
+                    f'vec_{i}',
+                    lambda v: self.storage.search_vec(
+                        v.tolist() if hasattr(v, 'tolist') else list(v),
+                        limit=self.fts_probe_limit,
+                        collection=self.collection,
+                        content_type=self.content_type,
+                    ),
+                    (vec,)
+                ))
         
-        # Hyde expansions - use pre-computed vectors
-        for i, hyde_q in enumerate(hyde_expansions):
+        # Hyde expansions
+        for i, hyde_q in enumerate([e["text"] for e in expansions if e["type"] == "hyde"][:3] if expansions else []):
             if hyde_q in vectors_by_query:
                 vec = vectors_by_query[hyde_q]
-                search_tasks.append(
-                    (f'hyde_{i}',
-                     lambda v: search_vec(
-                         v.tolist() if hasattr(v, 'tolist') else list(v),
-                         limit=self.fts_probe_limit,
-                         collection=self.collection,
-                         content_type=self.content_type,
-                     ),
-                     (vec,))
-                )
+                search_tasks.append((
+                    f'hyde_{i}',
+                    lambda v: self.storage.search_vec(
+                        v.tolist() if hasattr(v, 'tolist') else list(v),
+                        limit=self.fts_probe_limit,
+                        collection=self.collection,
+                        content_type=self.content_type,
+                    ),
+                    (vec,)
+                ))
         
         # Execute all searches in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_key = {
-                executor.submit(func, *args): key 
+                executor.submit(func, *args): key
                 for key, func, args in search_tasks
             }
             
@@ -221,11 +234,7 @@ class HybridSearcher:
         self,
         all_results: Dict[str, List[SearchResult]],
     ) -> List[SearchResult]:
-        """
-        Apply RRF (Reciprocal Rank Fusion) to combine result lists.
-        
-        Each doc gets score = Σ weight_i / (k + rank_i + 1) from each list it appears in.
-        """
+        """Apply RRF (Reciprocal Rank Fusion) to combine results."""
         combined: Dict[str, Dict[str, Any]] = {}
         k = self.rrf_k
         
@@ -263,16 +272,10 @@ class HybridSearcher:
             final_results.append(result)
         
         final_results.sort(key=lambda x: x.score, reverse=True)
-        return final_results[:self.limit * 2]  # Over-select for reranking
+        return final_results[:self.limit * 2]
     
     def _select_best_chunk(self, result: SearchResult) -> Dict[str, Any]:
-        """
-        Select the best chunk from a document for reranking.
-        
-        For now, return the full result as-is. In a more sophisticated
-        implementation, we'd split the document into chunks and pick
-        the one with the best query term overlap.
-        """
+        """Select the best chunk from a document for reranking."""
         return {
             'text': result.body or result.context or "",
             'filepath': result.filepath,
@@ -285,44 +288,34 @@ class HybridSearcher:
         candidates: List[SearchResult],
         query: str,
     ) -> Dict[str, float]:
-        """
-        Rerank candidate documents with cross-encoder.
-        
-        Returns mapping of filepath -> rerank score.
-        """
+        """Rerank candidates with cross-encoder."""
         if not candidates:
             return {}
         
-        # Select best chunks for reranking
-        chunks = [self._select_best_chunk(r) for r in candidates]
+        if not self.backend.needs_reranker():
+            return {c.filepath: 0.5 for c in candidates}
         
-        # Rerank using registry
+        chunks = [self._select_best_chunk(c) for c in candidates]
+        
         try:
-            scores = self._registry.rerank(query, chunks)
-            return {
-                c.filepath: s 
-                for c, s in zip(candidates, scores)
-            }
+            scores = self.backend.rerank(query, chunks)
+            return {c.filepath: s for c, s in zip(candidates, scores)}
         except Exception as e:
             print(f"Reranking failed: {e}")
-            return {c.filepath: 0.5 for c in candidates}  # Neutral fallback
+            return {c.filepath: 0.5 for c in candidates}
     
     def _blend_scores(
         self,
         rrf_results: List[SearchResult],
         rerank_scores: Dict[str, float],
     ) -> List[HybridResult]:
-        """
-        Blend RRF scores with reranker scores.
-        
-        Top-ranked RRF results keep more of their RRF signal.
-        """
+        """Blend RRF scores with reranker scores."""
         hybrid_results = []
         
         for rank, result in enumerate(rrf_results):
             rrf_rank = rank + 1
             
-            # RRF weight: high for top results, decaying lower
+            # RRF weight: higher for top results
             if rrf_rank <= 3:
                 rrf_weight = 0.75
             elif rrf_rank <= 10:
@@ -330,13 +323,8 @@ class HybridSearcher:
             else:
                 rrf_weight = 0.40
             
-            # RRF score (already normalized by RRF)
             rrf_score = result.score
-            
-            # Reranker score (0-1)
             rerank_score = rerank_scores.get(result.filepath, 0.0)
-            
-            # Blended score
             blended = rrf_weight * rrf_score + (1 - rrf_weight) * rerank_score
             
             hybrid_results.append(HybridResult(
@@ -347,7 +335,7 @@ class HybridSearcher:
                 hash=result.hash,
                 docid=result.docid,
                 collection=result.collection,
-                modified_at="",
+                modified_at=result.modified_at,
                 body_length=result.body_length,
                 body=result.body,
                 score=blended,
@@ -356,18 +344,18 @@ class HybridSearcher:
                 source=result.source,
             ))
         
-        # Sort by blended score
         hybrid_results.sort(key=lambda x: x.score, reverse=True)
         return hybrid_results[:self.limit]
     
     def search(self, query: str) -> List[HybridResult]:
         """
-        Run full hybrid search pipeline with true concurrency.
+        Run full hybrid search pipeline.
         
-        1. BM25 probe + query expansion concurrently (via ThreadPoolExecutor)
-        2. All BM25 and vector searches fire in parallel
+        Steps:
+        1. BM25 probe + query expansion (parallel if full mode)
+        2. All searches in parallel
         3. RRF fusion
-        4. Cross-encoder reranking
+        4. Cross-encoder reranking (if hybrid/full)
         5. Score blending
         
         Args:
@@ -376,56 +364,66 @@ class HybridSearcher:
         Returns:
             List of HybridResult objects (top K)
         """
-        # Step 1: Run BM25 probe and query expansion concurrently
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            # Submit probe and expansion
-            probe_future = executor.submit(self._bm25_probe, query)
-            expansion_future = executor.submit(expand_query, query, None)
-            
-            # Wait for probe to check for strong signal
-            fts_results = probe_future.result()
-            
-            # Check for strong signal
-            if strong_signal_detected(fts_results):
-                # Strong signal - use original query only, skip expansion
-                expansions = []
-            else:
-                # Wait for expansion
-                expansions_result = expansion_future.result()
-                expansions = [{'type': e.type, 'text': e.text} for e in expansions_result]
+        # Step 1: BM25 probe
+        fts_results = self._bm25_probe(query)
         
-        # Step 2: Parallel searches with batch embedding optimization
-        all_results = self._run_parallel_searches_with_batch_embed(query, expansions)
+        # Step 2: Query expansion (full mode only)
+        expansions = []
+        if self.backend.needs_expander() and not self._strong_signal_detected(fts_results):
+            expansions = self._expand_query(query)
         
-        # Step 3: RRF fusion
+        # Step 3: Parallel searches
+        all_results = self._run_parallel_searches(query, expansions)
+        
+        # Add original FTS results
+        all_results['original_fts'] = fts_results
+        
+        # Step 4: RRF fusion
         candidates = self._reciprocal_rank_fusion(all_results)
         
-        # Step 4: Rerank candidates
+        # Step 5: Reranking (hybrid/full mode)
         rerank_scores = self._rerank_candidates(candidates, query)
         
-        # Step 5: Blend scores
+        # Step 6: Blend scores
         return self._blend_scores(candidates, rerank_scores)
 
 
-# Convenience function for single call
 def hybrid_query(
     query: str,
+    backend: Optional[ModelBackend] = None,
+    storage: Optional[StorageBackend] = None,
     limit: int = 10,
     collection: Optional[str] = None,
     content_type: Optional[str] = None,
 ) -> List[HybridResult]:
-    """Convenience: run full hybrid search."""
+    """
+    Convenience function for hybrid search.
+    
+    Args:
+        query: Search query
+        backend: Model backend (default: get_backend())
+        storage: Storage backend (default: get_storage())
+        limit: Max results
+        collection: Optional collection filter
+        content_type: Optional content type filter
+    
+    Returns:
+        List of HybridResult objects
+    """
+    if backend is None:
+        from . import get_backend
+        backend = get_backend()
+    
+    if storage is None:
+        from . import get_storage
+        storage = get_storage()
+    
     searcher = HybridSearcher(
+        backend=backend,
+        storage=storage,
         limit=limit,
         collection=collection,
         content_type=content_type,
     )
+    
     return searcher.search(query)
-
-
-def clear_expand_and_rerank_caches() -> None:
-    """Clear both expand and rerank caches."""
-    from src.expand import clear_expand_cache
-    from src.rerank import clear_rerank_cache
-    clear_expand_cache()
-    clear_rerank_cache()
