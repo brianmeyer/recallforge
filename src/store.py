@@ -56,6 +56,7 @@ class SearchResult:
     body_length: int
     score: float
     source: str  # 'fts' | 'vec'
+    content_type: str = "text"  # 'text' | 'image'
     chunk_pos: int = 0
     body: Optional[str] = None
 
@@ -533,6 +534,7 @@ def _bm25_fallback(
     query: str,
     limit: int = 20,
     collection: Optional[str] = None,
+    content_type: Optional[str] = None,
 ) -> List[SearchResult]:
     """In-memory BM25 fallback when LanceDB FTS index fails."""
     if db.embeddings_table is None:
@@ -548,6 +550,11 @@ def _bm25_fallback(
 
     if collection:
         rows = rows[rows["collection"] == collection]
+        if rows.empty:
+            return []
+
+    if content_type:
+        rows = rows[rows["content_type"] == content_type]
         if rows.empty:
             return []
 
@@ -621,10 +628,10 @@ def search_fts(
         results = builder.to_list()
     except Exception as e:
         print(f"FTS search error, falling back to in-memory BM25: {e}")
-        return _bm25_fallback(trimmed, limit, collection)
+        return _bm25_fallback(trimmed, limit, collection, content_type=content_type)
     
     if not results:
-        return _bm25_fallback(trimmed, limit, collection)
+        return _bm25_fallback(trimmed, limit, collection, content_type=content_type)
     
     # Normalize scores to [0, 1]
     max_score = max(r.get("_score", 0) for r in results) or 1
@@ -651,7 +658,8 @@ def search_fts(
 def search_vec(
     vector: List[float],
     limit: int = 20,
-    collection: Optional[str] = None
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None
 ) -> List[SearchResult]:
     """Vector nearest-neighbor search."""
     if db.embeddings_table is None:
@@ -664,6 +672,11 @@ def search_vec(
     filter_clause = None
     if collection:
         filter_clause = f"collection = '{escape_sql(collection)}'"
+    if content_type:
+        if filter_clause:
+            filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
+        else:
+            filter_clause = f"content_type = '{escape_sql(content_type)}'"
     
     # Run vector search with cosine metric (distance in [0, 2])
     builder = db.embeddings_table.search(vector).metric("cosine").limit(limit * 2)
@@ -786,6 +799,7 @@ def _make_search_result(row: Dict[str, Any], score: float, source: str) -> Searc
     collection = row.get("collection", "")
     file_path = row.get("file_path", "")
     content_hash = row.get("content_hash", "")
+    content_type = row.get("content_type", "text")
     
     # Get body from content table
     body = get_content(content_hash) or row.get("text_body", "")
@@ -802,9 +816,207 @@ def _make_search_result(row: Dict[str, Any], score: float, source: str) -> Searc
         body_length=len(body),
         score=score,
         source=source,
+        content_type=content_type,
         chunk_pos=row.get("pos", 0) or 0,
         body=body,
     )
+
+
+# =============================================================================
+# Image Indexing
+# =============================================================================
+
+def insert_image(
+    path: str,
+    collection: str,
+    embed_func
+) -> str:
+    """
+    Index an image file.
+    
+    Args:
+        path: Absolute path to image file
+        collection: Collection name
+        embed_func: Function(path) -> List[float]
+    
+    Returns:
+        Content hash of the indexed image
+    """
+    import os
+    import time
+    from pathlib import Path
+    
+    # Generate content hash from file
+    content_hash = hash_content(path)  # Hash of file path for dedup
+    
+    # Extract metadata
+    title = os.path.splitext(os.path.basename(path))[0]
+    modified_at = int(os.path.getmtime(path) * 1000)
+    created_at = int(os.path.getctime(path) * 1000)
+    file_size = os.path.getsize(path)
+    
+    # Extract extension
+    ext = Path(path).suffix.lower()
+    
+    # Store content (as path reference)
+    insert_content(content_hash, path, content_type="image")
+    
+    # Insert document registry
+    insert_document(
+        collection=collection,
+        file_path=path,
+        title=title,
+        content_hash=content_hash,
+        content_type="image",
+        created_at=created_at,
+        modified_at=modified_at,
+    )
+    
+    # Embed the image
+    vector = embed_func(path)
+    
+    # Insert embedding with content_type='image'
+    now = int(time.time() * 1000)
+    hash_seq = f"{content_hash}_0"
+    
+    # Clean up existing
+    try:
+        if db.embeddings_table:
+            db.embeddings_table.delete(f"hash_seq = '{escape_sql(hash_seq)}'")
+    except Exception:
+        pass
+    
+    if db.embeddings_table:
+        db.embeddings_table.add([{
+            "hash_seq": hash_seq,
+            "content_hash": content_hash,
+            "collection": collection,
+            "file_path": path,
+            "content_type": "image",
+            "title": title,
+            "text_body": "",  # Images don't have text body
+            "seq": 0,
+            "pos": 0,
+            "model": "Qwen3-VL-Embedding-2B",
+            "embedded_at": now,
+            "vector": vector,
+        }])
+    
+    # Rebuild FTS index
+    db.ensure_fts_index(force_rebuild=True)
+    
+    return content_hash
+    
+    return content_hash
+
+
+def search_fts(
+    query: str,
+    limit: int = 20,
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None
+) -> List[SearchResult]:
+    """Full-text search using LanceDB Tantivy on embeddings.text_body.
+    Falls back to in-memory BM25 if Tantivy fails."""
+    if db.embeddings_table is None:
+        raise RuntimeError("Database not initialized")
+    
+    trimmed = query.strip()
+    if not trimmed:
+        return []
+    
+    db.ensure_fts_index()
+    
+    # Build filter
+    filter_clause = None
+    if collection:
+        filter_clause = f"collection = '{escape_sql(collection)}'"
+    if content_type:
+        if filter_clause:
+            filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
+        else:
+            filter_clause = f"content_type = '{escape_sql(content_type)}'"
+    
+    # Run FTS search
+    try:
+        builder = db.embeddings_table.search(trimmed, query_type="fts").limit(limit * 2)
+        if filter_clause:
+            builder = builder.where(filter_clause)
+        
+        results = builder.to_list()
+    except Exception as e:
+        print(f"FTS search error, falling back to in-memory BM25: {e}")
+        return _bm25_fallback(trimmed, limit, collection, content_type=content_type)
+    
+    if not results:
+        return _bm25_fallback(trimmed, limit, collection, content_type=content_type)
+    
+    # Normalize scores to [0, 1]
+    max_score = max(r.get("_score", 0) for r in results) or 1
+    
+    # Dedupe by filepath, keep best score
+    seen: Dict[str, SearchResult] = {}
+    for r in results:
+        filepath = f"qmd://{r['collection']}/{r['file_path']}"
+        score = r.get("_score", 0) / max_score
+        
+        if filepath in seen:
+            if score > seen[filepath].score:
+                seen[filepath] = _make_search_result(r, score, "fts")
+        else:
+            seen[filepath] = _make_search_result(r, score, "fts")
+    
+    return sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
+
+
+def search_vec(
+    vector: List[float],
+    limit: int = 20,
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None
+) -> List[SearchResult]:
+    """Vector nearest-neighbor search."""
+    if db.embeddings_table is None:
+        raise RuntimeError("Database not initialized")
+    
+    if not has_vectors():
+        return []
+    
+    # Build filter
+    filter_clause = None
+    if collection:
+        filter_clause = f"collection = '{escape_sql(collection)}'"
+    if content_type:
+        if filter_clause:
+            filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
+        else:
+            filter_clause = f"content_type = '{escape_sql(content_type)}'"
+    
+    # Run vector search with cosine metric (distance in [0, 2])
+    builder = db.embeddings_table.search(vector).metric("cosine").limit(limit * 2)
+    if filter_clause:
+        builder = builder.where(filter_clause)
+    
+    results = builder.to_list()
+    
+    if not results:
+        return []
+    
+    # Dedupe by filepath, keep best (smallest) distance
+    seen: Dict[str, SearchResult] = {}
+    for r in results:
+        filepath = f"qmd://{r['collection']}/{r['file_path']}"
+        distance = r.get("_distance", 1.0)
+        # Convert distance to similarity score (1 - dist/2 for cosine-like)
+        score = 1.0 - distance / 2.0
+        
+        if filepath in seen:
+            if score > seen[filepath].score:
+                seen[filepath] = _make_search_result(r, score, "vec")
+        else:
+            seen[filepath] = _make_search_result(r, score, "vec")
+    
+    return sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
 
 
 # (os imported at top)
