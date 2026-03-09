@@ -1,354 +1,239 @@
-# QMD-VL Architecture
+# RecallForge Architecture
 
-QMD-VL is a Python vision-language memory search system built on LanceDB and Qwen3-VL-Embedding.
+RecallForge is a cross-modal vision-language search engine built on LanceDB and Qwen3-VL-Embedding.
+It is inspired by and builds upon [QMD](https://github.com/tobil/qmd) by [Tobi](https://github.com/tobil).
 
 ## Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                           QMD-VL Pipeline                                │
+│                        RecallForge Pipeline                              │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────────┐   │
-│  │   Document   │───>│   Chunking   │───>│   Embedding (Qwen3-VL)   │   │
-│  │   Ingestion  │    │   + Smart    │    │   2048-dim vectors       │   │
-│  │              │    │   Breaks     │    │   MPS / CUDA / CPU      │   │
+│  │   Document   │───>│   Chunking   │───>│   ModelBackend           │   │
+│  │   Ingestion  │    │   + Smart    │    │   (Torch or MLX)         │   │
+│  │              │    │   Breaks     │    │   2048-dim vectors       │   │
 │  └──────────────┘    └──────────────┘    └──────────────────────────┘   │
 │         │                   │                        │                   │
 │         ▼                   ▼                        ▼                   │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                     LanceDB Storage                               │   │
+│  │                   StorageBackend (LanceDB)                        │   │
 │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐  │   │
 │  │  │ embeddings  │  │  documents  │  │   content   │  │  cache  │  │   │
-│  │  │ + FTS index │  │  registry   │  │   (bodies)  │  │ (LLM)   │  │   │
+│  │  │ + FTS index │  │  registry   │  │   (bodies)  │  │         │  │   │
 │  │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘  │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                    │                                     │
 │                                    ▼                                     │
 │  ┌──────────────────────────────────────────────────────────────────┐   │
-│  │                     Search Pipeline                               │   │
+│  │                  HybridSearcher Pipeline                          │   │
 │  │                                                                   │   │
 │  │   Query ──┬──> BM25 (Tantivy FTS) ──┐                           │   │
 │  │           │                          │                            │   │
 │  │           └──> Vector Search ───────┼──> RRF Fusion ──> Rerank   │   │
 │  │                                       │                  │        │   │
-│  │                                       ▼                  ▼        │   │
-│  │                              Scored Results ──> Final Ranking    │   │
+│  │   [full mode: Query Expansion]        ▼                  ▼        │   │
+│  │   Lex/Vec/HyDE expansions ──> Scored Results ──> Final Ranking   │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Components
+## Architecture Layers
 
-### 1. Document Ingestion (`store.py`)
+### 1. ModelBackend ABC (`src/recallforge/backends/base.py`)
 
-- **`insert_document()`**: Register document in `documents` table
-- **`insert_content()`**: Store full text in `content` table (content-addressed by hash)
-- **`insert_embedding()`**: Store chunk embedding in `embeddings` table
-- **`index_document()`**: Full pipeline - hash, chunk, embed, store
-
-### 2. Smart Chunking (`store.py`)
-
-Breaks documents at natural boundaries, not arbitrary positions:
-
-```
-Document Text
-     │
-     ▼
-┌────────────────────────────────────────┐
-│          Break Point Detection          │
-│  ┌──────────────────────────────────┐   │
-│  │  H1-H6 headings (100-50 pts)    │   │
-│  │  Code blocks (80 pts)            │   │
-│  │  Horizontal rules (60 pts)       │   │
-│  │  Blank lines (20 pts)            │   │
-│  │  List items (5 pts)              │   │
-│  │  Newlines (1 pt)                 │   │
-│  └──────────────────────────────────┘   │
-│                   │                      │
-│                   ▼                      │
-│  ┌──────────────────────────────────┐   │
-│  │  Code fence detection            │   │
-│  │  (avoid breaking inside ```...```) │ │
-│  └──────────────────────────────────┘   │
-│                   │                      │
-│                   ▼                      │
-│  ┌──────────────────────────────────┐   │
-│  │  Best cutoff finder              │   │
-│  │  - Window around target position │   │
-│  │  - Distance decay multiplier     │   │
-│  │  - Score × multiplier = priority │   │
-│  └──────────────────────────────────┘   │
-└────────────────────────────────────────┘
-     │
-     ▼
-[{text, pos}, {text, pos}, ...] chunks
-```
-
-### 3. Embedding (`embed.py`)
-
-Qwen3-VL-Embedding-2B wrapper:
+Abstract base class for all inference backends. Backends are injectable and interchangeable.
 
 ```python
-from src.embed import get_embedder, embed_text
+from recallforge.backends.base import ModelBackend
 
-# Initialize (lazy-loaded)
-embedder = get_embedder()
-
-# Embed single text
-vector = embedder.embed_text("query text")  # -> np.ndarray[2048]
-
-# Embed multiple texts
-vectors = embedder.embed_texts(["text1", "text2"])  # -> np.ndarray[N, 2048]
-
-# Embed images
-vector = embedder.embed_image("path/to/image.jpg")
-
-# Mixed content
-vectors = embedder.embed_mixed([
-    {"text": "query"},
-    {"image": "url"},
-    {"text": "caption", "image": "path"}
-])
+class MyBackend(ModelBackend):
+    def embed_text(self, text: str) -> np.ndarray: ...
+    def embed_texts(self, texts: List[str]) -> np.ndarray: ...
+    def embed_image(self, image_path: str) -> np.ndarray: ...
+    def embed_images(self, image_paths: List[str]) -> np.ndarray: ...
+    def rerank(self, query: str, documents: List[Dict]) -> List[float]: ...
+    def expand_query(self, query: str) -> Dict[str, str]: ...
+    def warm_up(self) -> None: ...
+    def get_info(self) -> BackendInfo: ...
 ```
 
-### 4. LanceDB Tables (`db.py`)
+#### Tiered Modes
 
-#### embeddings (main table)
-```python
-{
-    "hash_seq": "{content_hash}_{seq}",  # PK
-    "content_hash": "sha256...",
-    "collection": "my-docs",
-    "file_path": "notes/example.md",
-    "content_type": "text",
-    "title": "Example Document",
-    "text_body": "chunk text for BM25...",
-    "seq": 0,
-    "pos": 0,
-    "model": "Qwen/Qwen3-VL-Embedding-2B",
-    "embedded_at": 1709847234567,
-    "vector": [0.123, -0.456, ...],  # 2048 floats
-}
-```
+| Mode | Models Loaded | Memory | Quality |
+|------|---------------|--------|---------|
+| `embed` | Embedder only | ~4 GB | Baseline |
+| `hybrid` | Embedder + Reranker | ~8 GB | Better |
+| `full` | Embedder + Reranker + Expander | ~12 GB | Best |
 
-#### documents (registry)
-```python
-{
-    "id": "uuid",
-    "collection": "my-docs",
-    "file_path": "notes/example.md",
-    "title": "Example Document",
-    "content_hash": "sha256...",
-    "content_type": "text",
-    "active": 1,
-    "created_at": 1709847234567,
-    "updated_at": 1709847234567,
-}
-```
+#### Concrete Backends
 
-#### content (bodies)
-```python
-{
-    "hash": "sha256...",
-    "doc": "full document text...",
-    "content_type": "text",
-    "created_at": 1709847234567,
-}
-```
+- **TorchBackend** (`torch_backend.py`): PyTorch — CUDA > MPS > CPU, float16
+  - Embedder: `Qwen/Qwen3-VL-Embedding-2B`
+  - Reranker: `Qwen/Qwen3-VL-Reranker-2B`
+  - Expander: `tobil/qmd-query-expansion-qwen3.5-2B`
+- **MLXBackend** (`mlx_backend.py`): Apple Silicon MLX
+  - BF16: `arthurcollet/Qwen3-VL-Embedding-2B-mlx`
+  - 4-bit: `arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`
+  - Expander: Torch fallback
 
-#### cache (LLM results)
-```python
-{
-    "key": "sha256(url+body)",
-    "value": "JSON result...",
-    "created_at": 1709847234567,
-}
-```
+### 2. StorageBackend ABC (`src/recallforge/storage/base.py`)
 
-### 5. Search Pipeline
-
-#### BM25 (FTS)
+Abstract base class for all storage backends.
 
 ```python
-from src.store import search_fts
+from recallforge.storage.base import StorageBackend
 
-results = search_fts(
-    query="graph database knowledge",
-    limit=20,
-    collection="my-docs"  # optional
-)
-
-# Returns: List[SearchResult]
-# - filepath, display_path, title, body, score
-# - source: 'fts'
+class LanceDBBackend(StorageBackend):
+    def initialize(self, store_path: str) -> None: ...
+    def insert_document(self, ...) -> str: ...
+    def find_document(self, ...) -> Optional[Document]: ...
+    def insert_content(self, ...) -> None: ...
+    def insert_embedding(self, ...) -> None: ...
+    def search_fts(self, query, limit, ...) -> List[SearchResult]: ...
+    def search_vec(self, vector, limit, ...) -> List[SearchResult]: ...
+    def get_cached(self, key) -> Optional[str]: ...
+    def set_cached(self, key, value) -> None: ...
 ```
 
-#### Vector Search
+#### LanceDB Tables
+
+**embeddings** (main, with vector + FTS)
+```
+hash_seq       | content_hash | collection | file_path | content_type
+title          | text_body    | seq        | pos        | model
+embedded_at    | vector[2048]
+```
+
+**documents** (registry)
+```
+id | collection | file_path | title | content_hash | content_type | active
+created_at | updated_at
+```
+
+**content** (bodies, content-addressed)
+```
+hash | doc | content_type | created_at
+```
+
+**cache** (key-value)
+```
+key | value | created_at
+```
+
+### 3. HybridSearcher (`src/recallforge/search.py`)
+
+Takes injected `ModelBackend` and `StorageBackend`. Runs tiered pipeline:
+
+```
+Query
+  │
+  ├──[all modes]──> BM25 probe
+  │
+  ├──[full mode]──> Query expansion (lex/vec/hyde)
+  │
+  ├──[all modes]──> Parallel searches (ThreadPoolExecutor)
+  │                  ├── BM25 (original + lex expansions)
+  │                  └── Vector (original + vec + hyde)
+  │
+  ├──[all modes]──> RRF fusion (k=60, weighted)
+  │
+  ├──[hybrid/full]─> Cross-encoder reranking
+  │
+  └──[all modes]──> Score blending → top-K HybridResult
+```
+
+#### RRF Weights
+- First 2 result lists: weight=2.0
+- Additional expansion lists: weight=1.0
+
+#### Score Blending
+- RRF rank 1-3: 75% RRF + 25% reranker
+- RRF rank 4-10: 60% RRF + 40% reranker
+- RRF rank 11+: 40% RRF + 60% reranker
+
+### 4. Auto Backend Selection (`src/recallforge/__init__.py`)
 
 ```python
-from src.store import search_vec
-from src.embed import embed_text
+import recallforge
 
-query_vector = embed_text("how do AI agents remember things")
-results = search_vec(
-    vector=query_vector,
-    limit=20,
-    collection="my-docs"
-)
+# Auto: MLX on Apple Silicon if available, else Torch
+backend = recallforge.get_backend()  # RECALLFORGE_BACKEND=auto
 
-# Score = 1 - distance/2 (for cosine-like distance)
+# Explicit
+os.environ["RECALLFORGE_BACKEND"] = "mlx"
+os.environ["RECALLFORGE_MODE"] = "hybrid"
+os.environ["RECALLFORGE_MLX_QUANTIZE"] = "4bit"
+backend = recallforge.get_backend()
 ```
 
-#### Hybrid (BM25 + Vector)
-
-Future Stage will implement:
-
-```python
-# Query expansion
-expanded_queries = expand_query("how do AI agents remember things")
-# -> [
-#      {"type": "lex", "text": "AI agent memory systems"},
-#      {"type": "vec", "text": "episodic memory knowledge graphs"},
-#      {"type": "hyde", "text": "generated hypothetical answer..."}
-#    ]
-
-# Parallel retrieval
-bm25_results = search_fts(original_query)
-vec_results = search_vec(embedded_query)
-
-# Reranking with Qwen3-VL-Reranker
-final_results = rerank(query, candidates)
-```
-
-## Data Flow
+### 5. MCP Server (`src/recallforge/server.py`)
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                    Document Indexing Flow                          │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  path: "docs/architecture.md"                                    │
-│  text: "## Architecture\n\nThe system uses..."                   │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────────┐                                             │
-│  │ hash_content()  │ ──> "abc123..."                             │
-│  └─────────────────┘                                             │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────────┐                                             │
-│  │ extract_title() │ ──> "Architecture"                          │
-│  └─────────────────┘                                             │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────────┐     ┌─────────────────┐                    │
-│  │ insert_content  │ ──> │ content table   │                    │
-│  └─────────────────┘     └─────────────────┘                    │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────────┐     ┌─────────────────┐                    │
-│  │ insert_document │ ──> │ documents table │                    │
-│  └─────────────────┘     └─────────────────┘                    │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────────┐                                             │
-│  │ chunk_document  │ ──> [{text, pos}, ...]                     │
-│  │  - Break points │                                             │
-│  │  - Overlap      │                                             │
-│  └─────────────────┘                                             │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────────┐     ┌─────────────────┐                    │
-│  │ embed_text()    │ ──> │ [0.1, -0.2, ...] │ (2048 floats)     │
-│  └─────────────────┘     └─────────────────┘                    │
-│         │                                                        │
-│         ▼                                                        │
-│  ┌─────────────────┐     ┌─────────────────┐                    │
-│  │ insert_embedding│ ──> │ embeddings table│                    │
-│  └─────────────────┘     └─────────────────┘                    │
-│                                                                   │
-└──────────────────────────────────────────────────────────────────┘
+Tools: search, search_fts, search_vec, index_document, index_image, status, rebuild_fts
+Transport: stdio
+Startup: backend.warm_up() for predictable latency
+Signals: SIGTERM/SIGINT graceful shutdown
 ```
 
 ## Storage Layout
 
 ```
-~/.qmd/
+~/.recallforge/          (default, override with RECALLFORGE_STORE_PATH)
 └── store.lance/
     ├── embeddings/
-    │   ├── data/
-    │   │   └── *.parquet
-    │   ├── _indices/
-    │   │   └── text_body_fts/      # Tantivy FTS index
-    │   └── _metadata/
+    │   ├── data/*.parquet
+    │   └── _indices/text_body_fts/    # Tantivy FTS
     ├── documents/
-    │   └── ...
     ├── content/
-    │   └── ...
     └── cache/
-        └── ...
 ```
 
-## Performance Considerations
+## Data Flow: Indexing
 
-### Chunking
-- Default: 512 tokens (~2048 chars) with 64 token overlap
-- Smart breaks at headings, code blocks, paragraphs
-- Avoids splitting inside code fences
+```
+path + text
+     │
+     ├──> hash_content()   ──> content_hash
+     ├──> extract_title()  ──> title
+     ├──> insert_content() ──> content table
+     ├──> insert_document()──> documents table
+     │
+     └──> chunk_document() ──> [{text, pos}, ...]
+               │
+               ▼
+         embed_func(chunk["text"])  ──> vector[2048]
+               │
+               ▼
+         insert_embedding()  ──> embeddings table
+               │
+               ▼
+         ensure_fts_index()  ──> Tantivy index rebuild
+```
 
-### Embedding
-- Qwen3-VL-Embedding-2B: 2048-dim vectors
-- MPS (Apple Silicon): float16, eager attention (no flash_attention_2)
-- CUDA: bfloat16, flash_attention_2
-- Batch embedding for efficiency
+## Performance
 
-### Search
-- BM25: Tantivy FTS index on `text_body` column
-- Vector: LanceDB ANN (IVF_HNSW_SQ for large collections)
-- Hybrid: RRF fusion + Qwen3-VL-Reranker
+| Metric | Value |
+|--------|-------|
+| Chunk size | 512 tokens (~2048 chars) |
+| Chunk overlap | 64 tokens |
+| Vector dims | 2048 (float32) |
+| Smart breaks | H1-H6, code blocks, paragraphs, list items |
+| ANN index | IVF_HNSW_SQ (large collections) |
+| Parallel searches | ThreadPoolExecutor (8 workers default) |
 
 ## Stage Roadmap
 
 | Stage | Feature | Status |
-|-------|----------|--------|
+|-------|---------|--------|
 | 1 | Foundation + Text Embedding + BM25 | ✅ Complete |
-| 2 | Image embedding + multimodal search | 🔲 Planned |
-| 3 | MCP server for IDE integration | 🔲 Planned |
-| 4 | Query expansion (HyDE) | 🔲 Planned |
-| 5 | Reranker integration | 🔲 Planned |
-| 6 | Hybrid retrieval pipeline | 🔲 Planned |
+| 2 | Image embedding + cross-modal search | ✅ Complete |
+| 3 | MCP server + CLI | ✅ Complete |
+| 4 | Model Registry + Parallelism | ✅ Complete |
+| 5 | Multi-backend + Tiered modes + Benchmarks | ✅ Complete |
 
-## Usage
+## Attribution
 
-```python
-from src import db, store, embed
-
-# Initialize database
-db.initialize_database("/path/to/store")
-
-# Index a document
-content_hash = store.index_document(
-    path="docs/example.md",
-    text=open("docs/example.md").read(),
-    collection="my-docs",
-    model="Qwen/Qwen3-VL-Embedding-2B",
-    embed_func=embed.embed_text,
-)
-
-# BM25 search
-results = store.search_fts("knowledge graph", limit=10)
-for r in results:
-    print(f"{r.title}: {r.score:.3f}")
-
-# Vector search
-query_vec = embed.embed_text("how to store relationships")
-results = store.search_vec(query_vec, limit=10)
-for r in results:
-    print(f"{r.title}: {r.score:.3f}")
-
-# Check if embeddings exist
-has_vectors = store.has_vectors()
-print(f"Index has embeddings: {has_vectors}")
-```
+RecallForge is inspired by and builds upon [QMD](https://github.com/tobil/qmd) by [Tobi](https://github.com/tobil).
