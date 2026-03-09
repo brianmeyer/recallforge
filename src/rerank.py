@@ -17,20 +17,40 @@ import numpy as np
 
 from src import db, store
 
+# Monkey-patch for transformers 5.x compatibility BEFORE any imports
+# The qwen3_vl_reranker module imports from transformers
+def _apply_transformers_patch():
+    """Apply compatibility patch for transformers 5.x."""
+    try:
+        import transformers.utils.generic as _generic
+        if not hasattr(_generic, 'check_model_inputs'):
+            _generic.check_model_inputs = lambda *args, **kwargs: None
+    except Exception:
+        pass
+    
+    try:
+        import transformers.utils
+        if not hasattr(transformers.utils, 'check_model_inputs'):
+            transformers.utils.check_model_inputs = lambda *args, **kwargs: None
+    except Exception:
+        pass
+
+_apply_transformers_patch()
+
 # Add Qwen3-VL-Embedding repo to path for imports
 QWEN_REPO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Qwen3-VL-Embedding")
 QWEN_SRC_PATH = os.path.join(QWEN_REPO_PATH, "src") if QWEN_REPO_PATH else None
-
-if QWEN_SRC_PATH and os.path.exists(QWEN_SRC_PATH):
-    import sys
-    if QWEN_SRC_PATH not in sys.path:
-        sys.path.insert(0, QWEN_SRC_PATH)
+QWEN_MODELS_PATH = os.path.join(QWEN_SRC_PATH, "models") if QWEN_SRC_PATH else None
 
 # Import Qwen3VLReranker
 Qwen3VLReranker = None
 try:
-    from models.qwen3_vl_reranker import Qwen3VLReranker as Qwen3VLRerankerClass
-    Qwen3VLReranker = Qwen3VLRerankerClass
+    if QWEN_MODELS_PATH and os.path.exists(QWEN_MODELS_PATH):
+        import sys
+        if QWEN_MODELS_PATH not in sys.path:
+            sys.path.insert(0, QWEN_MODELS_PATH)
+        from qwen3_vl_reranker import Qwen3VLReranker as Qwen3VLRerankerClass
+        Qwen3VLReranker = Qwen3VLRerankerClass
 except ImportError as e:
     print(f"Warning: Could not import Qwen3VLReranker: {e}")
 

@@ -108,7 +108,11 @@ def initialize_database(store_path: Optional[str] = None) -> None:
     lance_dir = get_lance_store_path(store_path)
     db = open_database(lance_dir)
     
-    existing = db.table_names()
+    # Use list_tables() (table_names() is deprecated)
+    try:
+        existing = db.list_tables()
+    except AttributeError:
+        existing = db.table_names()  # Fallback for older versions
     
     if "embeddings" in existing:
         embeddings_table = db.open_table("embeddings")

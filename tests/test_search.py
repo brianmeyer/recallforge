@@ -6,20 +6,22 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
+from dataclasses import dataclass
 
-# Set up paths before importing - use qmd-vl as package
+# Set up paths before importing
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-import search
 from src import store
-from search import (
+from src import db as src_db
+from src.search import (
     HybridSearcher,
     hybrid_query,
     clear_expand_and_rerank_caches,
     HybridResult,
 )
+from src.store import SearchResult
 
 
 class TestHybridSearcher(unittest.TestCase):
@@ -28,17 +30,12 @@ class TestHybridSearcher(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.temp_dir = tempfile.mkdtemp()
-        self.searcher = HybridSearcher(limit=10, collection="test")
         
-        # Patch database and search functions
-        search_db = search.db
-        from src import store
-        SearchResult = store.SearchResult
-        self.original_search_fts = store.search_fts
-        self.original_search_vec = store.search_vec
-        self.original_embed_text = search.embed_text
-        self.original_expand = search.expand_query
-        self.original_rerank = search.rerank
+        # Reset the database singleton
+        src_db.close_database()
+        src_db.initialize_database(self.temp_dir)
+        
+        self.searcher = HybridSearcher(limit=10, collection="test")
         
         # Mock results
         self.mock_fts_results = [
@@ -88,45 +85,33 @@ class TestHybridSearcher(unittest.TestCase):
                 body="Document 2 content",
             ),
         ]
-        
-        search_fts.search_fts = lambda *args, **kwargs: self.mock_fts_results
-        search_vec.search_vec = lambda *args, **kwargs: self.mock_vec_results
-        
-        # Mock embed_text
-        import numpy as np
-        embed_text.embed_text = lambda text: np.random.rand(2048)
-        
-        # Mock expand_query
-        from search import expand_query
-        self.original_expand = expand_query.expand_query
-        expand_query.expand_query = lambda *args, **kwargs: []
     
     def tearDown(self):
         """Clean up."""
-        store.search_fts = self.original_search_fts
-        store.search_vec = self.original_search_vec
-        search.embed_text = self.original_embed_text
-        search.expand_query = self.original_expand
-        search.expand_query = self.original_expand
-        search.rerank = self.original_rerank
-        
+        src_db.close_database()
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
     
-    def test_ba25_probe(self):
+    def test_bm25_probe(self):
         """Test BM25 probe returns results."""
-        query = "test query"
-        results = self.searcher._bm25_probe(query)
-        
-        self.assertEqual(len(results), 2)
-        self.assertEqual(results[0].score, 0.95)
+        with patch('src.search.search_fts', return_value=self.mock_fts_results):
+            query = "test query"
+            results = self.searcher._bm25_probe(query)
+            
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0].score, 0.95)
     
     def test_vector_search(self):
         """Test vector search returns results."""
-        query = "test query"
-        results = self.searcher._vector_search(query)
+        import numpy as np
+        mock_vector = np.random.rand(2048).astype(np.float32)
         
-        self.assertEqual(len(results), 1)
+        with patch('src.search.embed_text', return_value=mock_vector), \
+             patch('src.search.search_vec', return_value=self.mock_vec_results):
+            query = "test query"
+            results = self.searcher._vector_search(query)
+            
+            self.assertEqual(len(results), 1)
     
     def test_reciprocal_rank_fusion(self):
         """Test RRF fusion combines results correctly."""
@@ -137,7 +122,7 @@ class TestHybridSearcher(unittest.TestCase):
         
         fused = self.searcher._reciprocal_rank_fusion(all_results)
         
-        # Should have unique results
+        # Should have unique results (2 unique filepaths)
         self.assertGreater(len(fused), 0)
         
         # All results should have non-zero RRF score
@@ -146,11 +131,7 @@ class TestHybridSearcher(unittest.TestCase):
     
     def test_select_best_chunk(self):
         """Test best chunk selection."""
-        result = MagicMock()
-        result.body = "test body"
-        result.context = "test context"
-        result.filepath = "qmd://test/file.txt"
-        result.content_type = "text"
+        result = self.mock_fts_results[0]
         
         chunk = self.searcher._select_best_chunk(result)
         
@@ -161,10 +142,15 @@ class TestHybridSearcher(unittest.TestCase):
         """Test candidate reranking."""
         candidates = self.mock_fts_results[:1]
         
-        rerank_scores = self.searcher._rerank_candidates(candidates, "test query")
-        
-        # Should return scores for each candidate
-        self.assertIsInstance(rerank_scores, dict)
+        with patch('src.search.rerank') as mock_rerank:
+            mock_rerank.return_value = [
+                MagicMock(document={'filepath': 'qmd://test/file1.txt'}, score=0.8)
+            ]
+            
+            rerank_scores = self.searcher._rerank_candidates(candidates, "test query")
+            
+            # Should return scores for each candidate
+            self.assertIsInstance(rerank_scores, dict)
     
     def test_blend_scores(self):
         """Test score blending."""
@@ -178,7 +164,7 @@ class TestHybridSearcher(unittest.TestCase):
         blended = self.searcher._blend_scores(rrf_results, rerank_scores)
         
         self.assertEqual(len(blended), 2)
-        self.assertIsInstance(blended[0], search.HybridResult)
+        self.assertIsInstance(blended[0], HybridResult)
         
         # Top result should have higher blended score
         self.assertGreater(blended[0].score, blended[1].score)
@@ -187,23 +173,25 @@ class TestHybridSearcher(unittest.TestCase):
         """Test full search pipeline."""
         query = "full pipeline test"
         
-        # Mock all dependencies
-        with patch('search.store.search_fts', return_value=self.mock_fts_results), \
-             patch('search.store.search_vec', return_value=self.mock_vec_results), \
-             patch('search.embed_text', return_value=__import__('numpy').random.rand(2048)), \
-             patch('search.rerank.rerank') as mock_rerank, \
-             patch('search.expand_query', return_value=[]):
+        import numpy as np
+        mock_vector = np.random.rand(2048).astype(np.float32)
+        
+        with patch('src.search.search_fts', return_value=self.mock_fts_results), \
+             patch('src.search.search_vec', return_value=self.mock_vec_results), \
+             patch('src.search.embed_text', return_value=mock_vector), \
+             patch('src.search.rerank') as mock_rerank, \
+             patch('src.search.expand_query', return_value=[]):
             
             mock_rerank.return_value = [
-                MagicMock(score=0.8, document={'filepath': 'qmd://test/file1.txt'}),
-                MagicMock(score=0.7, document={'filepath': 'qmd://test/file2.txt'}),
+                MagicMock(document={'filepath': 'qmd://test/file1.txt'}, score=0.8),
+                MagicMock(document={'filepath': 'qmd://test/file2.txt'}, score=0.7),
             ]
             
             results = self.searcher.search(query)
             
             # Should return HybridResults
             self.assertGreater(len(results), 0)
-            self.assertIsInstance(results[0], search.HybridResult)
+            self.assertIsInstance(results[0], HybridResult)
             self.assertIn('rrf_rank', dir(results[0]))
             self.assertIn('rerank_score', dir(results[0]))
 
@@ -213,7 +201,7 @@ class TestHybridQuery(unittest.TestCase):
     
     def test_hybrid_query_returns_results(self):
         """Test hybrid_query returns search results."""
-        with patch('search.HybridSearcher') as MockSearcher:
+        with patch('src.search.HybridSearcher') as MockSearcher:
             mock_instance = MagicMock()
             mock_instance.search.return_value = [
                 HybridResult(
@@ -233,27 +221,10 @@ class TestHybridQuery(unittest.TestCase):
                     source="fts",
                 )
             ]
-            mock_instance.search.return_value = [
-                search.HybridResult(
-                    filepath="qmd://test/file.txt",
-                    display_path="test/file.txt",
-                    title="Doc",
-                    context=None,
-                    hash="hash",
-                    docid="hash",
-                    collection="test",
-                    modified_at="",
-                    body_length=100,
-                    body="content",
-                    score=0.9,
-                    rrf_rank=1,
-                    rerank_score=0.85,
-                    source="fts",
-                )
-            ]
             MockSearcher.return_value = mock_instance
             
-            results = search.hybrid_query("test query", limit=5)
+            from src.search import hybrid_query
+            results = hybrid_query("test query", limit=5)
             
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].score, 0.9)
@@ -262,15 +233,36 @@ class TestHybridQuery(unittest.TestCase):
 class TestCacheClearing(unittest.TestCase):
     """Tests for cache clearing functions."""
     
+    def setUp(self):
+        """Set up test database."""
+        self.temp_dir = tempfile.mkdtemp()
+        
+        # Reset the database singleton
+        src_db.close_database()
+        src_db.initialize_database(self.temp_dir)
+    
+    def tearDown(self):
+        """Clean up."""
+        src_db.close_database()
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+    
     def test_clear_expand_and_rerank_caches(self):
         """Test clearing both caches."""
-        try:
-            search.clear_expand_and_rerank_caches()
-            # If no exception, test passes
-            self.assertTrue(True)
-        except Exception as e:
-            # May fail if database not initialized, that's okay
-            self.assertIn("not initialized", str(e).lower() or "not initialized" in str(e).lower())
+        # Add some cache entries
+        src_db.cache_table.add([
+            {"key": "expand:test1", "value": '{"type": "lex"}', "created_at": 1234567890},
+            {"key": "rerank:test2", "value": "0.5", "created_at": 1234567890},
+        ])
+        
+        clear_expand_and_rerank_caches()
+        
+        # Verify caches are empty
+        rows = list(src_db.cache_table.search().limit(100).to_list())
+        expand_rows = [r for r in rows if r.get('key', '').startswith('expand:')]
+        rerank_rows = [r for r in rows if r.get('key', '').startswith('rerank:')]
+        self.assertEqual(len(expand_rows), 0)
+        self.assertEqual(len(rerank_rows), 0)
 
 
 if __name__ == '__main__':

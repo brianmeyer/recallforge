@@ -10,14 +10,13 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-# Set up paths before importing - use qmd-vl as package
+# Set up paths before importing
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-import rerank
 from src import store
-from src import db as rerank_db
-from rerank import (
+from src import db as src_db
+from src.rerank import (
     Qwen3VLRerankerWrapper,
     rerank,
     clear_rerank_cache,
@@ -91,9 +90,11 @@ class TestRerank(unittest.TestCase):
         # Pre-populate cache
         self.cache[cache_key] = "0.85"
         
-        # Should return cached score
-        results = reranker.rerank(query, [doc])
+        # Mock the model to avoid loading it
+        with patch.object(reranker, '_ensure_model'):
+            results = reranker.rerank(query, [doc])
         
+        # Should return cached score
         self.assertEqual(len(results), 1)
         self.assertAlmostEqual(results[0].score, 0.85, places=2)
     
@@ -121,7 +122,9 @@ class TestRerank(unittest.TestCase):
             cache_key = reranker._get_rerank_cache_key(query, doc_hash)
             self.cache[cache_key] = str(0.9 - i * 0.1)  # 0.9, 0.8, 0.7
         
-        results = reranker.rerank(query, docs)
+        # Mock the model to avoid loading it
+        with patch.object(reranker, '_ensure_model'):
+            results = reranker.rerank(query, docs)
         
         # Should be sorted by score descending
         self.assertEqual(len(results), 3)
@@ -140,7 +143,9 @@ class TestRerank(unittest.TestCase):
         cache_key = reranker._get_rerank_cache_key(query, doc_hash)
         self.cache[cache_key] = "0.75"
         
-        results = reranker.rerank(query, [doc])
+        # Mock the model to avoid loading it
+        with patch.object(reranker, '_ensure_model'):
+            results = reranker.rerank(query, [doc])
         
         self.assertEqual(len(results), 1)
         self.assertIsInstance(results[0], RerankResult)
@@ -148,9 +153,11 @@ class TestRerank(unittest.TestCase):
     
     def test_clear_rerank_cache(self):
         """Test clearing rerank cache."""
+        # Initialize database
+        src_db.initialize_database(self.temp_dir)
+        
         # Add some rerank cache entries to db.cache_table
-        rerank_db = rerank.db
-        rerank_db.cache_table.add([{
+        src_db.cache_table.add([{
             "key": "rerank:test1",
             "value": "0.5",
             "created_at": 1234567890,
@@ -159,7 +166,7 @@ class TestRerank(unittest.TestCase):
         clear_rerank_cache()
         
         # Verify cache is empty
-        rows = list(rerank_db.cache_table.search().limit(100).to_list())
+        rows = list(src_db.cache_table.search().limit(100).to_list())
         rerank_rows = [r for r in rows if r.get('key', '').startswith('rerank:')]
         self.assertEqual(len(rerank_rows), 0)
 
@@ -171,14 +178,13 @@ class TestRerankIntegration(unittest.TestCase):
         """Set up test database."""
         self.temp_dir = tempfile.mkdtemp()
         
-        from rerank import db as rerank_db
-        rerank_db.DEFAULT_INDEX_DIR = self.temp_dir
-        
-        # Initialize database
-        rerank_db.initialize_database(self.temp_dir)
+        # Reset the database singleton
+        src_db.close_database()
+        src_db.initialize_database(self.temp_dir)
     
     def tearDown(self):
         """Clean up."""
+        src_db.close_database()
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
     
