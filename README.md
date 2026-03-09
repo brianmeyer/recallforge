@@ -8,16 +8,18 @@ RecallForge is a powerful semantic search system that combines BM25 full-text se
 
 **RecallForge is inspired by and builds upon [QMD](https://github.com/tobil/qmd) by [Tobi](https://github.com/tobil).**
 
-QMD (Query-Document Matching) pioneered the approach of combining Qwen3-VL embeddings with LanceDB for semantic search. RecallForge extends this foundation with:
+![RecallForge Architecture](docs/architecture.png)
 
-- Multi-backend architecture (PyTorch + MLX)
-- Tiered search modes (embed/hybrid/full)
-- Cross-encoder reranking
-- Query expansion
-- Cross-modal image-text search
-- MCP server integration
+QMD pioneered the multi-stage retrieval pipeline pattern: embedding, reranking, and query expansion working together for high-quality semantic search. RecallForge takes that architecture and extends it into the vision-language domain:
 
-Huge thanks to Tobi for the original vision and implementation that made this project possible.
+- Cross-modal search (text↔image in all four directions)
+- Qwen3-VL native embeddings and reranking
+- Multi-backend (PyTorch CUDA/MPS + Apple Silicon MLX with 4-bit quantization)
+- Tiered modes so you pick your resource/quality tradeoff
+- LanceDB for scalable vector storage
+- MCP server for agent integration
+
+Huge thanks to Tobi for the original vision that inspired this project.
 
 ---
 
