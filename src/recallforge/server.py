@@ -10,6 +10,7 @@ Calls backend.warm_up() on server start for predictable latency.
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import sys
@@ -21,6 +22,19 @@ from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
 
 from . import __version__, get_backend, get_storage
 from .search import HybridSearcher
+
+
+# Configure logging
+logger = logging.getLogger("recallforge.server")
+
+# Enable trace mode via environment variable
+TRACE_ENABLED = os.environ.get("RECALLFORGE_TRACE", "0") == "1"
+
+
+def trace_log(operation: str, **kwargs) -> None:
+    """Structured trace logging for debugging MCP tools."""
+    if TRACE_ENABLED:
+        logger.debug(f"[TRACE] {operation}: {kwargs}")
 
 
 # Global server state
@@ -269,6 +283,8 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
     
+    trace_log("search_start", query=query[:50], limit=limit, collection=collection, content_type=content_type)
+    
     if not query:
         return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
     
@@ -281,6 +297,8 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     )
     
     results = searcher.search(query)
+    
+    trace_log("search_done", query=query[:50], count=len(results))
     
     output = {
         "query": query,
@@ -310,6 +328,8 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
     
+    trace_log("search_fts_start", query=query[:50], limit=limit, collection=collection, content_type=content_type)
+    
     if not query:
         return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
     
@@ -319,6 +339,8 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
         collection=collection,
         content_type=content_type,
     )
+    
+    trace_log("search_fts_done", query=query[:50], count=len(results))
     
     output = {
         "query": query,
@@ -344,6 +366,8 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
     
+    trace_log("search_vec_start", query=query[:50], limit=limit, collection=collection, content_type=content_type)
+    
     if not query:
         return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
     
@@ -356,6 +380,8 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
         collection=collection,
         content_type=content_type,
     )
+    
+    trace_log("search_vec_done", query=query[:50], count=len(results))
     
     output = {
         "query": query,
@@ -386,6 +412,8 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
 
+    trace_log("ingest_start", collection=collection, text=bool(text), file_path=file_path, folder_path=folder_path)
+
     output = storage.ingest(
         collection=collection,
         text=text,
@@ -400,6 +428,8 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
         embed_image_func=backend.embed_image,
         model="Qwen3-VL-Embedding-2B",
     )
+    
+    trace_log("ingest_done", collection=collection, indexed_text=output.get("indexed_text", 0), indexed_images=output.get("indexed_images", 0))
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
@@ -408,6 +438,8 @@ async def _handle_index_document(arguments: dict, backend, storage) -> list[Text
     path = arguments.get("path", "")
     text = arguments.get("text", "")
     collection = arguments.get("collection", "default")
+    
+    trace_log("index_document_start", path=path, collection=collection)
     
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
@@ -419,6 +451,8 @@ async def _handle_index_document(arguments: dict, backend, storage) -> list[Text
         model="Qwen3-VL-Embedding-2B",
         embed_func=backend.embed_text,
     )
+    
+    trace_log("index_document_done", path=path, hash=content_hash[:8])
     
     output = {
         "success": True,
@@ -435,6 +469,8 @@ async def _handle_index_image(arguments: dict, backend, storage) -> list[TextCon
     path = arguments.get("path", "")
     collection = arguments.get("collection", "default")
     
+    trace_log("index_image_start", path=path, collection=collection)
+    
     if not path:
         return [TextContent(type="text", text=json.dumps({"error": "path is required"}))]
     
@@ -446,6 +482,8 @@ async def _handle_index_image(arguments: dict, backend, storage) -> list[TextCon
         collection=collection,
         embed_func=backend.embed_image,
     )
+    
+    trace_log("index_image_done", path=path, hash=content_hash[:8])
     
     output = {
         "success": True,
@@ -463,6 +501,8 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
     text = arguments.get("text", "")
     collection = arguments.get("collection", "default")
 
+    trace_log("memory_add_start", path=path, collection=collection)
+
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
 
@@ -473,6 +513,8 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
         model="Qwen3-VL-Embedding-2B",
         embed_func=backend.embed_text,
     )
+
+    trace_log("memory_add_done", path=path, hash=content_hash[:8])
 
     output = {
         "success": True,
@@ -490,6 +532,8 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
     text = arguments.get("text", "")
     collection = arguments.get("collection", "default")
 
+    trace_log("memory_update_start", path=path, collection=collection)
+
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
 
@@ -500,6 +544,8 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
         model="Qwen3-VL-Embedding-2B",
         embed_func=backend.embed_text,
     )
+
+    trace_log("memory_update_done", path=path, hash=content_hash[:8])
 
     output = {
         "success": True,
@@ -516,10 +562,15 @@ async def _handle_memory_delete(arguments: dict, storage) -> list[TextContent]:
     path = arguments.get("path", "")
     collection = arguments.get("collection", "default")
 
+    trace_log("memory_delete_start", path=path, collection=collection)
+
     if not path:
         return [TextContent(type="text", text=json.dumps({"error": "path is required"}))]
 
     output = storage.delete_memory(path=path, collection=collection)
+    
+    trace_log("memory_delete_done", path=path, removed_vectors=output.get("removed_vectors", 0))
+    
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
@@ -530,6 +581,8 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
     recursive = arguments.get("recursive", True)
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
+
+    trace_log("index_folder_start", folder_path=folder_path, collection=collection, recursive=recursive)
 
     if not folder_path:
         return [TextContent(type="text", text=json.dumps({"error": "folder_path is required"}))]
@@ -543,6 +596,9 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
         model="Qwen3-VL-Embedding-2B",
         embed_func=backend.embed_text,
     )
+    
+    trace_log("index_folder_done", folder_path=folder_path, indexed=output.get("indexed", 0))
+    
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
