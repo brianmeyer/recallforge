@@ -32,6 +32,8 @@ def _signal_handler(signum, frame):
     global _shutdown_requested
     print(f"Received signal {signum}, initiating graceful shutdown...", file=sys.stderr)
     _shutdown_requested = True
+    # Exit immediately so SIGINT/SIGTERM interrupts synchronous warm-up as well.
+    raise SystemExit(128 + signum)
 
 
 # Register signal handlers

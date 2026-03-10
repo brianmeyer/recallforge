@@ -47,10 +47,94 @@ print("\n\033[0;36m--- Server Creation ---\033[0m\n")
 
 from recallforge.server import create_server
 from recallforge import get_backend, get_storage
+from mcp.types import (
+    CallToolRequest,
+    CallToolRequestParams,
+    ListToolsRequest,
+)
 
 backend = get_backend()
 backend._load_embedder()
 storage = get_storage(STORE)
+
+
+async def _list_tools(server):
+    """Resolve list_tools across MCP API variants."""
+    try:
+        result = await server.list_tools()
+        if isinstance(result, list):
+            return result
+    except TypeError:
+        pass
+
+    try:
+        result = server.list_tools()
+        if isinstance(result, list):
+            return result
+    except TypeError:
+        pass
+
+    handler = getattr(server, "request_handlers", {}).get(ListToolsRequest)
+    if handler is None:
+        raise RuntimeError("Unable to resolve MCP list_tools handler")
+
+    response = await handler(ListToolsRequest(method="tools/list"))
+    root = getattr(response, "root", response)
+    tools = getattr(root, "tools", None)
+    if tools is None:
+        raise RuntimeError("Unable to extract tools from MCP list_tools response")
+    return tools
+
+
+async def _call_tool(server, name, arguments):
+    """Resolve call_tool across MCP API variants."""
+    try:
+        result = await server.call_tool(name, arguments)
+        if isinstance(result, list):
+            return result
+    except TypeError:
+        pass
+
+    try:
+        result = server.call_tool(name, arguments)
+        if asyncio.iscoroutine(result):
+            result = await result
+        if isinstance(result, list):
+            return result
+    except TypeError:
+        pass
+
+    handler = getattr(server, "request_handlers", {}).get(CallToolRequest)
+    if handler is None:
+        raise RuntimeError("Unable to resolve MCP call_tool handler")
+
+    response = await handler(
+        CallToolRequest(
+            method="tools/call",
+            params=CallToolRequestParams(name=name, arguments=arguments),
+        )
+    )
+    root = getattr(response, "root", response)
+    content = getattr(root, "content", None)
+    if content is None:
+        raise RuntimeError(f"Unable to extract tool response content for '{name}'")
+    return content
+
+
+def _as_json_payload(content):
+    """Parse MCP text payload; tolerate plain-text error responses."""
+    text = ""
+    if content and len(content) > 0:
+        text = getattr(content[0], "text", "") or ""
+
+    if not text:
+        return {}
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"error": text}
+
 
 async def test_server():
     global pass_count, fail_count
@@ -61,12 +145,7 @@ async def test_server():
     # ── List tools ──
     print("\n\033[0;36m--- List Tools ---\033[0m\n")
 
-    try:
-        # Try async first (newer MCP versions)
-        tools = await server.list_tools()
-    except TypeError:
-        # Fall back to sync (older MCP versions)
-        tools = server.list_tools()
+    tools = await _list_tools(server)
     tool_names = [t.name for t in tools]
     report(len(tools) == 7, f"Server exposes {len(tools)} tools (expected 7)")
 
@@ -77,7 +156,7 @@ async def test_server():
     # ── Status tool ──
     print("\n\033[0;36m--- Status Tool ---\033[0m\n")
 
-    result = await server.call_tool("status", {})
+    result = await _call_tool(server, "status", {})
     status_text = result[0].text
     status_data = json.loads(status_text)
     report("version" in status_data, f"Status returns version: {status_data.get('version')}")
@@ -87,7 +166,7 @@ async def test_server():
     # ── Index Document tool ──
     print("\n\033[0;36m--- Index Document Tool ---\033[0m\n")
 
-    result = await server.call_tool("index_document", {
+    result = await _call_tool(server, "index_document", {
         "path": "mcp_test_doc.md",
         "text": "RecallForge enables cross-modal vision-language search combining BM25 and vector retrieval.",
         "collection": "mcp_test",
@@ -100,7 +179,7 @@ async def test_server():
 
     img_path = os.path.join(CORPUS_IMAGES, "whiteboard_architecture.png")
     if os.path.exists(img_path):
-        result = await server.call_tool("index_image", {
+        result = await _call_tool(server, "index_image", {
             "path": img_path,
             "collection": "mcp_test",
         })
@@ -112,7 +191,7 @@ async def test_server():
     # ── Search tool ──
     print("\n\033[0;36m--- Search Tool (hybrid) ---\033[0m\n")
 
-    result = await server.call_tool("search", {
+    result = await _call_tool(server, "search", {
         "query": "cross-modal vision language search",
         "limit": 5,
         "collection": "mcp_test",
@@ -128,7 +207,7 @@ async def test_server():
     # ── Search FTS tool ──
     print("\n\033[0;36m--- Search FTS Tool ---\033[0m\n")
 
-    result = await server.call_tool("search_fts", {
+    result = await _call_tool(server, "search_fts", {
         "query": "RecallForge BM25 vector",
         "limit": 10,
         "collection": "mcp_test",
@@ -139,7 +218,7 @@ async def test_server():
     # ── Search Vec tool ──
     print("\n\033[0;36m--- Search Vec Tool ---\033[0m\n")
 
-    result = await server.call_tool("search_vec", {
+    result = await _call_tool(server, "search_vec", {
         "query": "semantic search cross-modal",
         "limit": 10,
         "collection": "mcp_test",
@@ -150,7 +229,7 @@ async def test_server():
     # ── Rebuild FTS tool ──
     print("\n\033[0;36m--- Rebuild FTS Tool ---\033[0m\n")
 
-    result = await server.call_tool("rebuild_fts", {})
+    result = await _call_tool(server, "rebuild_fts", {})
     rebuild_data = json.loads(result[0].text)
     report(rebuild_data.get("success") == True, "rebuild_fts succeeded")
 
@@ -158,24 +237,24 @@ async def test_server():
     print("\n\033[0;36m--- Error Handling ---\033[0m\n")
 
     # Bad tool name
-    result = await server.call_tool("nonexistent_tool", {})
-    err_data = json.loads(result[0].text)
+    result = await _call_tool(server, "nonexistent_tool", {})
+    err_data = _as_json_payload(result)
     report("error" in err_data, f"Unknown tool returns error: {err_data.get('error', '')[:50]}")
 
     # Missing params
-    result = await server.call_tool("search", {})
-    err_data = json.loads(result[0].text)
+    result = await _call_tool(server, "search", {})
+    err_data = _as_json_payload(result)
     report("error" in err_data or err_data.get("count", 0) == 0,
            "search with no query returns error or empty results")
 
     # index_document missing text
-    result = await server.call_tool("index_document", {"path": "x.md"})
-    err_data = json.loads(result[0].text)
+    result = await _call_tool(server, "index_document", {"path": "x.md"})
+    err_data = _as_json_payload(result)
     report("error" in err_data, "index_document missing text returns error")
 
     # index_image nonexistent file
-    result = await server.call_tool("index_image", {"path": "/nonexistent/image.png"})
-    err_data = json.loads(result[0].text)
+    result = await _call_tool(server, "index_image", {"path": "/nonexistent/image.png"})
+    err_data = _as_json_payload(result)
     report("error" in err_data, "index_image nonexistent file returns error")
 
     # ── Cross-modal via MCP ──
@@ -183,7 +262,7 @@ async def test_server():
 
     # Index image, then search for it with text
     if os.path.exists(img_path):
-        result = await server.call_tool("search", {
+        result = await _call_tool(server, "search", {
             "query": "whiteboard diagram architecture system",
             "limit": 5,
             "collection": "mcp_test",
