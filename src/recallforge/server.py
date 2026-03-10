@@ -178,7 +178,7 @@ async def create_server(
                     "properties": {
                         "folder_path": {"type": "string", "description": "Absolute or relative folder path"},
                         "collection": {"type": "string", "description": "Collection name", "default": "default"},
-                        "recursive": {"type": "boolean", "description": "Recursively index subfolders", "default": true},
+                        "recursive": {"type": "boolean", "description": "Recursively index subfolders", "default": True},
                         "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
                         "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"}
                     },
