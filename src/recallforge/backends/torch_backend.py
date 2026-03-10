@@ -157,11 +157,21 @@ class TorchBackend(ModelBackend):
         import torch
         
         # Import from Qwen3-VL-Embedding repo
+        # Try multiple import paths: installed package, repo src/models, direct
         try:
             from models.qwen3_vl_embedding import Qwen3VLEmbedder
         except ImportError:
-            # Try alternate import path
-            from qwen3_vl_embedding import Qwen3VLEmbedder
+            try:
+                from qwen3_vl_embedding import Qwen3VLEmbedder
+            except ImportError:
+                # Find the Qwen3-VL-Embedding repo relative to this package
+                import importlib.util
+                _pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                _repo_root = os.path.dirname(os.path.dirname(_pkg_root))
+                _qwen_src = os.path.join(_repo_root, "Qwen3-VL-Embedding", "src")
+                if os.path.isdir(_qwen_src) and _qwen_src not in sys.path:
+                    sys.path.insert(0, _qwen_src)
+                from models.qwen3_vl_embedding import Qwen3VLEmbedder
         
         device = self._get_device()
         dtype = self._get_dtype()
@@ -232,7 +242,12 @@ class TorchBackend(ModelBackend):
     # =========================================================================
     
     def _load_reranker(self):
-        """Lazy-load the reranker model."""
+        """Lazy-load the reranker model.
+        
+        On MPS, loads with float32 to avoid Apple Metal GEMV kernel crash
+        (LORADOWN matrixRowPadElements overflow in float16).
+        Embedder is fine with float16 — only the reranker triggers this bug.
+        """
         if self._reranker is not None:
             return
         
@@ -241,11 +256,26 @@ class TorchBackend(ModelBackend):
         try:
             from models.qwen3_vl_reranker import Qwen3VLReranker
         except ImportError:
-            from qwen3_vl_reranker import Qwen3VLReranker
+            try:
+                from qwen3_vl_reranker import Qwen3VLReranker
+            except ImportError:
+                # Fallback: find via Qwen3-VL-Embedding repo path
+                _pkg_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                _repo_root = os.path.dirname(os.path.dirname(_pkg_root))
+                _qwen_src = os.path.join(_repo_root, "Qwen3-VL-Embedding", "src")
+                if os.path.isdir(_qwen_src) and _qwen_src not in sys.path:
+                    sys.path.insert(0, _qwen_src)
+                from models.qwen3_vl_reranker import Qwen3VLReranker
         
         device = self._get_device()
-        dtype = self._get_dtype()
         attn = self._get_attention_implementation()
+        
+        # MPS float16 triggers Apple Metal GEMV kernel crash on reranker.
+        # Use float32 on MPS — still GPU-accelerated, ~50ms penalty on 10 docs.
+        if device == "mps":
+            dtype = torch.float32
+        else:
+            dtype = self._get_dtype()
         
         self._reranker = Qwen3VLReranker(
             model_name_or_path=self.RERANKER_MODEL,

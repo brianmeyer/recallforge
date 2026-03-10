@@ -57,10 +57,14 @@ TOTAL_SKIP=0
     echo ""
 } > "$LOG_FILE"
 
+TOTAL_TESTS=${#TESTS[@]}
+CURRENT_TEST=0
+
 for test_entry in "${TESTS[@]}"; do
     IFS=':' read -r test_script test_name <<< "$test_entry"
+    CURRENT_TEST=$((CURRENT_TEST + 1))
 
-    echo -e "${BOLD}${CYAN}▶ Running: ${test_name}${NC}"
+    echo -e "${BOLD}${CYAN}▶ [${CURRENT_TEST}/${TOTAL_TESTS}] Running: ${test_name}${NC}"
     echo "" >> "$LOG_FILE"
     echo "═══════════════════════════════════════" >> "$LOG_FILE"
     echo "  ${test_name}" >> "$LOG_FILE"
@@ -101,10 +105,10 @@ for test_entry in "${TESTS[@]}"; do
 
     if [[ "$result" == "PASS" ]]; then
         echo -e "  ${GREEN}✓${NC}  ${test_name}"
-        ((SUITE_PASS++))
+        SUITE_PASS=$((SUITE_PASS + 1))
     else
         echo -e "  ${RED}✗${NC}  ${test_name}"
-        ((SUITE_FAIL++))
+        SUITE_FAIL=$((SUITE_FAIL + 1))
     fi
 done
 

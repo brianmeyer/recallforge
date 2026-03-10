@@ -138,6 +138,62 @@ fi
 _cleanup_gpu
 
 # ──────────────────────────────────────────────
+subsection "MLX Backend (4-bit Embed Coverage)"
+# ──────────────────────────────────────────────
+
+if has_mlx && is_apple_silicon; then
+    info "Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image)..."
+    ensure_test_images
+
+    python3 << 'PYEOF'
+import os, sys, time
+sys.path.insert(0, "src")
+
+os.environ["RECALLFORGE_BACKEND"] = "mlx"
+os.environ["RECALLFORGE_MLX_QUANTIZE"] = "4bit"
+os.environ["RECALLFORGE_MODE"] = "embed"
+
+from recallforge import get_backend
+
+backend = get_backend()
+
+print("Loading MLX embedder (4-bit)...")
+t0 = time.time()
+backend._load_embedder()
+print(f"  Embedder loaded in {time.time()-t0:.1f}s")
+
+vec = backend.embed_text("test text")
+assert vec.shape == (2048,), f"FAIL: embed_text shape {vec.shape} != (2048,)"
+assert vec.dtype.name == "float32", f"FAIL: embed_text dtype {vec.dtype}"
+norm = (vec**2).sum()**0.5
+assert 0.9 < norm < 1.1, f"FAIL: embed_text norm {norm}"
+print("  PASS  MLX 4-bit embed_text: 2048-dim float32 vector")
+
+texts = ["Hello world", "Goodbye world", "Test embedding"]
+vecs = backend.embed_texts(texts)
+assert vecs.shape == (len(texts), 2048), f"FAIL: embed_texts shape {vecs.shape}"
+print(f"  PASS  MLX 4-bit embed_texts batch: {vecs.shape}")
+
+img_path = os.path.join("tests", "uat", "corpus", "images", "whiteboard_architecture.png")
+assert os.path.exists(img_path), f"FAIL: missing test image {img_path}"
+vec_img = backend.embed_image(img_path)
+assert vec_img.shape == (2048,), f"FAIL: embed_image shape {vec_img.shape}"
+print("  PASS  MLX 4-bit embed_image: 2048-dim vector")
+
+print("\nMLX 4-bit embed coverage: ALL PASSED")
+PYEOF
+    MLX_EMBED_RC=$?
+
+    if [[ $MLX_EMBED_RC -eq 0 ]]; then
+        pass "MLX 4-bit embed coverage"
+    else
+        fail "MLX 4-bit embed coverage had failures"
+    fi
+else
+    skip "MLX 4-bit embed coverage (not available)"
+fi
+
+# ──────────────────────────────────────────────
 subsection "MLX Backend"
 # ──────────────────────────────────────────────
 
@@ -261,11 +317,7 @@ backend = get_backend()
 info = backend.get_info()
 
 if platform.system() == "Darwin" and platform.machine() == "arm64":
-    try:
-        import mlx
-        expected = "mlx"
-    except ImportError:
-        expected = "torch"
+    expected = "mlx"
 else:
     expected = "torch"
 

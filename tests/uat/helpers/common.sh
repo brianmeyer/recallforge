@@ -32,6 +32,13 @@ HELPERS_DIR="${UAT_DIR}/helpers"
 UAT_STORE="${TMPDIR:-/tmp}/recallforge-uat-$$"
 
 # ──────────────────────────────────────────────
+# Activate project venv if present (ensures recallforge is importable)
+# ──────────────────────────────────────────────
+if [[ -z "${VIRTUAL_ENV:-}" && -f "${REPO_ROOT}/.venv/bin/activate" ]]; then
+    source "${REPO_ROOT}/.venv/bin/activate"
+fi
+
+# ──────────────────────────────────────────────
 # Functions
 # ──────────────────────────────────────────────
 
