@@ -244,7 +244,34 @@ Future support planned for:
 
 ## MCP Tools
 
-When running as an MCP server, RecallForge exposes these tools:
+When running as an MCP server, use `ingest` as the **primary** tool for agents. It handles text, image, single-file, and folder ingestion in one call.
+
+The lower-level tools (`index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`) remain available for advanced or explicit workflows.
+
+### `ingest` (recommended)
+
+Unified ingest entry point.
+
+```json
+{
+  "text": "optional raw text content",
+  "path": "optional/path/for/raw-text.md",
+  "file_path": "/path/to/file-or-image",
+  "folder_path": "/path/to/folder",
+  "recursive": true,
+  "collection": "default",
+  "content_types": ["text", "image"],
+  "include_globs": ["**/*"],
+  "exclude_globs": ["**/.git/**"]
+}
+```
+
+Returns a unified summary with:
+- `indexed_text`
+- `indexed_images`
+- `skipped`
+- `errors`
+- `items[]` (`path`, `type`, `status`)
 
 ### `search`
 

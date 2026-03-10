@@ -2,8 +2,8 @@
 server.py - MCP Server for RecallForge.
 
 MCP protocol server with stdio transport.
-Tools: search, search_fts, search_vec, index_document, index_image, memory_add,
-memory_update, memory_delete, index_folder, status, rebuild_fts
+Tools: search, search_fts, search_vec, ingest, index_document, index_image,
+memory_add, memory_update, memory_delete, index_folder, status, rebuild_fts
 
 Calls backend.warm_up() on server start for predictable latency.
 """
@@ -105,6 +105,29 @@ async def create_server(
                         "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
                     },
                     "required": ["query"],
+                },
+            ),
+            Tool(
+                name="ingest",
+                description="Unified ingest for text, image, file, or folder. Auto-detects modality and routes accordingly.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Raw text content to ingest"},
+                        "path": {"type": "string", "description": "Optional memory path for raw text ingest"},
+                        "file_path": {"type": "string", "description": "Path to a single file (text or image)"},
+                        "folder_path": {"type": "string", "description": "Path to a folder to ingest"},
+                        "recursive": {"type": "boolean", "description": "Recursively ingest subfolders", "default": True},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                        "content_types": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["text", "image"]},
+                            "description": "Allowed content types to ingest",
+                            "default": ["text", "image"]
+                        },
+                        "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
+                        "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"}
+                    },
                 },
             ),
             Tool(
@@ -213,6 +236,8 @@ async def create_server(
                 return await _handle_search_fts(arguments, storage)
             elif name == "search_vec":
                 return await _handle_search_vec(arguments, backend, storage)
+            elif name == "ingest":
+                return await _handle_ingest(arguments, backend, storage)
             elif name == "index_document":
                 return await _handle_index_document(arguments, backend, storage)
             elif name == "index_image":
@@ -346,6 +371,35 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
         ],
     }
     
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]:
+    """Handle unified ingest."""
+    text = arguments.get("text")
+    path = arguments.get("path")
+    file_path = arguments.get("file_path")
+    folder_path = arguments.get("folder_path")
+    recursive = arguments.get("recursive", True)
+    collection = arguments.get("collection", "default")
+    content_types = arguments.get("content_types", ["text", "image"])
+    include_globs = arguments.get("include_globs")
+    exclude_globs = arguments.get("exclude_globs")
+
+    output = storage.ingest(
+        collection=collection,
+        text=text,
+        path=path,
+        file_path=file_path,
+        folder_path=folder_path,
+        recursive=recursive,
+        content_types=content_types,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
+        embed_text_func=backend.embed_text,
+        embed_image_func=backend.embed_image,
+        model="Qwen3-VL-Embedding-2B",
+    )
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 

@@ -1010,6 +1010,21 @@ class LanceDBBackend(StorageBackend):
         except Exception:
             return None
 
+    def _is_image_file(self, file_path: Path) -> bool:
+        """Best-effort image file detection by extension."""
+        return file_path.suffix.lower() in {
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic"
+        }
+
+    def _matches_globs(self, rel_path: str, include_globs: Optional[List[str]], exclude_globs: Optional[List[str]]) -> bool:
+        include = include_globs or ["**/*"]
+        exclude = exclude_globs or []
+        if include and not any(fnmatch.fnmatch(rel_path, pattern) for pattern in include):
+            return False
+        if exclude and any(fnmatch.fnmatch(rel_path, pattern) for pattern in exclude):
+            return False
+        return True
+
     def index_folder(
         self,
         folder_path: str,
@@ -1074,6 +1089,131 @@ class LanceDBBackend(StorageBackend):
             "errors": errors,
             "total_seen": indexed + skipped + errors,
         }
+
+    def ingest(
+        self,
+        collection: str,
+        text: Optional[str],
+        path: Optional[str],
+        file_path: Optional[str],
+        folder_path: Optional[str],
+        recursive: bool,
+        content_types: List[str],
+        include_globs: Optional[List[str]],
+        exclude_globs: Optional[List[str]],
+        embed_text_func,
+        embed_image_func,
+        model: str,
+    ) -> Dict[str, Any]:
+        """Unified multimodal ingest for text, file, or folder inputs."""
+        content_types = content_types or ["text", "image"]
+        allowed = set(content_types)
+        if not allowed.issubset({"text", "image"}):
+            raise ValueError("content_types must be subset of ['text', 'image']")
+
+        summary = {
+            "success": True,
+            "collection": collection,
+            "indexed_text": 0,
+            "indexed_images": 0,
+            "skipped": 0,
+            "errors": 0,
+            "items": [],
+        }
+
+        def mark(item_path: str, item_type: str, status: str, error: Optional[str] = None) -> None:
+            item = {"path": item_path, "type": item_type, "status": status}
+            if error:
+                item["error"] = error
+            summary["items"].append(item)
+
+        def ingest_single(candidate: Path, rel_hint: Optional[str] = None) -> None:
+            candidate = candidate.expanduser().resolve()
+            if not candidate.exists() or not candidate.is_file():
+                summary["errors"] += 1
+                mark(str(candidate), "unknown", "error", "file not found")
+                return
+
+            item_path = rel_hint or str(candidate)
+            is_image = self._is_image_file(candidate)
+
+            try:
+                if is_image:
+                    if "image" not in allowed:
+                        summary["skipped"] += 1
+                        mark(item_path, "image", "skipped")
+                        return
+                    self.index_image(path=str(candidate), collection=collection, embed_func=embed_image_func, model=model)
+                    summary["indexed_images"] += 1
+                    mark(item_path, "image", "indexed")
+                    return
+
+                if "text" not in allowed:
+                    summary["skipped"] += 1
+                    mark(item_path, "text", "skipped")
+                    return
+                if not self._is_text_file(candidate):
+                    summary["skipped"] += 1
+                    mark(item_path, "text", "skipped")
+                    return
+                body = self._read_text_robust(candidate)
+                if body is None or not body.strip():
+                    summary["skipped"] += 1
+                    mark(item_path, "text", "skipped")
+                    return
+                self.upsert_memory(
+                    path=item_path,
+                    text=body,
+                    collection=collection,
+                    embed_func=embed_text_func,
+                    model=model,
+                )
+                summary["indexed_text"] += 1
+                mark(item_path, "text", "indexed")
+            except Exception as e:
+                summary["errors"] += 1
+                mark(item_path, "image" if is_image else "text", "error", str(e))
+
+        if text is not None:
+            if "text" not in allowed:
+                summary["skipped"] += 1
+                mark(path or "inline", "text", "skipped")
+            else:
+                text_path = (path or "inline").strip() or "inline"
+                self.upsert_memory(
+                    path=text_path,
+                    text=text,
+                    collection=collection,
+                    embed_func=embed_text_func,
+                    model=model,
+                )
+                summary["indexed_text"] += 1
+                mark(text_path, "text", "indexed")
+
+        if file_path:
+            ingest_single(Path(file_path))
+
+        if folder_path:
+            root = Path(folder_path).expanduser().resolve()
+            if not root.exists() or not root.is_dir():
+                raise ValueError(f"Folder not found: {folder_path}")
+            iterator = root.rglob("*") if recursive else root.glob("*")
+            for candidate in iterator:
+                if not candidate.is_file():
+                    continue
+                rel = candidate.relative_to(root).as_posix()
+                if not self._matches_globs(rel, include_globs, exclude_globs):
+                    summary["skipped"] += 1
+                    mark(rel, "unknown", "skipped")
+                    continue
+                ingest_single(candidate, rel)
+
+        if text is None and not file_path and not folder_path:
+            raise ValueError("Provide one of: text, file_path, or folder_path")
+
+        self.ensure_fts_index(force_rebuild=True)
+        summary["total_seen"] = summary["indexed_text"] + summary["indexed_images"] + summary["skipped"] + summary["errors"]
+        return summary
 
     def index_image(
         self,

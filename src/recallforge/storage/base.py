@@ -241,3 +241,22 @@ class StorageBackend(ABC):
     ) -> Dict[str, Any]:
         """Index text files from a folder and return summary counts."""
         pass
+
+    @abstractmethod
+    def ingest(
+        self,
+        collection: str,
+        text: Optional[str],
+        path: Optional[str],
+        file_path: Optional[str],
+        folder_path: Optional[str],
+        recursive: bool,
+        content_types: List[str],
+        include_globs: Optional[List[str]],
+        exclude_globs: Optional[List[str]],
+        embed_text_func: Callable[[str], List[float]],
+        embed_image_func: Callable[[str], List[float]],
+        model: str,
+    ) -> Dict[str, Any]:
+        """Unified multimodal ingest for text/image/file/folder inputs."""
+        pass
