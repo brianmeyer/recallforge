@@ -304,6 +304,55 @@ Index an image for cross-modal search.
 }
 ```
 
+### `memory_add`
+
+Add (or replace) a text memory by path.
+
+```json
+{
+  "path": "memory/projects/recallforge.md",
+  "text": "Phase 1 MCP memory tools are implemented.",
+  "collection": "default"
+}
+```
+
+### `memory_update`
+
+Update existing memory text by path without duplicating old vectors.
+
+```json
+{
+  "path": "memory/projects/recallforge.md",
+  "text": "Phase 1 complete. Added update/delete/index_folder tooling.",
+  "collection": "default"
+}
+```
+
+### `memory_delete`
+
+Deactivate a memory entry and remove associated embeddings.
+
+```json
+{
+  "path": "memory/projects/recallforge.md",
+  "collection": "default"
+}
+```
+
+### `index_folder`
+
+Index text files from a folder into memory entries.
+
+```json
+{
+  "folder_path": "/Users/me/notes",
+  "collection": "default",
+  "recursive": true,
+  "include_globs": ["**/*.md", "**/*.txt"],
+  "exclude_globs": ["**/.git/**", "**/node_modules/**"]
+}
+```
+
 ### `status`
 
 Get server status.
