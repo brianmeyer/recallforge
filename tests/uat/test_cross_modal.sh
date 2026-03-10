@@ -61,7 +61,10 @@ total_emb = storage.count_embeddings()
 print(f"\n  Indexed {total_docs} documents, {total_emb} embeddings")
 
 PYEOF
-[ $? -ne 0 ] && print_result "FAILED" && exit 1
+if [ $? -ne 0 ]; then
+  print_summary "Cross-Modal Search Tests"
+  exit 1
+fi
 
 # ═══════════════════════════════════
 # Phase 2: Test each mode in subprocess
@@ -226,7 +229,7 @@ PYEOF_MODE
 done
 
 if [ -n "$OVERALL_FAIL" ]; then
-  print_result "FAILED"
+  print_summary "Cross-Modal Search Tests"
   exit 1
 fi
 
@@ -234,5 +237,4 @@ fi
 # Summary
 # ═══════════════════════════════════
 
-print_pass_fail 12 0  # All 3 modes x 4 directions = 12 tests
-print_result "PASSED"
+print_summary "Cross-Modal Search Tests"
