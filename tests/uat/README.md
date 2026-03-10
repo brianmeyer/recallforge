@@ -14,7 +14,7 @@ Manual end-to-end test suite for RecallForge v0.1.0.
 
 ```bash
 # From repo root
-cd /Users/brianmeyer/qmd-vl
+cd ~/recallforge
 
 # Run the full suite
 ./tests/uat/run_all.sh
