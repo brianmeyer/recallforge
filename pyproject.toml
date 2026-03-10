@@ -24,6 +24,7 @@ dependencies = [
     "qwen-vl-utils>=0.0.14",
     "transformers>=4.40",
     "torch>=2.0",
+    "torchvision>=0.15",
     "scipy>=1.10",
 ]
 

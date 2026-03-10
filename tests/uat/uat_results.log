@@ -1,8 +1,8 @@
 RecallForge UAT Results
 ======================
-Date: 2026-03-09 22:10:32 EDT
+Date: 2026-03-09 22:46:57 EDT
 Host: Mac (arm64)
-Python: Python 3.14.3
+Python: Python 3.12.12
 
 
 ═══════════════════════════════════════
@@ -15,7 +15,43 @@ Python: Python 3.14.3
 
 [0;36m--- Base Install (PyTorch) ---[0m
   [0;36mINFO[0m  Installing recallforge (base) from /Users/brianmeyer/recallforge ...
-ERROR: Failed to build 'file:///Users/brianmeyer/recallforge' when getting requirements to build wheel
+[notice] To update, run: python3.12 -m pip install --upgrade pip
+  [0;32mPASS[0m  recallforge --help works
+  [0;32mPASS[0m  recallforge --version prints version (RecallForge 0.1.0)
+  [0;32mPASS[0m  import recallforge works
+  [0;32mPASS[0m  Dependency present: lancedb
+  [0;32mPASS[0m  Dependency present: pyarrow
+  [0;32mPASS[0m  Dependency present: PIL
+  [0;32mPASS[0m  Dependency present: numpy
+  [0;32mPASS[0m  Dependency present: mcp
+  [0;32mPASS[0m  Dependency present: transformers
+  [0;32mPASS[0m  Dependency present: torch
+  [0;32mPASS[0m  Dependency present: scipy
+  [0;32mPASS[0m  Import: recallforge.backends
+  [0;32mPASS[0m  Import: recallforge.storage
+  [0;32mPASS[0m  Import: recallforge.search
+  [0;32mPASS[0m  Import: recallforge.server
+  [0;32mPASS[0m  Import: recallforge.cli
+
+[0;36m--- MLX Install (Apple Silicon) ---[0m
+  [0;36mINFO[0m  Installing recallforge[mlx] ...
+[notice] To update, run: python3.12 -m pip install --upgrade pip
+  [0;32mPASS[0m  MLX package installed
+  [0;32mPASS[0m  MLX_AVAILABLE is True
+  [0;32mPASS[0m  recallforge CLI works with MLX install
+
+[0;36m--- CUDA Install ---[0m
+  [0;33mSKIP[0m  CUDA install (no CUDA GPU)
+
+[1m═══════════════════════════════════════[0m
+[1m  Install Tests Summary[0m
+[1m═══════════════════════════════════════[0m
+  [0;32mPASS: 19[0m
+  [0;31mFAIL: 0[0m
+  [0;33mSKIP: 1[0m
+  Total: 20
+
+  [0;32m[1mRESULT: PASSED[0m
 
 
 ═══════════════════════════════════════
@@ -25,3 +61,333 @@ ERROR: Failed to build 'file:///Users/brianmeyer/recallforge' when getting requi
 [1m[0;34m═══════════════════════════════════════[0m
 [1m[0;34m  RecallForge Storage Tests[0m
 [1m[0;34m═══════════════════════════════════════[0m
+
+[0;36m--- Create DB & Insert ---[0m
+
+  [0;32mPASS[0m  Fresh DB has 0 documents
+  [0;32mPASS[0m  Fresh DB has 0 embeddings
+  [0;32mPASS[0m  Fresh DB has no vectors
+  [0;32mPASS[0m  Indexed doc1.md, hash=efeea805...
+  [0;32mPASS[0m  Indexed doc2.md, hash=91022181...
+  [0;32mPASS[0m  Indexed doc3.md, hash=b109b44e...
+  [0;32mPASS[0m  Indexed doc4.md, hash=3d90bce4...
+  [0;32mPASS[0m  Indexed doc5.md, hash=c6491de9...
+  [0;32mPASS[0m  Document count is 5 (expected 5)
+  [0;32mPASS[0m  Embedding count is 5 (>= 5)
+  [0;32mPASS[0m  DB now has vectors
+
+[0;36m--- Content Storage ---[0m
+
+  [0;32mPASS[0m  Content for doc1.md matches original
+  [0;32mPASS[0m  Content for doc2.md matches original
+  [0;32mPASS[0m  Content for doc3.md matches original
+  [0;32mPASS[0m  Content for doc4.md matches original
+  [0;32mPASS[0m  Content for doc5.md matches original
+  [0;32mPASS[0m  Nonexistent hash returns None
+
+[0;36m--- FTS Search ---[0m
+
+  [0;32mPASS[0m  FTS 'AI machine learning' returns 1 results
+  [0;32mPASS[0m  Top FTS result is AI doc: storage_test/doc1.md
+  [0;32mPASS[0m  FTS 'graph databases' returns 1 results
+  [0;32mPASS[0m  FTS 'pasta flour' returns 1 results
+  [0;32mPASS[0m  FTS with wrong collection returns 0 results
+
+[0;36m--- Vector Search ---[0m
+
+  [0;32mPASS[0m  Vector search returns 5 results
+  [0;32mPASS[0m  Vector search with wrong collection returns 0
+
+[0;36m--- Document Operations ---[0m
+
+  [0;32mPASS[0m  find_document returns doc1: title='doc1'
+  [0;32mPASS[0m  find_document for nonexistent returns None
+  [0;32mPASS[0m  Deactivated doc not found by find_document
+
+[0;36m--- Cache Operations ---[0m
+
+  [0;32mPASS[0m  Cache miss returns None
+  [0;32mPASS[0m  Cache set/get roundtrip works
+  [0;32mPASS[0m  Cache update/overwrite works
+
+[0;36m--- Rebuild FTS Index ---[0m
+
+  [0;32mPASS[0m  rebuild_fts_index completed without error
+  [0;32mPASS[0m  FTS works after rebuild: 1 results
+
+[0;36m--- Large Corpus Performance ---[0m
+
+  Indexing 1000 documents...
+    Indexed 200/1000
+    Indexed 400/1000
+    Indexed 600/1000
+    Indexed 800/1000
+    Indexed 1000/1000
+  Indexing 1000 docs took 189.2s (5 docs/sec)
+  [0;32mPASS[0m  Indexed 1000 docs in 189.2s
+  [0;32mPASS[0m  FTS on 1000 docs: 472ms (< 1s)
+  [0;32mPASS[0m  FTS returned 10 results from bulk corpus
+  [0;32mPASS[0m  Vector search on 1000 docs: 436ms (< 1s)
+  [0;32mPASS[0m  Vector search returned 10 results from bulk corpus
+
+[1m========================================[0m
+[1m  Storage Summary[0m
+[1m========================================[0m
+  [0;32mPASS: 37[0m
+  [0;31mFAIL: 0[0m
+
+  [0;32m[1mRESULT: PASSED[0m
+
+
+═══════════════════════════════════════
+  Backends
+═══════════════════════════════════════
+
+[1m[0;34m═══════════════════════════════════════[0m
+[1m[0;34m  RecallForge Backend Tests[0m
+[1m[0;34m═══════════════════════════════════════[0m
+
+[0;36m--- Torch Backend ---[0m
+  [0;36mINFO[0m  Testing Torch backend (embed_text, embed_image, rerank, expand_query)...
+Loading embedder...
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'models'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
+    from qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'qwen3_vl_embedding'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 14, in <module>
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
+    from qwen_vl_utils.vision_process import process_vision_info
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
+    from .vision_process import (
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
+    import torchvision
+ModuleNotFoundError: No module named 'torchvision'
+
+
+═══════════════════════════════════════
+  Tiered Modes
+═══════════════════════════════════════
+
+[1m[0;34m═══════════════════════════════════════[0m
+[1m[0;34m  RecallForge Tiered Mode Tests[0m
+[1m[0;34m═══════════════════════════════════════[0m
+
+[0;36m--- Indexing test corpus ---[0m
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'models'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
+    from qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'qwen3_vl_embedding'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 15, in <module>
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
+    from qwen_vl_utils.vision_process import process_vision_info
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
+    from .vision_process import (
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
+    import torchvision
+ModuleNotFoundError: No module named 'torchvision'
+
+
+═══════════════════════════════════════
+  Cross-Modal ★
+═══════════════════════════════════════
+
+[1m[0;34m═══════════════════════════════════════[0m
+[1m[0;34m  RecallForge Cross-Modal Search Tests[0m
+[1m[0;34m═══════════════════════════════════════[0m
+[1m[0;33m  ★ THIS IS THE KEY DIFFERENTIATOR TEST ★[0m
+
+[0;36m--- Indexing Full Corpus ---[0m
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'models'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
+    from qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'qwen3_vl_embedding'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 15, in <module>
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
+    from qwen_vl_utils.vision_process import process_vision_info
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
+    from .vision_process import (
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
+    import torchvision
+ModuleNotFoundError: No module named 'torchvision'
+
+
+═══════════════════════════════════════
+  Search Quality
+═══════════════════════════════════════
+
+[1m[0;34m═══════════════════════════════════════[0m
+[1m[0;34m  RecallForge Search Quality Tests[0m
+[1m[0;34m═══════════════════════════════════════[0m
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'models'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
+    from qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'qwen3_vl_embedding'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 29, in <module>
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
+    from qwen_vl_utils.vision_process import process_vision_info
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
+    from .vision_process import (
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
+    import torchvision
+ModuleNotFoundError: No module named 'torchvision'
+
+
+═══════════════════════════════════════
+  MCP Server
+═══════════════════════════════════════
+
+[1m[0;34m═══════════════════════════════════════[0m
+[1m[0;34m  RecallForge MCP Server Tests[0m
+[1m[0;34m═══════════════════════════════════════[0m
+
+[0;36m--- Server Creation ---[0m
+
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'models'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
+    from qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'qwen3_vl_embedding'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 37, in <module>
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
+    from qwen_vl_utils.vision_process import process_vision_info
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
+    from .vision_process import (
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
+    import torchvision
+ModuleNotFoundError: No module named 'torchvision'
+
+
+═══════════════════════════════════════
+  CLI
+═══════════════════════════════════════
+
+[1m[0;34m═══════════════════════════════════════[0m
+[1m[0;34m  RecallForge CLI Tests[0m
+[1m[0;34m═══════════════════════════════════════[0m
+
+[0;36m--- Help and Version ---[0m
+  [0;32mPASS[0m  recallforge --help
+  [0;32mPASS[0m  recallforge --version
+  [0;32mPASS[0m  recallforge index --help
+  [0;31mFAIL[0m  recallforge search --help (expected 'Search indexed' not found)
+    Output: usage: recallforge search [-h] [--limit LIMIT] [--collection COLLECTION]
+                          [--content-type {text,image}]
+                          [--mode {embed,hybrid,full}]
+
+
+═══════════════════════════════════════
+  Latency
+═══════════════════════════════════════
+
+[1m[0;34m═══════════════════════════════════════[0m
+[1m[0;34m  RecallForge Performance Tests[0m
+[1m[0;34m═══════════════════════════════════════[0m
+
+[0;36m--- Cold Start: Backend + First Search ---[0m
+
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'models'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
+    from qwen3_vl_embedding import Qwen3VLEmbedder
+ModuleNotFoundError: No module named 'qwen3_vl_embedding'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<stdin>", line 52, in <module>
+  File "/Users/brianmeyer/recallforge/src/recallforge/storage/lancedb_backend.py", line 917, in index_document
+    vector = embed_func(chunk["text"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 196, in embed_text
+    return self.embed_texts([text])[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 200, in embed_texts
+    self._load_embedder()
+  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
+    from models.qwen3_vl_embedding import Qwen3VLEmbedder
+  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
+    from qwen_vl_utils.vision_process import process_vision_info
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
+    from .vision_process import (
+  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
+    import torchvision
+ModuleNotFoundError: No module named 'torchvision'
+
+
+═══════════════════════════════════════
+  UAT SUITE SUMMARY
+═══════════════════════════════════════
+  Passed: 2
+  Failed: 7
+  Total:  9
+  SUITE RESULT: FAILED
