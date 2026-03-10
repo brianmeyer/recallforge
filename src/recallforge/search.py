@@ -313,20 +313,32 @@ class HybridSearcher:
         """Blend RRF scores with reranker scores."""
         hybrid_results = []
         
+        # Check if reranking was actually performed (embed mode returns all 0.5)
+        # In embed mode, rerank_scores are uniform - use RRF scores directly
+        unique_rerank_scores = set(rerank_scores.values())
+        has_meaningful_rerank = len(unique_rerank_scores) > 1 or (
+            len(unique_rerank_scores) == 1 and 0.5 not in unique_rerank_scores
+        )
+        
         for rank, result in enumerate(rrf_results):
             rrf_rank = rank + 1
-            
-            # RRF weight: higher for top results
-            if rrf_rank <= 3:
-                rrf_weight = 0.75
-            elif rrf_rank <= 10:
-                rrf_weight = 0.60
-            else:
-                rrf_weight = 0.40
-            
             rrf_score = result.score
             rerank_score = rerank_scores.get(result.filepath, 0.0)
-            blended = rrf_weight * rrf_score + (1 - rrf_weight) * rerank_score
+            
+            if has_meaningful_rerank:
+                # Blend RRF with reranker scores
+                # RRF weight: higher for top results
+                if rrf_rank <= 3:
+                    rrf_weight = 0.75
+                elif rrf_rank <= 10:
+                    rrf_weight = 0.60
+                else:
+                    rrf_weight = 0.40
+                
+                blended = rrf_weight * rrf_score + (1 - rrf_weight) * rerank_score
+            else:
+                # Embed mode: use RRF scores directly (rerank_scores are uniform)
+                blended = rrf_score
             
             hybrid_results.append(HybridResult(
                 filepath=result.filepath,
