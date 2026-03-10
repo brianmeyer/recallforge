@@ -9,9 +9,9 @@ Images, text, and video frames live in the same semantic space. Search across al
 Type a text query, find the relevant photo. Submit an image, find related documents. Search image-to-image for visual similarity. RecallForge puts every modality into a shared Qwen3-VL embedding space so cross-modal retrieval just works.
 
 ```bash
-pip install recallforge            # works everywhere (PyTorch)
-pip install recallforge[mlx]       # Apple Silicon 4-bit (default on Mac, ~2GB)
-pip install recallforge[cuda]      # NVIDIA GPU acceleration
+pip install recallforge            # auto-detects: MLX on Apple Silicon, PyTorch elsewhere
+pip install recallforge[mlx]       # force MLX backend (Apple Silicon)
+pip install recallforge[cuda]      # force CUDA backend (NVIDIA GPU)
 ```
 
 ```bash
@@ -25,8 +25,9 @@ recallforge search --image photo.jpg  # find docs related to this image
 - **Cross-modal search in all four directions:** Text→Text, Text→Image, Image→Text, Image→Image
 - **Shared vision-language embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
 - **3-stage retrieval pipeline:** embedding → reranking → query expansion (all multimodal)
-- **Runs on anything:** MLX 4-bit on a MacBook (~2GB), PyTorch fp16 on CUDA, MPS, or CPU
-- **Pick your tradeoff:** embed mode (1 model, fast), hybrid (+ reranker), full (+ query expansion)
+- **Runs on anything:** MLX 4-bit on Apple Silicon (~2GB), PyTorch fp16 on CUDA/MPS/CPU. Auto-detects the best backend.
+- **Fast:** 161ms warm search (MLX), 414ms (PyTorch). Cold start 3.8s on MLX 4-bit.
+- **Pick your tradeoff:** embed mode (1 model, ~2GB), hybrid (+ reranker, ~4GB), full (+ query expansion, ~8GB)
 - **MCP server** for agent/tool integration
 - **100% local:** All models run on-device. Your data never leaves your machine.
 - **Swappable storage:** LanceDB default, ChromaDB and Qdrant coming
@@ -51,22 +52,20 @@ QMD pioneered the multi-stage retrieval pipeline: embedding, reranking, and quer
 
 ## Installation
 
-### Basic (PyTorch)
-
 ```bash
 pip install recallforge
 ```
 
-### With MLX (Apple Silicon)
+RecallForge auto-detects the best backend for your hardware:
+- **Apple Silicon** → MLX 4-bit (fastest, ~2GB memory)
+- **NVIDIA GPU** → PyTorch/CUDA
+- **Everything else** → PyTorch/CPU
+
+To force a specific backend, install the extra:
 
 ```bash
-pip install recallforge[mlx]
-```
-
-### With CUDA
-
-```bash
-pip install recallforge[cuda]
+pip install recallforge[mlx]       # force MLX (Apple Silicon only)
+pip install recallforge[cuda]      # force CUDA (NVIDIA only)
 ```
 
 ### From Source
@@ -74,10 +73,7 @@ pip install recallforge[cuda]
 ```bash
 git clone https://github.com/brianmeyer/recallforge.git
 cd recallforge
-pip install -e .
-
-# For MLX support on Apple Silicon
-pip install -e ".[mlx]"
+pip install -e ".[mlx]"   # or just: pip install -e .
 ```
 
 ## Quick Start
@@ -155,11 +151,12 @@ Configure in Claude Desktop:
 
 RecallForge supports three search modes with different memory/quality tradeoffs:
 
-### `embed` Mode (~4GB VRAM)
+### `embed` Mode (~2GB MLX 4-bit / ~4GB PyTorch)
 
 - **Models**: Embedder only
 - **Search**: BM25 + Vector
 - **Best for**: Memory-constrained environments, fast searches
+- **Measured**: 161ms warm search, 3.7GB peak RSS (MLX 4-bit, 1000+ docs indexed)
 
 ```bash
 recallforge serve --mode embed
@@ -169,7 +166,7 @@ recallforge serve --mode embed
 os.environ["RECALLFORGE_MODE"] = "embed"
 ```
 
-### `hybrid` Mode (~8GB VRAM)
+### `hybrid` Mode (~4GB MLX 4-bit / ~8GB PyTorch)
 
 - **Models**: Embedder + Reranker
 - **Search**: BM25 + Vector + Reranking
@@ -179,7 +176,7 @@ os.environ["RECALLFORGE_MODE"] = "embed"
 recallforge serve --mode hybrid
 ```
 
-### `full` Mode (~12GB VRAM) [Default]
+### `full` Mode (~8GB MLX / ~12GB PyTorch) [Default]
 
 - **Models**: Embedder + Reranker + Query Expander
 - **Search**: BM25 + Vector + Expansion + Reranking
@@ -191,9 +188,37 @@ recallforge serve --mode full
 
 ## Model Backends
 
-### PyTorch Backend (Default)
+RecallForge auto-detects the best backend (`RECALLFORGE_BACKEND=auto`):
 
-Works on CUDA, MPS (Apple Silicon), and CPU.
+| Hardware | Backend | Cold Start | Warm Search | Peak RSS (embed) |
+|----------|---------|-----------|-------------|-----------------|
+| Apple Silicon | MLX 4-bit | 3.8s | 161ms | ~2GB |
+| Apple Silicon | MLX bf16 | 4.5s | 200ms | ~4GB |
+| Apple Silicon | PyTorch/MPS | 8.4s | 412ms | ~4GB |
+| NVIDIA GPU | PyTorch/CUDA | varies | varies | ~4GB |
+
+### MLX Backend (Default on Apple Silicon)
+
+Auto-selected on Apple Silicon. Uses 4-bit quantization by default for minimal memory.
+
+```bash
+export RECALLFORGE_BACKEND=mlx           # explicit
+export RECALLFORGE_MLX_QUANTIZE=4bit     # default (or bf16 for higher precision)
+```
+
+**Model IDs (4-bit):**
+- Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`
+- Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit`
+- Expander: PyTorch fallback
+
+**Model IDs (BF16):**
+- Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx`
+- Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx`
+- Expander: PyTorch fallback
+
+### PyTorch Backend
+
+Works on CUDA, MPS (Apple Silicon), and CPU. Auto-selected when MLX is unavailable.
 
 ```bash
 export RECALLFORGE_BACKEND=torch
@@ -203,37 +228,6 @@ export RECALLFORGE_BACKEND=torch
 - Embedder: `Qwen/Qwen3-VL-Embedding-2B`
 - Reranker: `Qwen/Qwen3-VL-Reranker-2B`
 - Expander: `tobil/qmd-query-expansion-qwen3.5-2B`
-
-### MLX Backend (Apple Silicon)
-
-Optimized for Apple Silicon with optional quantization.
-
-```bash
-export RECALLFORGE_BACKEND=mlx
-export RECALLFORGE_MLX_QUANTIZE=bf16  # or 4bit
-```
-
-**Model IDs (BF16):**
-- Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx`
-- Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx`
-- Expander: Uses PyTorch fallback
-
-**Model IDs (4-bit):**
-- Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`
-- Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit`
-- Expander: Uses PyTorch fallback
-
-### Auto-Detection
-
-By default, RecallForge auto-detects the best backend:
-
-```bash
-export RECALLFORGE_BACKEND=auto  # Default
-```
-
-- Apple Silicon → MLX
-- CUDA GPU → PyTorch/CUDA
-- Otherwise → PyTorch/CPU
 
 ## Storage Backend
 
@@ -332,9 +326,9 @@ Rebuild the full-text search index.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RECALLFORGE_BACKEND` | `auto` | Model backend: `torch`, `mlx`, `auto` |
+| `RECALLFORGE_BACKEND` | `auto` | Model backend: `auto`, `mlx`, `torch` |
 | `RECALLFORGE_MODE` | `full` | Search mode: `embed`, `hybrid`, `full` |
-| `RECALLFORGE_MLX_QUANTIZE` | `bf16` | MLX quantization: `bf16`, `4bit` |
+| `RECALLFORGE_MLX_QUANTIZE` | `4bit` | MLX quantization: `4bit`, `bf16` |
 | `RECALLFORGE_STORAGE` | `lancedb` | Storage backend |
 | `RECALLFORGE_STORE_PATH` | `~/.recallforge` | Storage directory |
 
@@ -379,13 +373,27 @@ RecallForge
 
 ## Benchmarks
 
-Run the benchmark suite:
+### Performance (Mac mini M4 16GB, MLX 4-bit, embed mode)
+
+| Metric | Value |
+|--------|-------|
+| Cold start | 3.8s |
+| Warm search p50 | 161ms |
+| Warm search p95 | 200ms |
+| Text indexing | 5 docs/sec |
+| Peak RSS | 3.7 GB |
+| FTS (1000 docs) | 473ms |
+| Vector search (1000 docs) | 429ms |
+
+### Cross-Modal Retrieval Accuracy
+
+Run the benchmark:
 
 ```bash
-python tests/benchmark.py --backends torch --modes embed hybrid full
+python benchmarks/cross_modal_accuracy.py --backend auto --mode embed --dataset coco --limit 1000
 ```
 
-Results are saved to `benchmarks/results.json` and `benchmarks/RESULTS.md`.
+Results are saved to `benchmarks/cross_modal_results.json` and `benchmarks/CROSS_MODAL.md`.
 
 ## Development
 
