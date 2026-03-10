@@ -113,11 +113,11 @@ class MLXBackend(ModelBackend):
         if quantization == "4bit":
             self.EMBEDDER_MODEL = "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit"
             self.RERANKER_MODEL = "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit"
-            self.EXPANDER_MODEL = "bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit"
         else:
             self.EMBEDDER_MODEL = "arthurcollet/Qwen3-VL-Embedding-2B-mlx"
             self.RERANKER_MODEL = "arthurcollet/Qwen3-VL-Reranker-2B-mlx"
-            self.EXPANDER_MODEL = "tobil/qmd-query-expansion-qwen3.5-2B"
+        # Expander always uses torch backend - MLX models don't work with transformers
+        self.EXPANDER_MODEL = "tobil/qmd-query-expansion-qwen3.5-2B"
 
     # =========================================================================
     # Embedder
