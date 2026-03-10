@@ -7,7 +7,7 @@ Supports bf16 and 4-bit quantization (4-bit default, ~2GB memory).
 Model IDs:
 - MLX BF16: arthurcollet/Qwen3-VL-Embedding-2B-mlx, arthurcollet/Qwen3-VL-Reranker-2B-mlx
 - MLX 4-bit: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit, arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-- Expander: Uses torch fallback (MLX doesn't support the expander model well)
+- Expander: bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit (native MLX), torch fallback for bf16
 """
 
 import os
@@ -120,8 +120,12 @@ class MLXBackend(ModelBackend):
         else:
             self.EMBEDDER_MODEL = "arthurcollet/Qwen3-VL-Embedding-2B-mlx"
             self.RERANKER_MODEL = "arthurcollet/Qwen3-VL-Reranker-2B-mlx"
-        # Expander always uses torch backend - MLX models don't work with transformers
-        self.EXPANDER_MODEL = "tobil/qmd-query-expansion-qwen3.5-2B"
+        if quantization == "4bit":
+            self.EXPANDER_MODEL = "bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit"
+        else:
+            # bf16: fall back to torch since no MLX bf16 expander exists yet
+            self.EXPANDER_MODEL = "tobil/qmd-query-expansion-qwen3.5-2B"
+        self._expander_is_mlx = quantization == "4bit"
 
     # =========================================================================
     # Embedder
@@ -882,17 +886,34 @@ class MLXBackend(ModelBackend):
         return scores
 
     # =========================================================================
-    # Query Expander (Torch Fallback)
+    # Query Expander
     # =========================================================================
 
     def _load_expander(self):
-        """Load expander using torch backend (MLX doesn't support this model)."""
+        """Load expander — native MLX for 4-bit, torch fallback for bf16."""
         if self._expander is not None:
             return
 
+        if self._expander_is_mlx:
+            self._load_expander_mlx()
+        else:
+            self._load_expander_torch()
+
+    def _load_expander_mlx(self):
+        """Load the MLX 4-bit query expander natively."""
+        from mlx_lm import load as mlx_lm_load
+
+        print(f"[MLXBackend] Loading expander: {self.EXPANDER_MODEL}")
+        model, tokenizer = mlx_lm_load(self.EXPANDER_MODEL)
+        self._expander = model
+        self._expander_tokenizer = tokenizer
+        print(f"[MLXBackend] Loaded expander (MLX 4-bit)")
+
+    def _load_expander_torch(self):
+        """Load expander via torch fallback (bf16 mode)."""
         if not _torch_available:
             raise ImportError(
-                "PyTorch is required for query expansion. "
+                "PyTorch is required for query expansion in bf16 mode. "
                 "Install with: pip install torch"
             )
 
@@ -912,19 +933,9 @@ class MLXBackend(ModelBackend):
         self._expander.eval()
         print(f"[MLXBackend] Loaded expander (torch fallback)")
 
-    def expand_query(self, query: str) -> Dict[str, str]:
-        """Generate query expansions using torch fallback."""
-        if not self.needs_expander():
-            return {"lex": query, "vec": query, "hyde": query}
-
-        self._load_expander()
-
-        import json
-
-        tokenizer = self._expander_tokenizer
-        model = self._expander
-
-        prompt = f"""<|im_start|>system
+    def _build_expander_prompt(self, query: str) -> str:
+        """Build the query expansion prompt."""
+        return f"""<|im_start|>system
 You are a query expansion assistant. Given a search query, generate 3 variations:
 1. A lexical variant (lex) - keywords and synonyms for BM25/Fuzzy matching
 2. A vector variant (vec) - semantic rephrasing for vector/ANN search
@@ -937,20 +948,10 @@ Query: {query}<|im_end|>
 <|im_start|>assistant
 {{"""
 
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    def _parse_expansion_json(self, response: str, query: str) -> Dict[str, str]:
+        """Parse JSON expansion from model response."""
+        import json
 
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=256,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-        # Extract JSON
         json_start = response.find("{")
         if json_start == -1:
             return {"lex": query, "vec": query, "hyde": query}
@@ -979,6 +980,52 @@ Query: {query}<|im_end|>
             }
         except (json.JSONDecodeError, TypeError):
             return {"lex": query, "vec": query, "hyde": query}
+
+    def expand_query(self, query: str) -> Dict[str, str]:
+        """Generate query expansions."""
+        if not self.needs_expander():
+            return {"lex": query, "vec": query, "hyde": query}
+
+        self._load_expander()
+
+        prompt = self._build_expander_prompt(query)
+
+        if self._expander_is_mlx:
+            return self._expand_query_mlx(prompt, query)
+        else:
+            return self._expand_query_torch(prompt, query)
+
+    def _expand_query_mlx(self, prompt: str, query: str) -> Dict[str, str]:
+        """Generate expansions using native MLX."""
+        from mlx_lm import generate as mlx_generate
+
+        response = mlx_generate(
+            self._expander,
+            self._expander_tokenizer,
+            prompt=prompt,
+            max_tokens=256,
+        )
+
+        return self._parse_expansion_json("{" + response, query)
+
+    def _expand_query_torch(self, prompt: str, query: str) -> Dict[str, str]:
+        """Generate expansions using torch fallback."""
+        tokenizer = self._expander_tokenizer
+        model = self._expander
+
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=256,
+                temperature=0.7,
+                do_sample=True,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return self._parse_expansion_json(response, query)
 
     # =========================================================================
     # Warm-up and Status

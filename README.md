@@ -206,15 +206,15 @@ export RECALLFORGE_BACKEND=mlx           # explicit
 export RECALLFORGE_MLX_QUANTIZE=4bit     # default (or bf16 for higher precision)
 ```
 
-**Model IDs (4-bit):**
+**Model IDs (4-bit — fully native MLX):**
 - Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`
 - Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit`
-- Expander: `tobil/qmd-query-expansion-qwen3.5-2B` (loaded via PyTorch)
+- Expander: `bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit`
 
 **Model IDs (BF16):**
 - Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx`
 - Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx`
-- Expander: `tobil/qmd-query-expansion-qwen3.5-2B` (loaded via PyTorch)
+- Expander: `tobil/qmd-query-expansion-qwen3.5-2B` (PyTorch fallback)
 
 ### PyTorch Backend
 
