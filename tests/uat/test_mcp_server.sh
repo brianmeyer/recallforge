@@ -26,7 +26,13 @@ STORE = "${UAT_STORE}"
 CORPUS_TEXT = "${CORPUS_DIR}/text"
 CORPUS_IMAGES = "${CORPUS_DIR}/images"
 
-os.environ["RECALLFORGE_BACKEND"] = "torch"
+import platform
+# Prefer MLX on Apple Silicon to avoid MPS OOM on 16GB machines
+if platform.machine() == "arm64" and platform.system() == "Darwin":
+    os.environ["RECALLFORGE_BACKEND"] = "mlx"
+    os.environ.setdefault("RECALLFORGE_MLX_QUANTIZE", "4bit")
+else:
+    os.environ["RECALLFORGE_BACKEND"] = "torch"
 os.environ["RECALLFORGE_MODE"] = "embed"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 

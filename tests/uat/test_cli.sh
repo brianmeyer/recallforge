@@ -12,7 +12,13 @@ trap cleanup_store EXIT
 
 ensure_test_images
 
-export RECALLFORGE_BACKEND=torch
+# Prefer MLX 4-bit on Apple Silicon to avoid MPS OOM on 16GB machines
+if is_apple_silicon; then
+    export RECALLFORGE_BACKEND=mlx
+    export RECALLFORGE_MLX_QUANTIZE=4bit
+else
+    export RECALLFORGE_BACKEND=torch
+fi
 export RECALLFORGE_MODE=embed
 export RECALLFORGE_STORE_PATH="${UAT_STORE}"
 

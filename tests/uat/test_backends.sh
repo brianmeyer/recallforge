@@ -11,6 +11,8 @@ cd "$REPO_ROOT"
 trap cleanup_store EXIT
 
 # Helper: flush GPU memory between backend tests
+# Each backend test runs in its own subprocess, but MPS/Metal may hold onto
+# memory after the process exits. Give the OS a moment to reclaim.
 _cleanup_gpu() {
     python3 -c "
 import gc; gc.collect()
@@ -20,6 +22,8 @@ try:
     if torch.cuda.is_available(): torch.cuda.empty_cache()
 except: pass
 " 2>/dev/null || true
+    # Give Metal/MPS time to release unified memory
+    sleep 3
 }
 
 # ──────────────────────────────────────────────
