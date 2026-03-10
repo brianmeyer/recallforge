@@ -24,18 +24,28 @@ except: pass
 " 2>/dev/null || true
 }
 
-# ── Phase 1: Index corpus (embed mode only — minimal memory) ──
-subsection "Indexing test corpus"
+run_tiered_modes_for_backend() {
+    local backend_name="$1"
 
-python3 << PYEOF
+    _PASS_COUNT=0
+    _FAIL_COUNT=0
+    _SKIP_COUNT=0
+
+    cleanup_store
+
+    # ── Phase 1: Index corpus (embed mode only — minimal memory) ──
+    subsection "Indexing test corpus (backend=${backend_name})"
+
+    if ! python3 <<PYEOF
 import os, sys, time
 sys.path.insert(0, "src")
 
 STORE = "${UAT_STORE}"
 CORPUS_TEXT = "${CORPUS_DIR}/text"
 CORPUS_IMAGES = "${CORPUS_DIR}/images"
+BACKEND = "${backend_name}"
 
-os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_BACKEND"] = BACKEND
 os.environ["RECALLFORGE_MODE"] = "embed"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 
@@ -66,35 +76,38 @@ total_docs = storage.count_documents()
 total_emb = storage.count_embeddings()
 ok = total_docs > 0
 print(f"  {'PASS' if ok else 'FAIL'}  Indexed {total_docs} documents, {total_emb} embeddings")
-if not ok: sys.exit(1)
+if not ok:
+    sys.exit(1)
 
 # Cleanup: unload backend before exiting
 del backend, storage
 import gc; gc.collect()
 try:
     import torch
-    if torch.backends.mps.is_available(): torch.mps.empty_cache()
-except: pass
+    if torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+except:
+    pass
 PYEOF
-INDEX_RC=$?
-if [[ $INDEX_RC -ne 0 ]]; then
-    fail "Corpus indexing"
-    print_summary "Tiered Mode Tests"
-    exit 1
-fi
-pass "Corpus indexed"
-_cleanup_gpu
+    then
+        fail "Corpus indexing"
+        print_summary "Tiered Mode Tests (backend=${backend_name})"
+        return 1
+    fi
+    pass "Corpus indexed"
+    _cleanup_gpu
 
-# ── Phase 2: Embed Mode (separate process) ──
-subsection "Embed Mode"
+    # ── Phase 2: Embed Mode (separate process) ──
+    subsection "Embed Mode"
 
-python3 << PYEOF
+    if python3 <<PYEOF
 import os, sys, time
 sys.path.insert(0, "src")
 
 STORE = "${UAT_STORE}"
+BACKEND = "${backend_name}"
 
-os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_BACKEND"] = BACKEND
 os.environ["RECALLFORGE_MODE"] = "embed"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 
@@ -114,10 +127,10 @@ fail_count = 0
 def report(ok, msg):
     global pass_count, fail_count
     if ok:
-        print(f"  \033[0;32mPASS\033[0m  {msg}")
+        print(f"  \\033[0;32mPASS\\033[0m  {msg}")
         pass_count += 1
     else:
-        print(f"  \033[0;31mFAIL\033[0m  {msg}")
+        print(f"  \\033[0;31mFAIL\\033[0m  {msg}")
         fail_count += 1
 
 report(backend.get_mode() == "embed", "Mode set to 'embed'")
@@ -145,29 +158,35 @@ for r in results:
 with open("${UAT_STORE}/.embed_time", "w") as f:
     f.write(f"{elapsed:.2f}")
 
-if fail_count > 0: sys.exit(1)
+if fail_count > 0:
+    sys.exit(1)
 PYEOF
-if [[ $? -eq 0 ]]; then pass "Embed mode"; else fail "Embed mode"; fi
-_cleanup_gpu
+    then
+        pass "Embed mode"
+    else
+        fail "Embed mode"
+    fi
+    _cleanup_gpu
 
-# ── Phase 3: Hybrid Mode (separate process — embedder + reranker only) ──
-subsection "Hybrid Mode"
+    # ── Phase 3: Hybrid Mode (separate process — embedder + reranker only) ──
+    subsection "Hybrid Mode"
 
-python3 << PYEOF
+    if python3 <<PYEOF
 import os, sys, time
 sys.path.insert(0, "src")
 
 STORE = "${UAT_STORE}"
+BACKEND = "${backend_name}"
 
-os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_BACKEND"] = BACKEND
 os.environ["RECALLFORGE_MODE"] = "hybrid"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 
-from recallforge.backends.torch_backend import TorchBackend
-from recallforge import get_storage
+from recallforge import get_backend, get_storage
 from recallforge.search import HybridSearcher
 
-backend = TorchBackend(mode="hybrid")
+backend = get_backend()
+backend.set_mode("hybrid")
 backend._load_embedder()
 backend._load_reranker()
 storage = get_storage(STORE)
@@ -180,10 +199,10 @@ fail_count = 0
 def report(ok, msg):
     global pass_count, fail_count
     if ok:
-        print(f"  \033[0;32mPASS\033[0m  {msg}")
+        print(f"  \\033[0;32mPASS\\033[0m  {msg}")
         pass_count += 1
     else:
-        print(f"  \033[0;31mFAIL\033[0m  {msg}")
+        print(f"  \\033[0;31mFAIL\\033[0m  {msg}")
         fail_count += 1
 
 report(backend.get_mode() == "hybrid", "Mode set to 'hybrid'")
@@ -210,29 +229,35 @@ for r in results:
 with open("${UAT_STORE}/.hybrid_time", "w") as f:
     f.write(f"{elapsed:.2f}")
 
-if fail_count > 0: sys.exit(1)
+if fail_count > 0:
+    sys.exit(1)
 PYEOF
-if [[ $? -eq 0 ]]; then pass "Hybrid mode"; else fail "Hybrid mode"; fi
-_cleanup_gpu
+    then
+        pass "Hybrid mode"
+    else
+        fail "Hybrid mode"
+    fi
+    _cleanup_gpu
 
-# ── Phase 4: Full Mode (separate process — all 3 models) ──
-subsection "Full Mode"
+    # ── Phase 4: Full Mode (separate process — all 3 models) ──
+    subsection "Full Mode"
 
-python3 << PYEOF
+    if python3 <<PYEOF
 import os, sys, time
 sys.path.insert(0, "src")
 
 STORE = "${UAT_STORE}"
+BACKEND = "${backend_name}"
 
-os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_BACKEND"] = BACKEND
 os.environ["RECALLFORGE_MODE"] = "full"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 
-from recallforge.backends.torch_backend import TorchBackend
-from recallforge import get_storage
+from recallforge import get_backend, get_storage
 from recallforge.search import HybridSearcher
 
-backend = TorchBackend(mode="full")
+backend = get_backend()
+backend.set_mode("full")
 backend._load_embedder()
 backend._load_reranker()
 backend._load_expander()
@@ -246,10 +271,10 @@ fail_count = 0
 def report(ok, msg):
     global pass_count, fail_count
     if ok:
-        print(f"  \033[0;32mPASS\033[0m  {msg}")
+        print(f"  \\033[0;32mPASS\\033[0m  {msg}")
         pass_count += 1
     else:
-        print(f"  \033[0;31mFAIL\033[0m  {msg}")
+        print(f"  \\033[0;31mFAIL\\033[0m  {msg}")
         fail_count += 1
 
 report(backend.get_mode() == "full", "Mode set to 'full'")
@@ -273,26 +298,31 @@ for r in results:
 with open("${UAT_STORE}/.full_time", "w") as f:
     f.write(f"{elapsed:.2f}")
 
-if fail_count > 0: sys.exit(1)
+if fail_count > 0:
+    sys.exit(1)
 PYEOF
-if [[ $? -eq 0 ]]; then pass "Full mode"; else fail "Full mode"; fi
-_cleanup_gpu
+    then
+        pass "Full mode"
+    else
+        fail "Full mode"
+    fi
+    _cleanup_gpu
 
-# ── Phase 5: Mode Switching (separate process) ──
-subsection "Mode Switching"
+    # ── Phase 5: Mode Switching (separate process) ──
+    subsection "Mode Switching"
 
-python3 << PYEOF
+    if python3 <<PYEOF
 import os, sys
 sys.path.insert(0, "src")
 
 STORE = "${UAT_STORE}"
+BACKEND = "${backend_name}"
 
-os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_BACKEND"] = BACKEND
 os.environ["RECALLFORGE_MODE"] = "embed"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 
-from recallforge.backends.torch_backend import TorchBackend
-from recallforge import get_storage
+from recallforge import get_backend, get_storage
 from recallforge.search import HybridSearcher
 
 pass_count = 0
@@ -301,13 +331,14 @@ fail_count = 0
 def report(ok, msg):
     global pass_count, fail_count
     if ok:
-        print(f"  \033[0;32mPASS\033[0m  {msg}")
+        print(f"  \\033[0;32mPASS\\033[0m  {msg}")
         pass_count += 1
     else:
-        print(f"  \033[0;31mFAIL\033[0m  {msg}")
+        print(f"  \\033[0;31mFAIL\\033[0m  {msg}")
         fail_count += 1
 
-backend = TorchBackend(mode="embed")
+backend = get_backend()
+backend.set_mode("embed")
 backend._load_embedder()
 report(backend.get_mode() == "embed", "Start in embed mode")
 
@@ -326,19 +357,54 @@ searcher = HybridSearcher(backend=backend, storage=storage, limit=5, collection=
 results = searcher.search("How do AI agents use memory and knowledge graphs?")
 report(len(results) > 0, f"Search works after mode switch ({len(results)} results)")
 
-if fail_count > 0: sys.exit(1)
+if fail_count > 0:
+    sys.exit(1)
 PYEOF
-if [[ $? -eq 0 ]]; then pass "Mode switching"; else fail "Mode switching"; fi
-_cleanup_gpu
+    then
+        pass "Mode switching"
+    else
+        fail "Mode switching"
+    fi
+    _cleanup_gpu
 
-# ── Timing Comparison ──
-subsection "Timing Comparison"
+    # ── Timing Comparison ──
+    subsection "Timing Comparison"
 
-EMBED_T=$(cat "${UAT_STORE}/.embed_time" 2>/dev/null || echo "N/A")
-HYBRID_T=$(cat "${UAT_STORE}/.hybrid_time" 2>/dev/null || echo "N/A")
-FULL_T=$(cat "${UAT_STORE}/.full_time" 2>/dev/null || echo "N/A")
-echo "  Embed mode:  ${EMBED_T}s"
-echo "  Hybrid mode: ${HYBRID_T}s"
-echo "  Full mode:   ${FULL_T}s"
+    EMBED_T=$(cat "${UAT_STORE}/.embed_time" 2>/dev/null || echo "N/A")
+    HYBRID_T=$(cat "${UAT_STORE}/.hybrid_time" 2>/dev/null || echo "N/A")
+    FULL_T=$(cat "${UAT_STORE}/.full_time" 2>/dev/null || echo "N/A")
+    echo "  Embed mode:  ${EMBED_T}s"
+    echo "  Hybrid mode: ${HYBRID_T}s"
+    echo "  Full mode:   ${FULL_T}s"
 
-print_summary "Tiered Mode Tests"
+    print_summary "Tiered Mode Tests (backend=${backend_name})"
+}
+
+BACKEND_CANDIDATES=("torch")
+if is_apple_silicon; then
+    BACKEND_CANDIDATES=("mlx" "torch")
+fi
+info "Backend order: ${BACKEND_CANDIDATES[*]}"
+
+selected_backend=""
+for backend_name in "${BACKEND_CANDIDATES[@]}"; do
+    if [[ "${backend_name}" == "mlx" ]] && ! has_mlx; then
+        warn "MLX backend unavailable on this host; falling back to torch."
+        continue
+    fi
+
+    subsection "Backend Attempt: ${backend_name}"
+    if run_tiered_modes_for_backend "${backend_name}"; then
+        selected_backend="${backend_name}"
+        info "Tiered mode tests passed with backend '${backend_name}'."
+        break
+    fi
+
+    warn "Tiered mode tests failed with backend '${backend_name}'."
+done
+
+if [[ -z "${selected_backend}" ]]; then
+    exit 1
+fi
+
+exit 0
