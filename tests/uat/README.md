@@ -46,7 +46,13 @@ Each test is self-contained and can be run independently:
 # Search quality (recall@5, MRR, edge cases, dedup)
 ./tests/uat/test_search_quality.sh
 
-# MCP server (all 7 tools, error handling, shutdown)
+# MCP contract test (mock backend, all 12 tools, fast/deterministic)
+./tests/uat/test_mcp_contract.sh
+
+# MCP live test (real backend/models)
+./tests/uat/test_mcp_live.sh
+
+# Backward-compatible MCP entrypoint (defaults to contract mode)
 ./tests/uat/test_mcp_server.sh
 
 # CLI commands (index, search, status, serve)

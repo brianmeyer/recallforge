@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# test_mcp_server.sh - MCP server UAT.
+# test_mcp_server.sh - MCP server UAT (contract mode by default).
 # Tests JSON-RPC communication, MCP tools, and graceful shutdown.
+# Set UAT_MCP_LIVE=1 to use real backend/model calls instead of mock backend.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/helpers/common.sh"
@@ -56,7 +57,7 @@ def report(ok, msg):
 print("\n\033[0;36m--- Server Creation ---\033[0m\n")
 
 from recallforge.server import create_server
-from recallforge import get_storage
+from recallforge import get_storage, get_backend
 from recallforge.backends.base import BackendInfo
 from mcp.types import (
     CallToolRequest,
@@ -118,7 +119,14 @@ class MockBackend:
             quantization="none",
         )
 
-backend = MockBackend()
+use_live_backend = os.environ.get("UAT_MCP_LIVE", "0") == "1"
+if use_live_backend:
+    print("  \033[0;36mINFO\033[0m  MCP live mode enabled (UAT_MCP_LIVE=1)")
+    backend = get_backend()
+else:
+    print("  \033[0;36mINFO\033[0m  MCP contract mode enabled (mock backend)")
+    backend = MockBackend()
+
 storage = get_storage(STORE)
 
 
