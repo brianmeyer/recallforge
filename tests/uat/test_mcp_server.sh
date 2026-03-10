@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test_mcp_server.sh - MCP server UAT.
-# Tests JSON-RPC communication, all 7 tools, and graceful shutdown.
+# Tests JSON-RPC communication, MCP tools, and graceful shutdown.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/helpers/common.sh"
@@ -153,9 +153,13 @@ async def test_server():
 
     tools = await _list_tools(server)
     tool_names = [t.name for t in tools]
-    report(len(tools) == 7, f"Server exposes {len(tools)} tools (expected 7)")
+    report(len(tools) == 11, f"Server exposes {len(tools)} tools (expected 11)")
 
-    expected_tools = ["search", "search_fts", "search_vec", "index_document", "index_image", "status", "rebuild_fts"]
+    expected_tools = [
+        "search", "search_fts", "search_vec", "index_document", "index_image",
+        "memory_add", "memory_update", "memory_delete", "index_folder",
+        "status", "rebuild_fts"
+    ]
     for expected in expected_tools:
         report(expected in tool_names, f"Tool '{expected}' available")
 
@@ -179,6 +183,75 @@ async def test_server():
     })
     idx_data = json.loads(result[0].text)
     report(idx_data.get("success") == True, f"index_document succeeded, hash={idx_data.get('hash', 'N/A')[:8]}...")
+
+    # ── Memory Add / Update / Delete tools ──
+    print("\n\033[0;36m--- Memory Tools ---\033[0m\n")
+
+    result = await _call_tool(server, "memory_add", {
+        "path": "memories/agent-notes.md",
+        "text": "RecallForge memory add baseline content for dedup regression.",
+        "collection": "mcp_test",
+    })
+    mem_add_data = json.loads(result[0].text)
+    report(mem_add_data.get("success") == True, "memory_add succeeded")
+
+    initial_rows = storage._embeddings_table.search().where(
+        "collection = 'mcp_test' AND file_path = 'memories/agent-notes.md'"
+    ).to_list()
+    initial_count = len(initial_rows)
+    report(initial_count > 0, f"memory_add created {initial_count} embedding rows")
+
+    result = await _call_tool(server, "memory_update", {
+        "path": "memories/agent-notes.md",
+        "text": "Updated memory content with changed wording to force hash replacement.",
+        "collection": "mcp_test",
+    })
+    mem_update_data = json.loads(result[0].text)
+    report(mem_update_data.get("success") == True, "memory_update succeeded")
+
+    updated_rows = storage._embeddings_table.search().where(
+        "collection = 'mcp_test' AND file_path = 'memories/agent-notes.md'"
+    ).to_list()
+    updated_hashes = {r.get("content_hash") for r in updated_rows}
+    report(len(updated_hashes) == 1, "memory_update leaves exactly one active content_hash for path")
+    report(len(updated_rows) <= initial_count + 3, "memory_update did not duplicate old chunk embeddings")
+
+    result = await _call_tool(server, "memory_delete", {
+        "path": "memories/agent-notes.md",
+        "collection": "mcp_test",
+    })
+    mem_delete_data = json.loads(result[0].text)
+    report(mem_delete_data.get("success") == True, "memory_delete succeeded")
+
+    after_delete_rows = storage._embeddings_table.search().where(
+        "collection = 'mcp_test' AND file_path = 'memories/agent-notes.md'"
+    ).to_list()
+    report(len(after_delete_rows) == 0, "memory_delete removed associated embeddings")
+
+    deleted_doc = storage.find_document("mcp_test", "memories/agent-notes.md")
+    report(deleted_doc is None, "memory_delete deactivated document")
+
+    # ── index_folder tool ──
+    print("\n\033[0;36m--- index_folder Tool ---\033[0m\n")
+    folder_root = os.path.join(STORE, "mcp_folder_index")
+    os.makedirs(folder_root, exist_ok=True)
+    with open(os.path.join(folder_root, "one.md"), "w", encoding="utf-8") as f:
+        f.write("folder index file one about memory systems")
+    with open(os.path.join(folder_root, "two.txt"), "w", encoding="utf-8") as f:
+        f.write("folder index file two about retrieval")
+    with open(os.path.join(folder_root, "skip.bin"), "wb") as f:
+        f.write(b"\x00\x01\x02")
+
+    result = await _call_tool(server, "index_folder", {
+        "folder_path": folder_root,
+        "collection": "mcp_test",
+        "recursive": True,
+        "include_globs": ["*.md", "*.txt", "**/*.md", "**/*.txt"],
+        "exclude_globs": ["*skip*"],
+    })
+    folder_data = json.loads(result[0].text)
+    report(folder_data.get("success") == True, "index_folder succeeded")
+    report(folder_data.get("indexed", 0) >= 2, f"index_folder indexed {folder_data.get('indexed', 0)} files")
 
     # ── Index Image tool ──
     print("\n\033[0;36m--- Index Image Tool ---\033[0m\n")

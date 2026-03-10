@@ -2,7 +2,8 @@
 server.py - MCP Server for RecallForge.
 
 MCP protocol server with stdio transport.
-Tools: search, search_fts, search_vec, index_document, index_image, status, rebuild_fts
+Tools: search, search_fts, search_vec, index_document, index_image, memory_add,
+memory_update, memory_delete, index_folder, status, rebuild_fts
 
 Calls backend.warm_up() on server start for predictable latency.
 """
@@ -132,6 +133,59 @@ async def create_server(
                 },
             ),
             Tool(
+                name="memory_add",
+                description="Add a text memory entry (or replace if the same path already exists)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Memory path key within collection"},
+                        "text": {"type": "string", "description": "Memory content"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                    },
+                    "required": ["path", "text"],
+                },
+            ),
+            Tool(
+                name="memory_update",
+                description="Update a text memory entry at path, replacing old vectors",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Memory path key within collection"},
+                        "text": {"type": "string", "description": "Updated memory content"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                    },
+                    "required": ["path", "text"],
+                },
+            ),
+            Tool(
+                name="memory_delete",
+                description="Delete/deactivate a memory entry and remove associated embeddings",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Memory path key within collection"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                    },
+                    "required": ["path"],
+                },
+            ),
+            Tool(
+                name="index_folder",
+                description="Index text files in a folder into memory entries",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "folder_path": {"type": "string", "description": "Absolute or relative folder path"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                        "recursive": {"type": "boolean", "description": "Recursively index subfolders", "default": True},
+                        "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
+                        "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"}
+                    },
+                    "required": ["folder_path"],
+                },
+            ),
+            Tool(
                 name="status",
                 description="Get server status including model loading and database info",
                 inputSchema={
@@ -163,6 +217,14 @@ async def create_server(
                 return await _handle_index_document(arguments, backend, storage)
             elif name == "index_image":
                 return await _handle_index_image(arguments, backend, storage)
+            elif name == "memory_add":
+                return await _handle_memory_add(arguments, backend, storage)
+            elif name == "memory_update":
+                return await _handle_memory_update(arguments, backend, storage)
+            elif name == "memory_delete":
+                return await _handle_memory_delete(arguments, storage)
+            elif name == "index_folder":
+                return await _handle_index_folder(arguments, backend, storage)
             elif name == "status":
                 return await _handle_status(backend, storage)
             elif name == "rebuild_fts":
@@ -338,6 +400,95 @@ async def _handle_index_image(arguments: dict, backend, storage) -> list[TextCon
         "hash": content_hash,
     }
     
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextContent]:
+    """Handle memory add."""
+    path = arguments.get("path", "")
+    text = arguments.get("text", "")
+    collection = arguments.get("collection", "default")
+
+    if not path or not text:
+        return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
+
+    content_hash = storage.upsert_memory(
+        path=path,
+        text=text,
+        collection=collection,
+        model="Qwen3-VL-Embedding-2B",
+        embed_func=backend.embed_text,
+    )
+
+    output = {
+        "success": True,
+        "path": path,
+        "collection": collection,
+        "hash": content_hash,
+        "operation": "add",
+    }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextContent]:
+    """Handle memory update."""
+    path = arguments.get("path", "")
+    text = arguments.get("text", "")
+    collection = arguments.get("collection", "default")
+
+    if not path or not text:
+        return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
+
+    content_hash = storage.upsert_memory(
+        path=path,
+        text=text,
+        collection=collection,
+        model="Qwen3-VL-Embedding-2B",
+        embed_func=backend.embed_text,
+    )
+
+    output = {
+        "success": True,
+        "path": path,
+        "collection": collection,
+        "hash": content_hash,
+        "operation": "update",
+    }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_memory_delete(arguments: dict, storage) -> list[TextContent]:
+    """Handle memory delete."""
+    path = arguments.get("path", "")
+    collection = arguments.get("collection", "default")
+
+    if not path:
+        return [TextContent(type="text", text=json.dumps({"error": "path is required"}))]
+
+    output = storage.delete_memory(path=path, collection=collection)
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextContent]:
+    """Handle folder indexing."""
+    folder_path = arguments.get("folder_path", "")
+    collection = arguments.get("collection", "default")
+    recursive = arguments.get("recursive", True)
+    include_globs = arguments.get("include_globs")
+    exclude_globs = arguments.get("exclude_globs")
+
+    if not folder_path:
+        return [TextContent(type="text", text=json.dumps({"error": "folder_path is required"}))]
+
+    output = storage.index_folder(
+        folder_path=folder_path,
+        collection=collection,
+        recursive=recursive,
+        include_globs=include_globs,
+        exclude_globs=exclude_globs,
+        model="Qwen3-VL-Embedding-2B",
+        embed_func=backend.embed_text,
+    )
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 

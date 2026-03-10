@@ -10,7 +10,7 @@ Defines the interface for storage backends that handle:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import numpy as np
 
 
@@ -205,4 +205,39 @@ class StorageBackend(ABC):
     @abstractmethod
     def count_documents(self) -> int:
         """Count total documents in the index."""
+        pass
+
+    # =========================================================================
+    # Inline Memory Operations
+    # =========================================================================
+
+    @abstractmethod
+    def upsert_memory(
+        self,
+        path: str,
+        text: str,
+        collection: str,
+        embed_func: Callable[[str], List[float]],
+        model: str,
+    ) -> str:
+        """Create or update a memory entry and its embeddings."""
+        pass
+
+    @abstractmethod
+    def delete_memory(self, path: str, collection: str) -> Dict[str, Any]:
+        """Deactivate a memory entry and remove associated embeddings."""
+        pass
+
+    @abstractmethod
+    def index_folder(
+        self,
+        folder_path: str,
+        collection: str,
+        recursive: bool,
+        include_globs: Optional[List[str]],
+        exclude_globs: Optional[List[str]],
+        embed_func: Callable[[str], List[float]],
+        model: str,
+    ) -> Dict[str, Any]:
+        """Index text files from a folder and return summary counts."""
         pass

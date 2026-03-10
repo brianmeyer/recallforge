@@ -5,12 +5,14 @@ LanceDB + Apache Arrow storage for embeddings, documents, content, and cache.
 Provides vector search and full-text search (Tantivy).
 """
 
+import fnmatch
 import hashlib
 import math
 import os
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from collections import defaultdict
@@ -891,30 +893,48 @@ class LanceDBBackend(StorageBackend):
         embed_func,
         content_type: str = "text"
     ) -> str:
-        """
-        Full document indexing pipeline.
-        
-        Args:
-            path: File path within collection
-            text: Full document text
-            collection: Collection name
-            model: Embedding model name
-            embed_func: Function(text) -> List[float]
-            content_type: 'text' or 'image'
-        
-        Returns:
-            Content hash
-        """
-        # Hash and store content
+        """Full document indexing pipeline for text content."""
+        if content_type != "text":
+            raise ValueError("index_document supports only text content")
+        return self.upsert_memory(
+            path=path,
+            text=text,
+            collection=collection,
+            embed_func=embed_func,
+            model=model,
+        )
+    
+    def upsert_memory(
+        self,
+        path: str,
+        text: str,
+        collection: str,
+        embed_func,
+        model: str,
+    ) -> str:
+        """Create or update a text memory, replacing old vectors for this path."""
+        normalized_path = path.strip()
+        if not normalized_path:
+            raise ValueError("path is required")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text is required")
+
         content_hash = hash_content(text)
-        title = extract_title(text, path)
-        self.insert_content(content_hash, text, content_type)
-        self.insert_document(collection, path, title, content_hash, content_type)
-        
-        # Chunk and embed
+        title = extract_title(text, normalized_path)
+
+        # Remove prior vectors for this memory path to prevent duplicate chunks.
+        self._embeddings_table.delete(
+            f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+        )
+
+        self.insert_content(content_hash, text, "text")
+        self.insert_document(collection, normalized_path, title, content_hash, "text")
+
         chunks = chunk_document(text)
         for i, chunk in enumerate(chunks):
             vector = embed_func(chunk["text"])
+            if hasattr(vector, "tolist"):
+                vector = vector.tolist()
             self.insert_embedding(
                 content_hash=content_hash,
                 seq=i,
@@ -922,17 +942,139 @@ class LanceDBBackend(StorageBackend):
                 vector=vector,
                 model=model,
                 collection=collection,
-                file_path=path,
+                file_path=normalized_path,
                 title=title,
                 text_body=chunk["text"],
-                content_type=content_type,
+                content_type="text",
             )
-        
-        # Rebuild FTS
+
         self.ensure_fts_index(force_rebuild=True)
-        
         return content_hash
-    
+
+    def delete_memory(self, path: str, collection: str) -> Dict[str, Any]:
+        """Deactivate a memory and remove all associated vectors."""
+        normalized_path = path.strip()
+        if not normalized_path:
+            raise ValueError("path is required")
+
+        removed_vectors = 0
+        try:
+            removed_vectors = len(
+                self._embeddings_table.search()
+                .where(
+                    f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+                )
+                .to_list()
+            )
+        except Exception:
+            removed_vectors = 0
+
+        self._embeddings_table.delete(
+            f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+        )
+        self.deactivate_document(collection, normalized_path)
+        self.ensure_fts_index(force_rebuild=True)
+
+        return {
+            "success": True,
+            "path": normalized_path,
+            "collection": collection,
+            "removed_vectors": removed_vectors,
+        }
+
+    def _is_text_file(self, file_path: Path) -> bool:
+        """Best-effort text file detection."""
+        try:
+            with file_path.open("rb") as f:
+                sample = f.read(8192)
+        except Exception:
+            return False
+
+        if b"\x00" in sample:
+            return False
+
+        return True
+
+    def _read_text_robust(self, file_path: Path) -> Optional[str]:
+        """Read text file using common encodings with replacement fallback."""
+        for encoding in ("utf-8", "utf-8-sig", "latin-1"):
+            try:
+                return file_path.read_text(encoding=encoding)
+            except UnicodeDecodeError:
+                continue
+            except Exception:
+                return None
+
+        try:
+            return file_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+
+    def index_folder(
+        self,
+        folder_path: str,
+        collection: str,
+        recursive: bool,
+        include_globs: Optional[List[str]],
+        exclude_globs: Optional[List[str]],
+        embed_func,
+        model: str,
+    ) -> Dict[str, Any]:
+        """Index text files from a folder and return summary counts."""
+        root = Path(folder_path).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
+            raise ValueError(f"Folder not found: {folder_path}")
+
+        include = include_globs or ["**/*"]
+        exclude = exclude_globs or []
+
+        indexed = 0
+        skipped = 0
+        errors = 0
+
+        iterator = root.rglob("*") if recursive else root.glob("*")
+        for file_path in iterator:
+            if not file_path.is_file():
+                continue
+
+            rel = file_path.relative_to(root).as_posix()
+            if include and not any(fnmatch.fnmatch(rel, pattern) for pattern in include):
+                skipped += 1
+                continue
+            if exclude and any(fnmatch.fnmatch(rel, pattern) for pattern in exclude):
+                skipped += 1
+                continue
+            if not self._is_text_file(file_path):
+                skipped += 1
+                continue
+
+            text = self._read_text_robust(file_path)
+            if text is None or not text.strip():
+                skipped += 1
+                continue
+
+            try:
+                self.upsert_memory(
+                    path=rel,
+                    text=text,
+                    collection=collection,
+                    embed_func=embed_func,
+                    model=model,
+                )
+                indexed += 1
+            except Exception:
+                errors += 1
+
+        return {
+            "success": True,
+            "folder_path": str(root),
+            "collection": collection,
+            "indexed": indexed,
+            "skipped": skipped,
+            "errors": errors,
+            "total_seen": indexed + skipped + errors,
+        }
+
     def index_image(
         self,
         path: str,

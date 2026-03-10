@@ -241,6 +241,90 @@ class TestIndexAndSearch(unittest.TestCase):
         self.assertGreater(len(results), 0)
 
 
+class TestInlineMemoryOperations(unittest.TestCase):
+    """Tests for upsert_memory/delete_memory/index_folder behavior."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_upsert_memory_replaces_old_embeddings(self):
+        self.backend.upsert_memory(
+            path="notes/memory.md",
+            text="first version\n" + ("a" * 800),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        first_rows = self.backend._embeddings_table.search().where(
+            "collection = 'test' AND file_path = 'notes/memory.md'"
+        ).to_list()
+        first_hashes = {r["content_hash"] for r in first_rows}
+
+        self.backend.upsert_memory(
+            path="notes/memory.md",
+            text="second version\n" + ("b" * 1200),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        second_rows = self.backend._embeddings_table.search().where(
+            "collection = 'test' AND file_path = 'notes/memory.md'"
+        ).to_list()
+        second_hashes = {r["content_hash"] for r in second_rows}
+
+        self.assertEqual(len(second_hashes), 1)
+        self.assertNotEqual(first_hashes, second_hashes)
+
+    def test_delete_memory_deactivates_doc_and_removes_embeddings(self):
+        self.backend.upsert_memory(
+            path="notes/delete-me.md",
+            text="delete this memory",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        result = self.backend.delete_memory(path="notes/delete-me.md", collection="test")
+        self.assertTrue(result["success"])
+        self.assertGreaterEqual(result["removed_vectors"], 1)
+
+        rows = self.backend._embeddings_table.search().where(
+            "collection = 'test' AND file_path = 'notes/delete-me.md'"
+        ).to_list()
+        self.assertEqual(len(rows), 0)
+        self.assertIsNone(self.backend.find_document("test", "notes/delete-me.md"))
+
+    def test_index_folder_indexes_text_and_skips_binary(self):
+        folder = os.path.join(self.temp_dir, "folder")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "a.md"), "w", encoding="utf-8") as f:
+            f.write("alpha memory")
+        with open(os.path.join(folder, "b.txt"), "w", encoding="utf-8") as f:
+            f.write("beta memory")
+        with open(os.path.join(folder, "x.bin"), "wb") as f:
+            f.write(b"\x00\xFF\x10")
+
+        summary = self.backend.index_folder(
+            folder_path=folder,
+            collection="test",
+            recursive=True,
+            include_globs=["**/*.md", "**/*.txt", "*.md", "*.txt"],
+            exclude_globs=["*x.bin"],
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        self.assertTrue(summary["success"])
+        self.assertEqual(summary["indexed"], 2)
+        self.assertGreaterEqual(summary["skipped"], 1)
+
+
 class TestContentTypeFilter(unittest.TestCase):
     """Tests for content_type filtering in search methods."""
 
