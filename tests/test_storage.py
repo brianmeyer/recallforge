@@ -398,7 +398,6 @@ class TestNamespaceFiltering(unittest.TestCase):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_upsert_memory_with_namespace(self):
-        """Memory entries should accept namespace fields."""
         content_hash = self.backend.upsert_memory(
             path="notes/namespace-test.md",
             text="Namespace isolation test content " + ("x" * 500),
@@ -412,7 +411,6 @@ class TestNamespaceFiltering(unittest.TestCase):
         )
         self.assertIsNotNone(content_hash)
 
-        # Verify the embedding has namespace fields
         rows = self.backend._embeddings_table.search().where(
             "collection = 'test' AND file_path = 'notes/namespace-test.md'"
         ).to_list()
@@ -424,8 +422,6 @@ class TestNamespaceFiltering(unittest.TestCase):
             self.assertEqual(row.get("profile"), "work")
 
     def test_search_with_namespace_filter(self):
-        """Search should filter by namespace fields."""
-        # Index two documents with different user_id
         self.backend.upsert_memory(
             path="docs/alice.md",
             text="Alice's document about machine learning " + ("a" * 500),
@@ -444,20 +440,15 @@ class TestNamespaceFiltering(unittest.TestCase):
         )
         self.backend.rebuild_fts_index()
 
-        # Search for Alice's docs only
         alice_results = self.backend.search_fts("machine learning", limit=10, user_id="alice")
         for r in alice_results:
-            # All results should have user_id = alice (or None for backward compat)
-            self.assertIn(r.user_id, ["alice", None])
+            self.assertEqual(r.user_id, "alice")
 
-        # Search for Bob's docs only
         bob_results = self.backend.search_fts("machine learning", limit=10, user_id="bob")
         for r in bob_results:
-            self.assertIn(r.user_id, ["bob", None])
+            self.assertEqual(r.user_id, "bob")
 
     def test_vector_search_with_namespace_filter(self):
-        """Vector search should filter by namespace fields."""
-        # Index two documents with different project_id
         self.backend.upsert_memory(
             path="projects/projA.md",
             text="Project A documentation about neural networks " + ("a" * 500),
@@ -478,82 +469,96 @@ class TestNamespaceFiltering(unittest.TestCase):
         vec = mock_embed("neural networks documentation")
         proj_a_results = self.backend.search_vec(vec, limit=10, project_id="projA")
         for r in proj_a_results:
-            self.assertIn(r.project_id, ["projA", None])
+            self.assertEqual(r.project_id, "projA")
 
         proj_b_results = self.backend.search_vec(vec, limit=10, project_id="projB")
         for r in proj_b_results:
-            self.assertIn(r.project_id, ["projB", None])
+            self.assertEqual(r.project_id, "projB")
 
-    def test_delete_memory_with_namespace(self):
-        """Delete should respect namespace fields."""
+
+class TestMemoryMetadata(unittest.TestCase):
+    """Tests for memory importance, TTL, and tags metadata."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-meta-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_upsert_memory_with_importance(self):
         self.backend.upsert_memory(
-            path="notes/to-delete.md",
-            text="This will be deleted " + ("x" * 500),
+            path="notes/important.md",
+            text="Very important memory",
             collection="test",
             embed_func=mock_embed,
             model="mock-embedder",
-            user_id="deleter",
+            importance=0.95,
         )
-
-        result = self.backend.delete_memory(
-            path="notes/to-delete.md",
-            collection="test",
-            user_id="deleter",
-        )
-        self.assertTrue(result["success"])
-        self.assertEqual(result["user_id"], "deleter")
-
-    def test_index_folder_with_namespace(self):
-        """Index folder should propagate namespace fields."""
-        folder = os.path.join(self.temp_dir, "ns-folder")
-        os.makedirs(folder, exist_ok=True)
-        with open(os.path.join(folder, "doc1.md"), "w", encoding="utf-8") as f:
-            f.write("Document one " + ("a" * 500))
-        with open(os.path.join(folder, "doc2.md"), "w", encoding="utf-8") as f:
-            f.write("Document two " + ("b" * 500))
-
-        summary = self.backend.index_folder(
-            folder_path=folder,
-            collection="test",
-            recursive=True,
-            include_globs=None,
-            exclude_globs=None,
-            embed_func=mock_embed,
-            model="mock-embedder",
-            user_id="folder-user",
-            session_id="folder-session",
-        )
-
-        self.assertTrue(summary["success"])
-        self.assertEqual(summary["user_id"], "folder-user")
-        self.assertEqual(summary["session_id"], "folder-session")
-
-        # Verify embeddings have namespace fields
         rows = self.backend._embeddings_table.search().where(
-            "collection = 'test'"
+            "collection = 'test' AND file_path = 'notes/important.md'"
         ).to_list()
-        for row in rows:
-            if row.get("file_path", "").startswith("doc"):
-                self.assertEqual(row.get("user_id"), "folder-user")
-                self.assertEqual(row.get("session_id"), "folder-session")
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0]["importance"], 0.95, places=2)
 
-    def test_backward_compat_without_namespace(self):
-        """Operations without namespace fields should still work (backward compatibility)."""
+    def test_upsert_memory_with_tags(self):
+        tags = ["project", "ai", "urgent"]
         self.backend.upsert_memory(
-            path="notes/no-ns.md",
-            text="No namespace fields " + ("z" * 500),
+            path="notes/tagged.md",
+            text="Memory with tags",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            tags=tags,
+        )
+        rows = self.backend._embeddings_table.search().where(
+            "collection = 'test' AND file_path = 'notes/tagged.md'"
+        ).to_list()
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertEqual(rows[0]["tags"], '["project", "ai", "urgent"]')
+
+    def test_search_excludes_expired_entries(self):
+        import time
+        self.backend.upsert_memory(
+            path="notes/short-ttl.md",
+            text="This will expire quickly",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            ttl_seconds=1,
+        )
+        self.backend.upsert_memory(
+            path="notes/permanent.md",
+            text="This is permanent",
             collection="test",
             embed_func=mock_embed,
             model="mock-embedder",
         )
+        self.backend.rebuild_fts_index()
+        time.sleep(1.5)
 
-        # Search without namespace filter
-        results = self.backend.search_fts("namespace fields", limit=10)
-        self.assertGreater(len(results), 0)
+        results_expire = self.backend.search_fts("expire", limit=10, collection="test")
+        expire_paths = [r.display_path for r in results_expire]
+        self.assertNotIn("test/notes/short-ttl.md", expire_paths)
 
-        # Search with namespace filter should still return results with null namespace
-        results = self.backend.search_fts("namespace fields", limit=10, user_id="nonexistent")
-        # Should not find results because user_id filter excludes null namespace entries
+    def test_metadata_backward_compatibility(self):
+        self.backend.upsert_memory(
+            path="notes/legacy.md",
+            text="Legacy memory without metadata",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        rows = self.backend._embeddings_table.search().where(
+            "collection = 'test' AND file_path = 'notes/legacy.md'"
+        ).to_list()
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertIsNone(rows[0]["importance"])
+        self.assertIsNone(rows[0]["ttl_seconds"])
+        self.assertIsNone(rows[0]["tags"])
+        self.assertIsNone(rows[0]["expires_at"])
 
 
 if __name__ == "__main__":

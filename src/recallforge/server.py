@@ -198,6 +198,9 @@ async def create_server(
                         "session_id": {"type": "string", "description": "Optional session namespace"},
                         "project_id": {"type": "string", "description": "Optional project namespace"},
                         "profile": {"type": "string", "description": "Optional profile namespace"},
+                        "importance": {"type": "number", "description": "Importance score 0.0-1.0 (optional)", "minimum": 0, "maximum": 1},
+                        "ttl_seconds": {"type": "integer", "description": "Time-to-live in seconds, 0 or null = no expiration (optional)"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "List of string tags (optional)"},
                     },
                     "required": ["path", "text"],
                 },
@@ -215,6 +218,9 @@ async def create_server(
                         "session_id": {"type": "string", "description": "Optional session namespace"},
                         "project_id": {"type": "string", "description": "Optional project namespace"},
                         "profile": {"type": "string", "description": "Optional profile namespace"},
+                        "importance": {"type": "number", "description": "Importance score 0.0-1.0 (optional)", "minimum": 0, "maximum": 1},
+                        "ttl_seconds": {"type": "integer", "description": "Time-to-live in seconds, 0 or null = no expiration (optional)"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "List of string tags (optional)"},
                     },
                     "required": ["path", "text"],
                 },
@@ -584,9 +590,13 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
     session_id = arguments.get("session_id")
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
+    importance = arguments.get("importance")
+    ttl_seconds = arguments.get("ttl_seconds")
+    tags = arguments.get("tags")
 
     trace_log("memory_add_start", path=path, collection=collection,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
+              importance=importance, ttl_seconds=ttl_seconds, tags=tags)
 
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
@@ -601,6 +611,9 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        importance=importance,
+        ttl_seconds=ttl_seconds,
+        tags=tags,
     )
 
     trace_log("memory_add_done", path=path, hash=content_hash[:8])
@@ -615,6 +628,9 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
         "session_id": session_id,
         "project_id": project_id,
         "profile": profile,
+        "importance": importance,
+        "ttl_seconds": ttl_seconds,
+        "tags": tags,
     }
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
@@ -628,9 +644,13 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
     session_id = arguments.get("session_id")
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
+    importance = arguments.get("importance")
+    ttl_seconds = arguments.get("ttl_seconds")
+    tags = arguments.get("tags")
 
     trace_log("memory_update_start", path=path, collection=collection,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
+              importance=importance, ttl_seconds=ttl_seconds, tags=tags)
 
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
@@ -645,6 +665,9 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        importance=importance,
+        ttl_seconds=ttl_seconds,
+        tags=tags,
     )
 
     trace_log("memory_update_done", path=path, hash=content_hash[:8])
@@ -659,6 +682,9 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
         "session_id": session_id,
         "project_id": project_id,
         "profile": profile,
+        "importance": importance,
+        "ttl_seconds": ttl_seconds,
+        "tags": tags,
     }
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 

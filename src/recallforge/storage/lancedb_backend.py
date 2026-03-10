@@ -473,6 +473,11 @@ class LanceDBBackend(StorageBackend):
             pa.field("session_id", pa.string(), nullable=True),
             pa.field("project_id", pa.string(), nullable=True),
             pa.field("profile", pa.string(), nullable=True),
+            # Metadata fields for Phase 2
+            pa.field("importance", pa.float32(), nullable=True),
+            pa.field("ttl_seconds", pa.int32(), nullable=True),
+            pa.field("tags", pa.string(), nullable=True),  # JSON-encoded list of strings
+            pa.field("expires_at", pa.int64(), nullable=True),  # Timestamp in ms when entry expires
         ])
     
     def _build_documents_schema(self) -> pa.Schema:
@@ -711,11 +716,25 @@ class LanceDBBackend(StorageBackend):
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
-        profile: Optional[str] = None
+        profile: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
     ) -> None:
-        """Insert an embedding."""
+        """Insert an embedding with optional metadata."""
         hash_seq = f"{content_hash}_{seq}"
         now = int(time.time() * 1000)
+
+        # Calculate expiration timestamp if TTL is set
+        expires_at = None
+        if ttl_seconds is not None and ttl_seconds > 0:
+            expires_at = now + (ttl_seconds * 1000)
+
+        # Encode tags as JSON if provided
+        tags_json = None
+        if tags is not None:
+            import json
+            tags_json = json.dumps(tags)
 
         # Delete existing
         try:
@@ -723,7 +742,9 @@ class LanceDBBackend(StorageBackend):
         except Exception as e:
             logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
 
-        trace_log("insert_embedding", hash_seq=hash_seq, collection=collection, file_path=file_path, seq=seq)
+        trace_log("insert_embedding", hash_seq=hash_seq, collection=collection, file_path=file_path, seq=seq,
+                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
+                  importance=importance, ttl_seconds=ttl_seconds, tags=tags)
 
         self._embeddings_table.add([{
             "hash_seq": hash_seq,
@@ -742,6 +763,10 @@ class LanceDBBackend(StorageBackend):
             "session_id": session_id,
             "project_id": project_id,
             "profile": profile,
+            "importance": importance,
+            "ttl_seconds": ttl_seconds,
+            "tags": tags_json,
+            "expires_at": expires_at,
         }])
     
     def has_vectors(self) -> bool:
@@ -834,6 +859,10 @@ class LanceDBBackend(StorageBackend):
         if rows.empty:
             return []
 
+        # Filter out expired entries based on TTL
+        now_ms = int(time.time() * 1000)
+        rows = rows[(rows["expires_at"].isna()) | (rows["expires_at"] > now_ms)]
+
         if collection:
             rows = rows[rows["collection"] == collection]
         if content_type:
@@ -910,8 +939,9 @@ class LanceDBBackend(StorageBackend):
 
         self.ensure_fts_index()
 
-        # Build filter including namespace fields
-        filter_parts = []
+        # Build filter including TTL and namespace fields
+        filter_parts = [self._get_ttl_filter()]
+
         if collection:
             filter_parts.append(f"collection = '{escape_sql(collection)}'")
         if content_type:
@@ -980,8 +1010,9 @@ class LanceDBBackend(StorageBackend):
         trace_log("search_vec_start", limit=limit, collection=collection, content_type=content_type,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
-        # Build filter including namespace fields
-        filter_parts = []
+        # Build filter including TTL and namespace fields
+        filter_parts = [self._get_ttl_filter()]
+
         if collection:
             filter_parts.append(f"collection = '{escape_sql(collection)}'")
         if content_type:
@@ -1053,6 +1084,17 @@ class LanceDBBackend(StorageBackend):
             project_id=row.get("project_id"),
             profile=row.get("profile"),
         )
+    
+    def _get_ttl_filter(self) -> str:
+        """Generate filter clause to exclude expired entries.
+        
+        Returns SQL WHERE clause fragment that filters out expired entries:
+        - expires_at IS NULL (no TTL set)
+        - expires_at > current_time (not yet expired)
+        """
+        now_ms = int(time.time() * 1000)
+        # Exclude entries where expires_at is set and less than now
+        return f"(expires_at IS NULL OR expires_at > {now_ms})"
     
     # =========================================================================
     # Cache Operations
@@ -1138,8 +1180,26 @@ class LanceDBBackend(StorageBackend):
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+
     ) -> str:
-        """Create or update a text memory, replacing old vectors for this path."""
+        """Create or update a text memory, replacing old vectors for this path.
+        
+        Args:
+            path: Memory path key within collection
+            text: Memory content text
+            collection: Collection name
+            embed_func: Function to embed text into vectors
+            model: Embedding model name
+            importance: Optional importance score (0.0-1.0)
+            ttl_seconds: Optional time-to-live in seconds (0 or None = no expiration)
+            tags: Optional list of string tags
+        
+        Returns:
+            Content hash of the stored memory
+        """
         normalized_path = path.strip()
         if not normalized_path:
             raise ValueError("path is required")
@@ -1147,7 +1207,9 @@ class LanceDBBackend(StorageBackend):
             raise ValueError("text is required")
 
         trace_log("upsert_memory_start", path=normalized_path, collection=collection,
-                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
+                  importance=importance, ttl_seconds=ttl_seconds, tags=tags)
+
 
         content_hash = hash_content(text)
         title = extract_title(text, normalized_path)
@@ -1195,6 +1257,10 @@ class LanceDBBackend(StorageBackend):
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
+                importance=importance,
+                ttl_seconds=ttl_seconds,
+                tags=tags,
+
             )
 
         # Schedule debounced FTS rebuild instead of immediate rebuild

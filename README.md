@@ -382,7 +382,7 @@ Index an image for cross-modal search.
 
 ### `memory_add`
 
-Add (or replace) a text memory by path.
+Add (or replace) a text memory by path. Supports optional metadata for importance, TTL, and tags.
 
 ```json
 {
@@ -392,13 +392,28 @@ Add (or replace) a text memory by path.
   "user_id": "optional user namespace",
   "session_id": "optional session namespace",
   "project_id": "optional project namespace",
-  "profile": "optional profile namespace"
+  "profile": "optional profile namespace",
+  "importance": 0.8,
+  "ttl_seconds": 86400,
+  "tags": ["project", "ai", "mcp"]
 }
 ```
 
+**Parameters:**
+- `path` (required): Memory path key within collection
+- `text` (required): Memory content
+- `collection` (optional): Collection name, default "default"
+- `user_id` (optional): Optional user namespace for multi-tenant isolation
+- `session_id` (optional): Optional session namespace
+- `project_id` (optional): Optional project namespace
+- `profile` (optional): Optional profile namespace
+- `importance` (optional): Importance score 0.0-1.0 for ranking/filtering
+- `ttl_seconds` (optional): Time-to-live in seconds (0 or null = no expiration)
+- `tags` (optional): Array of string tags for categorization
+
 ### `memory_update`
 
-Update existing memory text by path without duplicating old vectors.
+Update existing memory text by path without duplicating old vectors. Supports the same metadata as `memory_add`.
 
 ```json
 {
@@ -408,9 +423,29 @@ Update existing memory text by path without duplicating old vectors.
   "user_id": "optional user namespace",
   "session_id": "optional session namespace",
   "project_id": "optional project namespace",
-  "profile": "optional profile namespace"
+  "profile": "optional profile namespace",
+  "importance": 0.9,
+  "ttl_seconds": 604800,
+  "tags": ["project", "ai", "mcp", "completed"]
 }
 ```
+
+**Parameters:**
+- `path` (required): Memory path key within collection
+- `text` (required): Updated memory content
+- `collection` (optional): Collection name, default "default"
+- `user_id` (optional): Optional user namespace for multi-tenant isolation
+- `session_id` (optional): Optional session namespace
+- `project_id` (optional): Optional project namespace
+- `profile` (optional): Optional profile namespace
+- `importance` (optional): Importance score 0.0-1.0
+- `ttl_seconds` (optional): Time-to-live in seconds
+- `tags` (optional): Array of string tags
+
+**TTL Behavior:**
+- Memories with `ttl_seconds > 0` will automatically expire and be excluded from search results
+- Expired entries are filtered out in both FTS and vector search
+- Setting `ttl_seconds` to 0 or omitting it creates a permanent memory (no expiration)
 
 ### `memory_delete`
 
