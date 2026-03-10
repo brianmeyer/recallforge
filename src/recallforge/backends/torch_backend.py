@@ -12,6 +12,7 @@ Model IDs:
 
 import os
 import sys
+import warnings
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
@@ -177,11 +178,16 @@ class TorchBackend(ModelBackend):
         dtype = self._get_dtype()
         attn = self._get_attention_implementation()
         
-        self._embedder = Qwen3VLEmbedder(
-            model_name_or_path=self.EMBEDDER_MODEL,
-            torch_dtype=dtype,
-            attn_implementation=attn,
-        )
+        # Suppress flash-linear-attention not-installed warning
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
+            warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
+            
+            self._embedder = Qwen3VLEmbedder(
+                model_name_or_path=self.EMBEDDER_MODEL,
+                torch_dtype=dtype,
+                attn_implementation=attn,
+            )
         
         print(f"[TorchBackend] Loaded embedder on {device} with {dtype}")
     
@@ -277,12 +283,17 @@ class TorchBackend(ModelBackend):
         else:
             dtype = self._get_dtype()
         
-        self._reranker = Qwen3VLReranker(
-            model_name_or_path=self.RERANKER_MODEL,
-            device=device,
-            dtype=dtype,
-            attn_implementation=attn,
-        )
+        # Suppress flash-linear-attention not-installed warning
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
+            warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
+            
+            self._reranker = Qwen3VLReranker(
+                model_name_or_path=self.RERANKER_MODEL,
+                device=device,
+                dtype=dtype,
+                attn_implementation=attn,
+            )
         
         print(f"[TorchBackend] Loaded reranker on {device} with {dtype}")
     
@@ -333,12 +344,17 @@ class TorchBackend(ModelBackend):
         
         model_name = self.EXPANDER_MODEL
         
-        self._expander_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self._expander = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            attn_implementation=attn,
-        ).to(device)
+        # Suppress flash-linear-attention not-installed warning
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
+            warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
+            
+            self._expander_tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self._expander = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                attn_implementation=attn,
+            ).to(device)
         
         self._expander.eval()
         
