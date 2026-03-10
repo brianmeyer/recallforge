@@ -279,14 +279,10 @@ class TorchBackend(ModelBackend):
         
         self._reranker = Qwen3VLReranker(
             model_name_or_path=self.RERANKER_MODEL,
+            device=device,
             torch_dtype=dtype,
             attn_implementation=attn,
         )
-        
-        # Move to device
-        self._reranker.device = torch.device(device)
-        self._reranker.model.to(self._reranker.device)
-        self._reranker.score_linear.to(self._reranker.device)
         
         print(f"[TorchBackend] Loaded reranker on {device} with {dtype}")
     
