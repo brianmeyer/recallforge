@@ -1,6 +1,6 @@
 RecallForge UAT Results
 ======================
-Date: 2026-03-09 22:46:57 EDT
+Date: 2026-03-09 22:55:50 EDT
 Host: Mac (arm64)
 Python: Python 3.12.12
 
@@ -123,11 +123,11 @@ Python: Python 3.12.12
     Indexed 600/1000
     Indexed 800/1000
     Indexed 1000/1000
-  Indexing 1000 docs took 189.2s (5 docs/sec)
-  [0;32mPASS[0m  Indexed 1000 docs in 189.2s
-  [0;32mPASS[0m  FTS on 1000 docs: 472ms (< 1s)
+  Indexing 1000 docs took 191.6s (5 docs/sec)
+  [0;32mPASS[0m  Indexed 1000 docs in 191.6s
+  [0;32mPASS[0m  FTS on 1000 docs: 471ms (< 1s)
   [0;32mPASS[0m  FTS returned 10 results from bulk corpus
-  [0;32mPASS[0m  Vector search on 1000 docs: 436ms (< 1s)
+  [0;32mPASS[0m  Vector search on 1000 docs: 435ms (< 1s)
   [0;32mPASS[0m  Vector search returned 10 results from bulk corpus
 
 [1m========================================[0m
@@ -150,31 +150,98 @@ Python: Python 3.12.12
 [0;36m--- Torch Backend ---[0m
   [0;36mINFO[0m  Testing Torch backend (embed_text, embed_image, rerank, expand_query)...
 Loading embedder...
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'models'
+Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:02<21:11,  2.04s/it]Loading weights:  34%|███▍      | 212/625 [00:02<00:03, 133.31it/s]Loading weights:  46%|████▌     | 289/625 [00:03<00:02, 113.00it/s]Loading weights:  54%|█████▎    | 335/625 [00:03<00:02, 130.81it/s]Loading weights:  62%|██████▏   | 388/625 [00:03<00:01, 163.43it/s]Loading weights:  72%|███████▏  | 448/625 [00:03<00:00, 209.29it/s]Loading weights:  80%|███████▉  | 498/625 [00:03<00:00, 246.56it/s]Loading weights:  88%|████████▊ | 547/625 [00:03<00:00, 284.42it/s]Loading weights:  96%|█████████▌| 600/625 [00:03<00:00, 280.20it/s]Loading weights: 100%|██████████| 625/625 [00:03<00:00, 158.33it/s]
+[TorchBackend] Loaded embedder on mps with torch.float16
+  Embedder loaded in 17.4s
+  PASS  Torch embed_text: 2048-dim float32 vector
+  PASS  Torch embed_texts batch: (3, 2048)
+  PASS  Torch embed_image: 2048-dim vector from food_pasta_dish.png
+Loading reranker...
+Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:03<40:11,  3.86s/it]Loading weights:  32%|███▏      | 198/625 [00:03<00:06, 70.32it/s]Loading weights:  49%|████▉     | 307/625 [00:06<00:05, 54.03it/s]Loading weights:  59%|█████▉    | 369/625 [00:06<00:03, 66.72it/s]Loading weights:  66%|██████▌   | 414/625 [00:07<00:02, 76.42it/s]Loading weights:  72%|███████▏  | 449/625 [00:07<00:01, 88.89it/s]Loading weights:  77%|███████▋  | 482/625 [00:07<00:01, 98.88it/s]Loading weights:  82%|████████▏ | 510/625 [00:07<00:01, 103.88it/s]Loading weights:  85%|████████▌ | 534/625 [00:07<00:00, 115.36it/s]Loading weights:  89%|████████▉ | 558/625 [00:07<00:00, 129.97it/s]Loading weights:  93%|█████████▎| 582/625 [00:08<00:00, 143.01it/s]Loading weights:  97%|█████████▋| 605/625 [00:08<00:00, 115.82it/s]Loading weights: 100%|█████████▉| 623/625 [00:08<00:00, 100.00it/s]Loading weights: 100%|██████████| 625/625 [00:08<00:00, 72.52it/s] 
+`torch_dtype` is deprecated! Use `dtype` instead!
+The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+[TorchBackend] Loaded reranker on mps with torch.float32
+  Reranker loaded in 39.5s
+[TorchBackend] Rerank error: PreTrainedTokenizerBase.pad() got an unexpected keyword argument 'truncation'
+  PASS  Torch rerank: 3 scores = ['0.500', '0.500', '0.500']
+  WARN  Reranker ranking may be suboptimal (not a hard fail)
+Loading expander...
+Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:07<38:04,  7.16s/it]Loading weights: 100%|██████████| 320/320 [00:07<00:00, 44.64it/s]
+[TorchBackend] Loaded expander (tobil/qmd-query-expansion-qwen3.5-2B) on mps with torch.float16
+  Expander loaded in 12.9s
+  PASS  Torch expand_query: lex='machine learning training neural network...'
+  INFO  Torch backend RSS: 404 MB (all 3 models loaded)
+  PASS  Backend info: name=torch device=mps mem=12.0GB
 
-During handling of the above exception, another exception occurred:
+Torch backend: ALL PASSED
+  [0;32mPASS[0m  Torch backend all tests
 
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
-    from qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'qwen3_vl_embedding'
+[0;36m--- MLX Backend (4-bit Embed Coverage) ---[0m
+  [0;36mINFO[0m  Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image)...
+Loading MLX embedder (4-bit)...
+[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 112890.17it/s]
+[MLXBackend] Loaded embedder (4bit)
+  Embedder loaded in 3.8s
+  PASS  MLX 4-bit embed_text: 2048-dim float32 vector
+  PASS  MLX 4-bit embed_texts batch: (3, 2048)
+  PASS  MLX 4-bit embed_image: 2048-dim vector
 
-During handling of the above exception, another exception occurred:
+MLX 4-bit embed coverage: ALL PASSED
+  [0;32mPASS[0m  MLX 4-bit embed coverage
 
-Traceback (most recent call last):
-  File "<stdin>", line 14, in <module>
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
-    from qwen_vl_utils.vision_process import process_vision_info
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
-    from .vision_process import (
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
-    import torchvision
-ModuleNotFoundError: No module named 'torchvision'
+[0;36m--- MLX Backend ---[0m
+  [0;36mINFO[0m  Testing MLX backend...
+Loading MLX embedder (bf16)...
+[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 72315.59it/s]
+[MLXBackend] Loaded embedder (bf16)
+  Loaded in 4.5s
+  PASS  MLX bf16 embed_text: shape=(2048,)
+Loading MLX reranker (bf16)...
+[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 139810.13it/s]
+`torch_dtype` is deprecated! Use `dtype` instead!
+The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
+[MLXBackend] score_linear missing; using lm_head yes-no projection fallback
+[MLXBackend] Loaded reranker (bf16)
+  Loaded in 3.0s
+  PASS  MLX bf16 rerank: scores=['0.522', '0.516']
+Loading expander (torch fallback)...
+[MLXBackend] Loading expander via torch fallback on mps
+Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:07<41:11,  7.75s/it]Loading weights: 100%|██████████| 320/320 [00:07<00:00, 41.27it/s]
+[MLXBackend] Loaded expander (torch fallback)
+  Loaded in 15.9s
+  PASS  MLX expander (torch fallback): keys=['lex', 'vec', 'hyde']
+  PASS  MLX info: device=mps quant=bf16 mem=12.0GB
+
+MLX bf16 backend: ALL PASSED
+  [0;32mPASS[0m  MLX bf16 backend all tests
+  [0;36mINFO[0m  Testing MLX 4-bit backend...
+Loading MLX embedder (4-bit)...
+[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 301248.35it/s]
+[MLXBackend] Loaded embedder (4bit)
+  Loaded in 4.0s
+  PASS  MLX 4-bit embed_text: shape=(2048,)
+  PASS  MLX 4-bit info: quant=4bit mem=2.0GB
+
+MLX 4-bit backend: ALL PASSED
+  [0;32mPASS[0m  MLX 4-bit backend all tests
+
+[0;36m--- Backend Auto-Detection ---[0m
+  PASS  Auto-detection chose 'mlx' (expected 'mlx') on Darwin/arm64
+  [0;32mPASS[0m  Backend auto-detection
+
+[1m═══════════════════════════════════════[0m
+[1m  Backend Tests Summary[0m
+[1m═══════════════════════════════════════[0m
+  [0;32mPASS: 5[0m
+  [0;31mFAIL: 0[0m
+  [0;33mSKIP: 0[0m
+  Total: 5
+
+  [0;32m[1mRESULT: PASSED[0m
 
 
 ═══════════════════════════════════════
@@ -186,31 +253,66 @@ ModuleNotFoundError: No module named 'torchvision'
 [1m[0;34m═══════════════════════════════════════[0m
 
 [0;36m--- Indexing test corpus ---[0m
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'models'
+Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:01<18:36,  1.79s/it]Loading weights:  32%|███▏      | 201/625 [00:01<00:02, 146.22it/s]Loading weights:  48%|████▊     | 300/625 [00:02<00:02, 131.95it/s]Loading weights:  58%|█████▊    | 364/625 [00:02<00:01, 167.82it/s]Loading weights:  70%|██████▉   | 436/625 [00:02<00:00, 219.47it/s]Loading weights:  80%|████████  | 500/625 [00:03<00:00, 267.18it/s]Loading weights:  90%|█████████ | 563/625 [00:03<00:00, 316.49it/s]Loading weights: 100%|██████████| 625/625 [00:03<00:00, 298.82it/s]Loading weights: 100%|██████████| 625/625 [00:03<00:00, 182.59it/s]
+[TorchBackend] Loaded embedder on mps with torch.float16
+  Indexed: ai_agents.md
+  Indexed: ai_embeddings.md
+  Indexed: ai_transformers.md
+  Indexed: architecture_blueprints.md
+  Indexed: architecture_gothic.md
+  Indexed: architecture_modern.md
+  Indexed: cooking_grilling.md
+  Indexed: cooking_pasta.md
+  Indexed: cooking_sourdough.md
+  Indexed: nature_forests.md
+  Indexed: nature_mountains.md
+  Indexed: nature_oceans.md
+  Indexed: sports_basketball.md
+  Indexed: sports_running.md
+  Indexed: sports_soccer.md
+  Indexed: code_editor_screenshot.png
+  Indexed: floor_plan_blueprint.png
+  Indexed: food_pasta_dish.png
+  PASS  Indexed 18 documents, 18 embeddings
+  [0;32mPASS[0m  Corpus indexed
 
-During handling of the above exception, another exception occurred:
+[0;36m--- Embed Mode ---[0m
+Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:01<15:06,  1.45s/it]Loading weights:  72%|███████▏  | 448/625 [00:01<00:00, 400.57it/s]Loading weights: 100%|██████████| 625/625 [00:01<00:00, 378.69it/s]
+[TorchBackend] Loaded embedder on mps with torch.float16
+  [0;32mPASS[0m  Mode set to 'embed'
+  [0;32mPASS[0m  Reranker not needed in embed mode
+  [0;32mPASS[0m  Expander not needed in embed mode
+  [0;32mPASS[0m  Embedder loaded
+  [0;32mPASS[0m  Reranker NOT loaded
+  [0;32mPASS[0m  Expander NOT loaded
+  [0;32mPASS[0m  Embed mode search returned 5 results in 0.60s
+  [0;32mPASS[0m  Embed mode: all rerank scores are 0.5 (neutral)
+    [0.066] AI Agents and Memory Systems
+    [0.063] Transformer Architecture in Deep Learning
+    [0.062] Soccer Tactics and Formations
+    [0.061] Vector Embeddings and Semantic Search
+    [0.061] Mastering the Charcoal Grill
+  [0;32mPASS[0m  Embed mode
 
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
-    from qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'qwen3_vl_embedding'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<stdin>", line 15, in <module>
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
-    from qwen_vl_utils.vision_process import process_vision_info
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
-    from .vision_process import (
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
-    import torchvision
-ModuleNotFoundError: No module named 'torchvision'
+[0;36m--- Hybrid Mode ---[0m
+Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:  29%|██▊       | 179/625 [00:00<00:00, 1544.74it/s]Loading weights:  56%|█████▋    | 352/625 [00:00<00:00, 1642.37it/s]Loading weights: 100%|██████████| 625/625 [00:00<00:00, 2305.32it/s]
+[TorchBackend] Loaded embedder on mps with torch.float16
+Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:03<36:09,  3.48s/it]Loading weights:  32%|███▏      | 201/625 [00:03<00:05, 76.82it/s]Loading weights:  43%|████▎     | 267/625 [00:04<00:05, 67.54it/s]Loading weights:  49%|████▉     | 306/625 [00:05<00:04, 65.73it/s]Loading weights:  53%|█████▎    | 332/625 [00:05<00:04, 70.46it/s]Loading weights:  56%|█████▋    | 353/625 [00:05<00:03, 78.40it/s]Loading weights:  60%|█████▉    | 374/625 [00:06<00:02, 87.85it/s]Loading weights:  63%|██████▎   | 394/625 [00:06<00:02, 98.22it/s]Loading weights:  66%|██████▌   | 413/625 [00:06<00:02, 97.52it/s]Loading weights:  70%|██████▉   | 436/625 [00:06<00:01, 113.01it/s]Loading weights:  73%|███████▎  | 454/625 [00:06<00:01, 120.79it/s]Loading weights:  75%|███████▌  | 471/625 [00:06<00:01, 99.88it/s] Loading weights:  78%|███████▊  | 485/625 [00:06<00:01, 101.70it/s]Loading weights:  81%|████████▏ | 508/625 [00:07<00:00, 119.24it/s]Loading weights:  85%|████████▌ | 532/625 [00:07<00:00, 142.40it/s]Loading weights:  89%|████████▉ | 556/625 [00:07<00:00, 149.72it/s]Loading weights:  92%|█████████▏| 573/625 [00:07<00:00, 133.38it/s]Loading weights:  96%|█████████▌| 600/625 [00:07<00:00, 107.85it/s]Loading weights:  98%|█████████▊| 613/625 [00:07<00:00, 99.07it/s] Loading weights: 100%|██████████| 625/625 [00:08<00:00, 77.59it/s]
+[TorchBackend] Loaded reranker on mps with torch.float32
+  [0;32mPASS[0m  Mode set to 'hybrid'
+  [0;32mPASS[0m  Reranker needed in hybrid mode
+  [0;32mPASS[0m  Expander not needed in hybrid mode
+  [0;32mPASS[0m  Embedder loaded
+  [0;32mPASS[0m  Reranker loaded
+  [0;32mPASS[0m  Expander NOT loaded
+[TorchBackend] Rerank error: PreTrainedTokenizerBase.pad() got an unexpected keyword argument 'truncation'
+  [0;32mPASS[0m  Hybrid mode search returned 5 results in 10.16s
+  [0;31mFAIL[0m  Hybrid mode: reranker produces varied scores
+    [0.066] AI Agents and Memory Systems (rerank=0.500)
+    [0.063] Transformer Architecture in Deep Learning (rerank=0.500)
+    [0.062] Soccer Tactics and Formations (rerank=0.500)
+    [0.061] Vector Embeddings and Semantic Search (rerank=0.500)
+    [0.061] Mastering the Charcoal Grill (rerank=0.500)
 
 
 ═══════════════════════════════════════
@@ -223,171 +325,4 @@ ModuleNotFoundError: No module named 'torchvision'
 [1m[0;33m  ★ THIS IS THE KEY DIFFERENTIATOR TEST ★[0m
 
 [0;36m--- Indexing Full Corpus ---[0m
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'models'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
-    from qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'qwen3_vl_embedding'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<stdin>", line 15, in <module>
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
-    from qwen_vl_utils.vision_process import process_vision_info
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
-    from .vision_process import (
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
-    import torchvision
-ModuleNotFoundError: No module named 'torchvision'
-
-
-═══════════════════════════════════════
-  Search Quality
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Search Quality Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'models'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
-    from qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'qwen3_vl_embedding'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<stdin>", line 29, in <module>
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
-    from qwen_vl_utils.vision_process import process_vision_info
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
-    from .vision_process import (
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
-    import torchvision
-ModuleNotFoundError: No module named 'torchvision'
-
-
-═══════════════════════════════════════
-  MCP Server
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge MCP Server Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Server Creation ---[0m
-
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'models'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
-    from qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'qwen3_vl_embedding'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<stdin>", line 37, in <module>
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
-    from qwen_vl_utils.vision_process import process_vision_info
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
-    from .vision_process import (
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
-    import torchvision
-ModuleNotFoundError: No module named 'torchvision'
-
-
-═══════════════════════════════════════
-  CLI
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge CLI Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Help and Version ---[0m
-  [0;32mPASS[0m  recallforge --help
-  [0;32mPASS[0m  recallforge --version
-  [0;32mPASS[0m  recallforge index --help
-  [0;31mFAIL[0m  recallforge search --help (expected 'Search indexed' not found)
-    Output: usage: recallforge search [-h] [--limit LIMIT] [--collection COLLECTION]
-                          [--content-type {text,image}]
-                          [--mode {embed,hybrid,full}]
-
-
-═══════════════════════════════════════
-  Latency
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Performance Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Cold Start: Backend + First Search ---[0m
-
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 163, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'models'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 166, in _load_embedder
-    from qwen3_vl_embedding import Qwen3VLEmbedder
-ModuleNotFoundError: No module named 'qwen3_vl_embedding'
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "<stdin>", line 52, in <module>
-  File "/Users/brianmeyer/recallforge/src/recallforge/storage/lancedb_backend.py", line 917, in index_document
-    vector = embed_func(chunk["text"])
-             ^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 196, in embed_text
-    return self.embed_texts([text])[0]
-           ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 200, in embed_texts
-    self._load_embedder()
-  File "/Users/brianmeyer/recallforge/src/recallforge/backends/torch_backend.py", line 175, in _load_embedder
-    from models.qwen3_vl_embedding import Qwen3VLEmbedder
-  File "/Users/brianmeyer/recallforge/Qwen3-VL-Embedding/src/models/qwen3_vl_embedding.py", line 24, in <module>
-    from qwen_vl_utils.vision_process import process_vision_info
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/__init__.py", line 1, in <module>
-    from .vision_process import (
-  File "/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/qwen_vl_utils/vision_process.py", line 16, in <module>
-    import torchvision
-ModuleNotFoundError: No module named 'torchvision'
-
-
-═══════════════════════════════════════
-  UAT SUITE SUMMARY
-═══════════════════════════════════════
-  Passed: 2
-  Failed: 7
-  Total:  9
-  SUITE RESULT: FAILED
+Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:01<18:21,  1.76s/it]Loading weights:  32%|███▏      | 201/625 [00:01<00:02, 148.50it/s]Loading weights:  48%|████▊     | 303/625 [00:02<00:02, 137.42it/s]Loading weights:  59%|█████▊    | 366/625 [00:02<00:01, 173.32it/s]Loading weights:  70%|███████   | 438/625 [00:02<00:00, 225.27it/s]Loading weights:  81%|████████▏ | 508/625 [00:03<00:00, 278.21it/s]Loading weights:  92%|█████████▏| 578/625 [00:03<00:00, 339.11it/s]Loading weights: 100%|██████████| 625/625 [00:03<00:00, 188.53it/s]
