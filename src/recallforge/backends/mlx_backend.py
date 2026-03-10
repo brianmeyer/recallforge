@@ -549,6 +549,44 @@ class MLXBackend(ModelBackend):
                 return current
         return None
 
+    def _dequantize_weight(self, module: Any) -> Optional["mx.array"]:
+        """Dequantize a quantized embedding/linear module's weight if needed.
+
+        For 4-bit quantized models, embed_tokens.weight has shape (vocab_size, 256)
+        instead of (vocab_size, 2048) because it's compressed. We need to dequantize
+        using the scales and biases stored on the module.
+
+        Returns the full-precision weight array, or None if dequantization fails.
+        """
+        weight = getattr(module, "weight", None)
+        if weight is None:
+            return None
+
+        # Check if this is a quantized module with scales/biases
+        scales = getattr(module, "scales", None)
+        biases = getattr(module, "biases", None)
+
+        if scales is not None and biases is not None:
+            # This is a quantized embedding - dequantize it
+            # Look for quantization parameters
+            group_size = getattr(module, "group_size", 64)
+            bits = getattr(module, "bits", 4)
+
+            try:
+                weight_mx = self._to_mx_array(weight)
+                scales_mx = self._to_mx_array(scales)
+                biases_mx = self._to_mx_array(biases)
+
+                # mx.dequantize expects: (weight, scales, biases, group_size, bits)
+                dequant = mx.dequantize(weight_mx, scales_mx, biases_mx, group_size, bits)
+                return dequant.astype(mx.float32)
+            except Exception as e:
+                print(f"[MLXBackend] Warning: Failed to dequantize weight: {e}")
+                return None
+
+        # Not quantized - just convert to MLX array
+        return self._to_mx_array(weight).astype(mx.float32)
+
     def _derive_binary_head_from_lm(self) -> Optional["mx.array"]:
         """Derive yes-no projection from lm_head when score_linear is unavailable."""
         tokenizer = getattr(self._reranker_processor, "tokenizer", self._reranker_processor)
@@ -576,8 +614,20 @@ class MLXBackend(ModelBackend):
         if lm_head is None:
             return None
 
-        lm_head_weight = getattr(lm_head, "weight", lm_head)
-        lm_head_weight = self._to_mx_array(lm_head_weight).astype(mx.float32)
+        # Use dequantization helper to handle 4-bit quantized weights
+        lm_head_weight = self._dequantize_weight(lm_head)
+        if lm_head_weight is None:
+            # Fallback: try calling the module directly to get embeddings
+            try:
+                # For QuantizedEmbedding, calling it with token IDs returns dequantized embeddings
+                yes_emb = lm_head(mx.array([yes_id]))
+                no_emb = lm_head(mx.array([no_id]))
+                if yes_emb is not None and no_emb is not None:
+                    return (yes_emb[0] - no_emb[0]).astype(mx.float32)
+            except Exception as e:
+                print(f"[MLXBackend] Warning: Failed to get embeddings via module call: {e}")
+            return None
+
         return (lm_head_weight[yes_id] - lm_head_weight[no_id]).astype(mx.float32)
 
     def _init_reranker_scoring(self) -> None:
