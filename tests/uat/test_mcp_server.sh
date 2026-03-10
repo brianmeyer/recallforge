@@ -61,7 +61,12 @@ async def test_server():
     # ── List tools ──
     print("\n\033[0;36m--- List Tools ---\033[0m\n")
 
-    tools = await server.list_tools()
+    try:
+        # Try async first (newer MCP versions)
+        tools = await server.list_tools()
+    except TypeError:
+        # Fall back to sync (older MCP versions)
+        tools = server.list_tools()
     tool_names = [t.name for t in tools]
     report(len(tools) == 7, f"Server exposes {len(tools)} tools (expected 7)")
 
