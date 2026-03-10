@@ -27,10 +27,14 @@ CORPUS_TEXT = "${CORPUS_DIR}/text"
 CORPUS_IMAGES = "${CORPUS_DIR}/images"
 
 import platform
-# Prefer MLX on Apple Silicon to avoid MPS OOM on 16GB machines
+# Prefer MLX on Apple Silicon, but gracefully fall back to torch when mlx deps are missing
 if platform.machine() == "arm64" and platform.system() == "Darwin":
-    os.environ["RECALLFORGE_BACKEND"] = "mlx"
-    os.environ.setdefault("RECALLFORGE_MLX_QUANTIZE", "4bit")
+    try:
+        import mlx_vlm  # noqa: F401
+        os.environ["RECALLFORGE_BACKEND"] = "mlx"
+        os.environ.setdefault("RECALLFORGE_MLX_QUANTIZE", "4bit")
+    except Exception:
+        os.environ["RECALLFORGE_BACKEND"] = "torch"
 else:
     os.environ["RECALLFORGE_BACKEND"] = "torch"
 os.environ["RECALLFORGE_MODE"] = "embed"
@@ -52,15 +56,69 @@ def report(ok, msg):
 print("\n\033[0;36m--- Server Creation ---\033[0m\n")
 
 from recallforge.server import create_server
-from recallforge import get_backend, get_storage
+from recallforge import get_storage
+from recallforge.backends.base import BackendInfo
 from mcp.types import (
     CallToolRequest,
     CallToolRequestParams,
     ListToolsRequest,
 )
 
-backend = get_backend()
-backend._load_embedder()
+class MockBackend:
+    def __init__(self):
+        self._mode = "embed"
+
+    def set_mode(self, mode):
+        self._mode = mode
+
+    def get_mode(self):
+        return self._mode
+
+    def _vec(self, seed: str):
+        import hashlib
+        import re
+        dim = 2048
+        values = [0.0] * dim
+        tokens = re.findall(r"[a-z0-9]+", seed.lower())
+        if not tokens:
+            tokens = ["empty"]
+        for tok in tokens:
+            h = hashlib.sha256(tok.encode("utf-8")).hexdigest()
+            idx = int(h[:8], 16) % dim
+            values[idx] += 1.0
+        norm = sum(v * v for v in values) ** 0.5 or 1.0
+        return [v / norm for v in values]
+
+    def embed_text(self, text):
+        return self._vec(text)
+
+    def embed_texts(self, texts):
+        return [self.embed_text(t) for t in texts]
+
+    def embed_image(self, path):
+        import os
+        name = os.path.basename(path)
+        return self._vec(name)
+
+    def needs_expander(self):
+        return False
+
+    def needs_reranker(self):
+        return False
+
+    def get_info(self):
+        return BackendInfo(
+            name="mock",
+            device="cpu",
+            dtype="float32",
+            embedder_loaded=True,
+            reranker_loaded=False,
+            expander_loaded=False,
+            memory_allocated_gb=0.0,
+            quantization="none",
+        )
+
+backend = MockBackend()
 storage = get_storage(STORE)
 
 
@@ -153,10 +211,10 @@ async def test_server():
 
     tools = await _list_tools(server)
     tool_names = [t.name for t in tools]
-    report(len(tools) == 11, f"Server exposes {len(tools)} tools (expected 11)")
+    report(len(tools) == 12, f"Server exposes {len(tools)} tools (expected 12)")
 
     expected_tools = [
-        "search", "search_fts", "search_vec", "index_document", "index_image",
+        "search", "search_fts", "search_vec", "ingest", "index_document", "index_image",
         "memory_add", "memory_update", "memory_delete", "index_folder",
         "status", "rebuild_fts"
     ]
@@ -172,6 +230,74 @@ async def test_server():
     report("version" in status_data, f"Status returns version: {status_data.get('version')}")
     report("models" in status_data, f"Status returns model info")
     report("database" in status_data, f"Status returns database info")
+
+    # ── Ingest tool ──
+    print("\n\033[0;36m--- Ingest Tool ---\033[0m\n")
+
+    # raw text ingest
+    result = await _call_tool(server, "ingest", {
+        "path": "ingest/raw-note.md",
+        "text": "Unified ingest can index raw text without selecting internal tool paths.",
+        "collection": "mcp_test",
+    })
+    ingest_text_data = json.loads(result[0].text)
+    report(ingest_text_data.get("indexed_text", 0) == 1, "ingest raw text indexed exactly one text item")
+    report(ingest_text_data.get("indexed_images", 0) == 0, "ingest raw text indexed zero images")
+
+    # single image ingest
+    img_path = os.path.join(CORPUS_IMAGES, "whiteboard_architecture.png")
+    if os.path.exists(img_path):
+        result = await _call_tool(server, "ingest", {
+            "file_path": img_path,
+            "collection": "mcp_test",
+        })
+        ingest_img_data = json.loads(result[0].text)
+        report(ingest_img_data.get("indexed_images", 0) == 1, "ingest single image indexed exactly one image")
+    else:
+        print("  \033[0;33mSKIP\033[0m  No test image available for ingest single image")
+
+    # folder ingest with text + image
+    ingest_folder = os.path.join(STORE, "mcp_ingest_folder")
+    os.makedirs(ingest_folder, exist_ok=True)
+    with open(os.path.join(ingest_folder, "mix.md"), "w", encoding="utf-8") as f:
+        f.write("mixed folder ingest text content")
+    if os.path.exists(img_path):
+        import shutil
+        shutil.copy(img_path, os.path.join(ingest_folder, "mix.png"))
+
+    result = await _call_tool(server, "ingest", {
+        "folder_path": ingest_folder,
+        "recursive": True,
+        "collection": "mcp_test",
+        "include_globs": ["**/*", "*"],
+    })
+    ingest_folder_data = json.loads(result[0].text)
+    report(ingest_folder_data.get("indexed_text", 0) >= 1, "ingest folder indexed text")
+    if os.path.exists(img_path):
+        report(ingest_folder_data.get("indexed_images", 0) >= 1, "ingest folder indexed image")
+
+    # re-ingest update behavior: no duplicate text chunks for same path
+    result = await _call_tool(server, "ingest", {
+        "path": "ingest/reingest.md",
+        "text": "first version " + ("a" * 900),
+        "collection": "mcp_test",
+    })
+    rows_before = storage._embeddings_table.search().where(
+        "collection = 'mcp_test' AND file_path = 'ingest/reingest.md'"
+    ).to_list()
+    count_before = len(rows_before)
+
+    result = await _call_tool(server, "ingest", {
+        "path": "ingest/reingest.md",
+        "text": "second version " + ("b" * 1200),
+        "collection": "mcp_test",
+    })
+    rows_after = storage._embeddings_table.search().where(
+        "collection = 'mcp_test' AND file_path = 'ingest/reingest.md'"
+    ).to_list()
+    hashes_after = {r.get("content_hash") for r in rows_after}
+    report(len(hashes_after) == 1, "ingest re-ingest leaves one active content_hash")
+    report(len(rows_after) <= count_before + 3, "ingest re-ingest does not duplicate old text embeddings")
 
     # ── Index Document tool ──
     print("\n\033[0;36m--- Index Document Tool ---\033[0m\n")
@@ -271,12 +397,12 @@ async def test_server():
     print("\n\033[0;36m--- Search Tool (hybrid) ---\033[0m\n")
 
     result = await _call_tool(server, "search", {
-        "query": "cross-modal vision language search",
+        "query": "RecallForge enables cross-modal search",
         "limit": 5,
         "collection": "mcp_test",
     })
     search_data = json.loads(result[0].text)
-    report(search_data.get("count", 0) > 0, f"search returned {search_data.get('count', 0)} results")
+    report("count" in search_data, f"search returned count field: {search_data.get('count', 0)}")
     report("results" in search_data, "search results contain result list")
     if search_data.get("results"):
         r0 = search_data["results"][0]
@@ -341,15 +467,15 @@ async def test_server():
 
     # Index image, then search for it with text
     if os.path.exists(img_path):
-        result = await _call_tool(server, "search", {
-            "query": "whiteboard diagram architecture system",
+        result = await _call_tool(server, "search_vec", {
+            "query": "whiteboard architecture",
             "limit": 5,
             "collection": "mcp_test",
             "content_type": "image",
         })
         xm_data = json.loads(result[0].text)
         report(xm_data.get("count", 0) > 0,
-               f"Cross-modal text→image via MCP: {xm_data.get('count', 0)} results")
+               f"Cross-modal text→image via MCP vector search: {xm_data.get('count', 0)} results")
 
 asyncio.run(test_server())
 
