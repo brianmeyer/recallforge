@@ -565,6 +565,14 @@ class MLXBackend(ModelBackend):
             self._reranker_model,
             ["lm_head", "language_model.lm_head", "language_model.model.lm_head"],
         )
+        # Qwen3-VL ties lm_head to embed_tokens (tie_word_embeddings=True).
+        # When lm_head is absent (e.g. mlx_vlm conversion), use embed_tokens.
+        if lm_head is None:
+            lm_head = self._resolve_attr(
+                self._reranker_model,
+                ["language_model.model.embed_tokens", "language_model.embed_tokens",
+                 "model.embed_tokens", "embed_tokens"],
+            )
         if lm_head is None:
             return None
 
