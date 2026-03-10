@@ -12,13 +12,101 @@ trap cleanup_store EXIT
 
 ensure_test_images
 
+# ── Helper: cleanup GPU memory between phases ──
+_cleanup_gpu() {
+    python3 -c "
+import gc; gc.collect()
+try:
+    import torch
+    if torch.backends.mps.is_available(): torch.mps.empty_cache()
+    if torch.cuda.is_available(): torch.cuda.empty_cache()
+except: pass
+" 2>/dev/null || true
+}
+
+# ── Phase 1: Index corpus (embed mode only — minimal memory) ──
+subsection "Indexing test corpus"
+
 python3 << PYEOF
-import os, sys, time, json
+import os, sys, time
 sys.path.insert(0, "src")
 
 STORE = "${UAT_STORE}"
 CORPUS_TEXT = "${CORPUS_DIR}/text"
 CORPUS_IMAGES = "${CORPUS_DIR}/images"
+
+os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_MODE"] = "embed"
+os.environ["RECALLFORGE_STORE_PATH"] = STORE
+
+from recallforge import get_backend, get_storage
+
+backend = get_backend()
+backend._load_embedder()
+storage = get_storage(STORE)
+
+text_files = sorted([f for f in os.listdir(CORPUS_TEXT) if f.endswith('.md')])
+for f in text_files:
+    path = os.path.join(CORPUS_TEXT, f)
+    with open(path) as fh:
+        text = fh.read()
+    storage.index_document(
+        path=f, text=text, collection="uat",
+        model="Qwen3-VL-Embedding-2B", embed_func=backend.embed_text,
+    )
+    print(f"  Indexed: {f}")
+
+img_files = sorted([f for f in os.listdir(CORPUS_IMAGES) if f.endswith('.png')])
+for f in img_files[:3]:
+    path = os.path.join(CORPUS_IMAGES, f)
+    storage.index_image(path=path, collection="uat", embed_func=backend.embed_image)
+    print(f"  Indexed: {f}")
+
+total_docs = storage.count_documents()
+total_emb = storage.count_embeddings()
+ok = total_docs > 0
+print(f"  {'PASS' if ok else 'FAIL'}  Indexed {total_docs} documents, {total_emb} embeddings")
+if not ok: sys.exit(1)
+
+# Cleanup: unload backend before exiting
+del backend, storage
+import gc; gc.collect()
+try:
+    import torch
+    if torch.backends.mps.is_available(): torch.mps.empty_cache()
+except: pass
+PYEOF
+INDEX_RC=$?
+if [[ $INDEX_RC -ne 0 ]]; then
+    fail "Corpus indexing"
+    print_summary "Tiered Mode Tests"
+    exit 1
+fi
+pass "Corpus indexed"
+_cleanup_gpu
+
+# ── Phase 2: Embed Mode (separate process) ──
+subsection "Embed Mode"
+
+python3 << PYEOF
+import os, sys, time
+sys.path.insert(0, "src")
+
+STORE = "${UAT_STORE}"
+
+os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_MODE"] = "embed"
+os.environ["RECALLFORGE_STORE_PATH"] = STORE
+
+from recallforge import get_backend, get_storage
+from recallforge.search import HybridSearcher
+
+backend = get_backend()
+backend.set_mode("embed")
+backend._load_embedder()
+storage = get_storage(STORE)
+
+query = "How do AI agents use memory and knowledge graphs?"
 
 pass_count = 0
 fail_count = 0
@@ -32,176 +120,225 @@ def report(ok, msg):
         print(f"  \033[0;31mFAIL\033[0m  {msg}")
         fail_count += 1
 
-# ── Index corpus once ──
-print("\n\033[0;36m--- Indexing test corpus ---\033[0m\n")
+report(backend.get_mode() == "embed", "Mode set to 'embed'")
+report(not backend.needs_reranker(), "Reranker not needed in embed mode")
+report(not backend.needs_expander(), "Expander not needed in embed mode")
+
+info_e = backend.get_info()
+report(info_e.embedder_loaded, "Embedder loaded")
+report(not info_e.reranker_loaded, "Reranker NOT loaded")
+report(not info_e.expander_loaded, "Expander NOT loaded")
+
+searcher = HybridSearcher(backend=backend, storage=storage, limit=5, collection="uat")
+t0 = time.time()
+results = searcher.search(query)
+elapsed = time.time() - t0
+report(len(results) > 0, f"Embed mode search returned {len(results)} results in {elapsed:.2f}s")
+
+all_neutral = all(r.rerank_score == 0.5 for r in results)
+report(all_neutral, "Embed mode: all rerank scores are 0.5 (neutral)")
+
+for r in results:
+    print(f"    [{r.score:.3f}] {r.title}")
+
+# Write timing for later comparison
+with open("${UAT_STORE}/.embed_time", "w") as f:
+    f.write(f"{elapsed:.2f}")
+
+if fail_count > 0: sys.exit(1)
+PYEOF
+if [[ $? -eq 0 ]]; then pass "Embed mode"; else fail "Embed mode"; fi
+_cleanup_gpu
+
+# ── Phase 3: Hybrid Mode (separate process — embedder + reranker only) ──
+subsection "Hybrid Mode"
+
+python3 << PYEOF
+import os, sys, time
+sys.path.insert(0, "src")
+
+STORE = "${UAT_STORE}"
+
+os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_MODE"] = "hybrid"
+os.environ["RECALLFORGE_STORE_PATH"] = STORE
+
+from recallforge.backends.torch_backend import TorchBackend
+from recallforge import get_storage
+from recallforge.search import HybridSearcher
+
+backend = TorchBackend(mode="hybrid")
+backend._load_embedder()
+backend._load_reranker()
+storage = get_storage(STORE)
+
+query = "How do AI agents use memory and knowledge graphs?"
+
+pass_count = 0
+fail_count = 0
+
+def report(ok, msg):
+    global pass_count, fail_count
+    if ok:
+        print(f"  \033[0;32mPASS\033[0m  {msg}")
+        pass_count += 1
+    else:
+        print(f"  \033[0;31mFAIL\033[0m  {msg}")
+        fail_count += 1
+
+report(backend.get_mode() == "hybrid", "Mode set to 'hybrid'")
+report(backend.needs_reranker(), "Reranker needed in hybrid mode")
+report(not backend.needs_expander(), "Expander not needed in hybrid mode")
+
+info_h = backend.get_info()
+report(info_h.embedder_loaded, "Embedder loaded")
+report(info_h.reranker_loaded, "Reranker loaded")
+report(not info_h.expander_loaded, "Expander NOT loaded")
+
+searcher = HybridSearcher(backend=backend, storage=storage, limit=5, collection="uat")
+t0 = time.time()
+results = searcher.search(query)
+elapsed = time.time() - t0
+report(len(results) > 0, f"Hybrid mode search returned {len(results)} results in {elapsed:.2f}s")
+
+has_varied = any(r.rerank_score != 0.5 for r in results)
+report(has_varied, "Hybrid mode: reranker produces varied scores")
+
+for r in results:
+    print(f"    [{r.score:.3f}] {r.title} (rerank={r.rerank_score:.3f})")
+
+with open("${UAT_STORE}/.hybrid_time", "w") as f:
+    f.write(f"{elapsed:.2f}")
+
+if fail_count > 0: sys.exit(1)
+PYEOF
+if [[ $? -eq 0 ]]; then pass "Hybrid mode"; else fail "Hybrid mode"; fi
+_cleanup_gpu
+
+# ── Phase 4: Full Mode (separate process — all 3 models) ──
+subsection "Full Mode"
+
+python3 << PYEOF
+import os, sys, time
+sys.path.insert(0, "src")
+
+STORE = "${UAT_STORE}"
+
+os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_MODE"] = "full"
+os.environ["RECALLFORGE_STORE_PATH"] = STORE
+
+from recallforge.backends.torch_backend import TorchBackend
+from recallforge import get_storage
+from recallforge.search import HybridSearcher
+
+backend = TorchBackend(mode="full")
+backend._load_embedder()
+backend._load_reranker()
+backend._load_expander()
+storage = get_storage(STORE)
+
+query = "How do AI agents use memory and knowledge graphs?"
+
+pass_count = 0
+fail_count = 0
+
+def report(ok, msg):
+    global pass_count, fail_count
+    if ok:
+        print(f"  \033[0;32mPASS\033[0m  {msg}")
+        pass_count += 1
+    else:
+        print(f"  \033[0;31mFAIL\033[0m  {msg}")
+        fail_count += 1
+
+report(backend.get_mode() == "full", "Mode set to 'full'")
+report(backend.needs_reranker(), "Reranker needed in full mode")
+report(backend.needs_expander(), "Expander needed in full mode")
+
+info_f = backend.get_info()
+report(info_f.embedder_loaded, "Embedder loaded")
+report(info_f.reranker_loaded, "Reranker loaded")
+report(info_f.expander_loaded, "Expander loaded")
+
+searcher = HybridSearcher(backend=backend, storage=storage, limit=5, collection="uat")
+t0 = time.time()
+results = searcher.search(query)
+elapsed = time.time() - t0
+report(len(results) > 0, f"Full mode search returned {len(results)} results in {elapsed:.2f}s")
+
+for r in results:
+    print(f"    [{r.score:.3f}] {r.title} (rerank={r.rerank_score:.3f})")
+
+with open("${UAT_STORE}/.full_time", "w") as f:
+    f.write(f"{elapsed:.2f}")
+
+if fail_count > 0: sys.exit(1)
+PYEOF
+if [[ $? -eq 0 ]]; then pass "Full mode"; else fail "Full mode"; fi
+_cleanup_gpu
+
+# ── Phase 5: Mode Switching (separate process) ──
+subsection "Mode Switching"
+
+python3 << PYEOF
+import os, sys
+sys.path.insert(0, "src")
+
+STORE = "${UAT_STORE}"
 
 os.environ["RECALLFORGE_BACKEND"] = "torch"
 os.environ["RECALLFORGE_MODE"] = "embed"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 
-from recallforge import get_backend, get_storage
+from recallforge.backends.torch_backend import TorchBackend
+from recallforge import get_storage
 from recallforge.search import HybridSearcher
 
-backend = get_backend()
+pass_count = 0
+fail_count = 0
+
+def report(ok, msg):
+    global pass_count, fail_count
+    if ok:
+        print(f"  \033[0;32mPASS\033[0m  {msg}")
+        pass_count += 1
+    else:
+        print(f"  \033[0;31mFAIL\033[0m  {msg}")
+        fail_count += 1
+
+backend = TorchBackend(mode="embed")
 backend._load_embedder()
-storage = get_storage(STORE)
+report(backend.get_mode() == "embed", "Start in embed mode")
 
-# Index text docs
-text_files = sorted([f for f in os.listdir(CORPUS_TEXT) if f.endswith('.md')])
-for f in text_files:
-    path = os.path.join(CORPUS_TEXT, f)
-    with open(path) as fh:
-        text = fh.read()
-    storage.index_document(
-        path=f, text=text, collection="uat",
-        model="Qwen3-VL-Embedding-2B", embed_func=backend.embed_text,
-    )
-    print(f"  Indexed: {f}")
+backend.set_mode("full")
+report(backend.get_mode() == "full", "Switched to full mode")
+report(backend.needs_reranker(), "Reranker needed after switch")
+report(backend.needs_expander(), "Expander needed after switch")
 
-# Index images
-img_files = sorted([f for f in os.listdir(CORPUS_IMAGES) if f.endswith('.png')])
-for f in img_files[:3]:  # Just 3 images for tiered mode test
-    path = os.path.join(CORPUS_IMAGES, f)
-    storage.index_image(path=path, collection="uat", embed_func=backend.embed_image)
-    print(f"  Indexed: {f}")
-
-total_docs = storage.count_documents()
-total_emb = storage.count_embeddings()
-report(total_docs > 0, f"Indexed {total_docs} documents, {total_emb} embeddings")
-
-query = "How do AI agents use memory and knowledge graphs?"
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Embed Mode ---\033[0m\n")
-# ═══════════════════════════════════
-
-backend_embed = get_backend()
-backend_embed.set_mode("embed")
-backend_embed._load_embedder()
-
-report(backend_embed.get_mode() == "embed", "Mode set to 'embed'")
-report(not backend_embed.needs_reranker(), "Reranker not needed in embed mode")
-report(not backend_embed.needs_expander(), "Expander not needed in embed mode")
-
-info_e = backend_embed.get_info()
-report(info_e.embedder_loaded, "Embedder loaded")
-report(not info_e.reranker_loaded, "Reranker NOT loaded")
-report(not info_e.expander_loaded, "Expander NOT loaded")
-
-searcher = HybridSearcher(backend=backend_embed, storage=storage, limit=5, collection="uat")
-t0 = time.time()
-results_embed = searcher.search(query)
-embed_time = time.time() - t0
-report(len(results_embed) > 0, f"Embed mode search returned {len(results_embed)} results in {embed_time:.2f}s")
-
-# All rerank scores should be 0.5 (neutral)
-all_neutral = all(r.rerank_score == 0.5 for r in results_embed)
-report(all_neutral, "Embed mode: all rerank scores are 0.5 (neutral)")
-
-for r in results_embed:
-    print(f"    [{r.score:.3f}] {r.title}")
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Hybrid Mode ---\033[0m\n")
-# ═══════════════════════════════════
-
-os.environ["RECALLFORGE_MODE"] = "hybrid"
-from recallforge.backends.torch_backend import TorchBackend
-backend_hybrid = TorchBackend(mode="hybrid")
-backend_hybrid._load_embedder()
-backend_hybrid._load_reranker()
-
-report(backend_hybrid.get_mode() == "hybrid", "Mode set to 'hybrid'")
-report(backend_hybrid.needs_reranker(), "Reranker needed in hybrid mode")
-report(not backend_hybrid.needs_expander(), "Expander not needed in hybrid mode")
-
-info_h = backend_hybrid.get_info()
-report(info_h.embedder_loaded, "Embedder loaded")
-report(info_h.reranker_loaded, "Reranker loaded")
-report(not info_h.expander_loaded, "Expander NOT loaded")
-
-searcher_h = HybridSearcher(backend=backend_hybrid, storage=storage, limit=5, collection="uat")
-t0 = time.time()
-results_hybrid = searcher_h.search(query)
-hybrid_time = time.time() - t0
-report(len(results_hybrid) > 0, f"Hybrid mode search returned {len(results_hybrid)} results in {hybrid_time:.2f}s")
-
-# At least some rerank scores should differ from 0.5
-has_varied = any(r.rerank_score != 0.5 for r in results_hybrid)
-report(has_varied, "Hybrid mode: reranker produces varied scores")
-
-for r in results_hybrid:
-    print(f"    [{r.score:.3f}] {r.title} (rerank={r.rerank_score:.3f})")
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Full Mode ---\033[0m\n")
-# ═══════════════════════════════════
-
-os.environ["RECALLFORGE_MODE"] = "full"
-backend_full = TorchBackend(mode="full")
-backend_full._load_embedder()
-backend_full._load_reranker()
-backend_full._load_expander()
-
-report(backend_full.get_mode() == "full", "Mode set to 'full'")
-report(backend_full.needs_reranker(), "Reranker needed in full mode")
-report(backend_full.needs_expander(), "Expander needed in full mode")
-
-info_f = backend_full.get_info()
-report(info_f.embedder_loaded, "Embedder loaded")
-report(info_f.reranker_loaded, "Reranker loaded")
-report(info_f.expander_loaded, "Expander loaded")
-
-searcher_f = HybridSearcher(backend=backend_full, storage=storage, limit=5, collection="uat")
-t0 = time.time()
-results_full = searcher_f.search(query)
-full_time = time.time() - t0
-report(len(results_full) > 0, f"Full mode search returned {len(results_full)} results in {full_time:.2f}s")
-
-for r in results_full:
-    print(f"    [{r.score:.3f}] {r.title} (rerank={r.rerank_score:.3f})")
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Mode Switching ---\033[0m\n")
-# ═══════════════════════════════════
-
-backend_switch = TorchBackend(mode="embed")
-backend_switch._load_embedder()
-report(backend_switch.get_mode() == "embed", "Start in embed mode")
-
-backend_switch.set_mode("full")
-report(backend_switch.get_mode() == "full", "Switched to full mode")
-report(backend_switch.needs_reranker(), "Reranker needed after switch")
-report(backend_switch.needs_expander(), "Expander needed after switch")
-
-# Load remaining models
-backend_switch._load_reranker()
-backend_switch._load_expander()
-info_s = backend_switch.get_info()
+backend._load_reranker()
+backend._load_expander()
+info_s = backend.get_info()
 report(info_s.reranker_loaded and info_s.expander_loaded, "All models loaded after switch")
 
-searcher_s = HybridSearcher(backend=backend_switch, storage=storage, limit=5, collection="uat")
-results_switch = searcher_s.search(query)
-report(len(results_switch) > 0, f"Search works after mode switch ({len(results_switch)} results)")
+storage = get_storage(STORE)
+searcher = HybridSearcher(backend=backend, storage=storage, limit=5, collection="uat")
+results = searcher.search("How do AI agents use memory and knowledge graphs?")
+report(len(results) > 0, f"Search works after mode switch ({len(results)} results)")
 
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Timing Comparison ---\033[0m\n")
-# ═══════════════════════════════════
-
-print(f"  Embed mode:  {embed_time:.2f}s")
-print(f"  Hybrid mode: {hybrid_time:.2f}s")
-print(f"  Full mode:   {full_time:.2f}s")
-
-# ── Summary ──
-print(f"\n\033[1m{'='*40}\033[0m")
-print(f"\033[1m  Tiered Mode Summary\033[0m")
-print(f"\033[1m{'='*40}\033[0m")
-print(f"  \033[0;32mPASS: {pass_count}\033[0m")
-print(f"  \033[0;31mFAIL: {fail_count}\033[0m")
-
-if fail_count > 0:
-    print(f"\n  \033[0;31m\033[1mRESULT: FAILED\033[0m")
-    sys.exit(1)
-else:
-    print(f"\n  \033[0;32m\033[1mRESULT: PASSED\033[0m")
+if fail_count > 0: sys.exit(1)
 PYEOF
+if [[ $? -eq 0 ]]; then pass "Mode switching"; else fail "Mode switching"; fi
+_cleanup_gpu
+
+# ── Timing Comparison ──
+subsection "Timing Comparison"
+
+EMBED_T=$(cat "${UAT_STORE}/.embed_time" 2>/dev/null || echo "N/A")
+HYBRID_T=$(cat "${UAT_STORE}/.hybrid_time" 2>/dev/null || echo "N/A")
+FULL_T=$(cat "${UAT_STORE}/.full_time" 2>/dev/null || echo "N/A")
+echo "  Embed mode:  ${EMBED_T}s"
+echo "  Hybrid mode: ${HYBRID_T}s"
+echo "  Full mode:   ${FULL_T}s"
+
+print_summary "Tiered Mode Tests"

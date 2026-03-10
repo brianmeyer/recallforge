@@ -10,6 +10,18 @@ section "RecallForge Backend Tests"
 cd "$REPO_ROOT"
 trap cleanup_store EXIT
 
+# Helper: flush GPU memory between backend tests
+_cleanup_gpu() {
+    python3 -c "
+import gc; gc.collect()
+try:
+    import torch
+    if torch.backends.mps.is_available(): torch.mps.empty_cache()
+    if torch.cuda.is_available(): torch.cuda.empty_cache()
+except: pass
+" 2>/dev/null || true
+}
+
 # ──────────────────────────────────────────────
 subsection "Torch Backend"
 # ──────────────────────────────────────────────
@@ -18,7 +30,7 @@ info "Testing Torch backend (embed_text, embed_image, rerank, expand_query)..."
 
 python3 << 'PYEOF'
 import os, sys, time
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(".")), "src"))
+sys.path.insert(0, "src")
 
 os.environ["RECALLFORGE_BACKEND"] = "torch"
 os.environ["RECALLFORGE_MODE"] = "full"
@@ -123,6 +135,8 @@ else
     fail "Torch backend tests had failures"
 fi
 
+_cleanup_gpu
+
 # ──────────────────────────────────────────────
 subsection "MLX Backend"
 # ──────────────────────────────────────────────
@@ -186,6 +200,8 @@ PYEOF
         fail "MLX bf16 backend tests had failures"
     fi
 
+    _cleanup_gpu
+
     # MLX 4-bit
     info "Testing MLX 4-bit backend..."
 
@@ -226,6 +242,8 @@ else
     skip "MLX backend (not available)"
     skip "MLX 4-bit backend (not available)"
 fi
+
+_cleanup_gpu
 
 # ──────────────────────────────────────────────
 subsection "Backend Auto-Detection"
