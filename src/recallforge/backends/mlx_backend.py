@@ -11,6 +11,7 @@ Model IDs:
 """
 
 import os
+import warnings
 from typing import List, Dict, Any, Optional
 
 import numpy as np
@@ -103,6 +104,9 @@ class MLXBackend(ModelBackend):
         self._reranker_score_linear = None
         self._reranker_score_weight = None
         self._reranker_score_bias = None
+        self._reranker_yes_token_id = None
+        self._reranker_no_token_id = None
+        self._reranker_use_direct_logits = False
         self._expander = None
         self._expander_tokenizer = None
         self._embedder_num_layers = None
@@ -550,42 +554,34 @@ class MLXBackend(ModelBackend):
         return None
 
     def _dequantize_weight(self, module: Any) -> Optional["mx.array"]:
-        """Dequantize a quantized embedding/linear module's weight if needed.
-
-        For 4-bit quantized models, embed_tokens.weight has shape (vocab_size, 256)
-        instead of (vocab_size, 2048) because it's compressed. We need to dequantize
-        using the scales and biases stored on the module.
-
-        Returns the full-precision weight array, or None if dequantization fails.
-        """
-        weight = getattr(module, "weight", None)
-        if weight is None:
+        """Return a dense weight matrix, dequantizing quantized layers when needed."""
+        weight = getattr(module, "weight", module)
+        weight_mx = self._to_mx_array(weight)
+        if weight_mx is None:
             return None
 
-        # Check if this is a quantized module with scales/biases
         scales = getattr(module, "scales", None)
-        biases = getattr(module, "biases", None)
+        group_size = getattr(module, "group_size", None)
+        bits = getattr(module, "bits", None)
+        if scales is None or group_size is None or bits is None:
+            return weight_mx.astype(mx.float32)
 
-        if scales is not None and biases is not None:
-            # This is a quantized embedding - dequantize it
-            # Look for quantization parameters
-            group_size = getattr(module, "group_size", 64)
-            bits = getattr(module, "bits", 4)
-
-            try:
-                weight_mx = self._to_mx_array(weight)
-                scales_mx = self._to_mx_array(scales)
-                biases_mx = self._to_mx_array(biases)
-
-                # mx.dequantize expects: (weight, scales, biases, group_size, bits)
-                dequant = mx.dequantize(weight_mx, scales_mx, biases_mx, group_size, bits)
-                return dequant.astype(mx.float32)
-            except Exception as e:
-                print(f"[MLXBackend] Warning: Failed to dequantize weight: {e}")
-                return None
-
-        # Not quantized - just convert to MLX array
-        return self._to_mx_array(weight).astype(mx.float32)
+        try:
+            dequant_kwargs = {
+                "scales": self._to_mx_array(scales),
+                "group_size": int(group_size),
+                "bits": int(bits),
+            }
+            biases = getattr(module, "biases", None)
+            if biases is not None:
+                dequant_kwargs["biases"] = self._to_mx_array(biases)
+            mode = getattr(module, "mode", None)
+            if mode is not None:
+                dequant_kwargs["mode"] = mode
+            return mx.dequantize(weight_mx, **dequant_kwargs).astype(mx.float32)
+        except Exception as e:
+            print(f"[MLXBackend] Warning: Failed to dequantize weight: {e}")
+            return None
 
     def _derive_binary_head_from_lm(self) -> Optional["mx.array"]:
         """Derive yes-no projection from lm_head when score_linear is unavailable."""
@@ -616,22 +612,48 @@ class MLXBackend(ModelBackend):
 
         # Use dequantization helper to handle 4-bit quantized weights
         lm_head_weight = self._dequantize_weight(lm_head)
-        if lm_head_weight is None:
-            # Fallback: try calling the module directly to get embeddings
-            try:
-                # For QuantizedEmbedding, calling it with token IDs returns dequantized embeddings
-                yes_emb = lm_head(mx.array([yes_id]))
-                no_emb = lm_head(mx.array([no_id]))
-                if yes_emb is not None and no_emb is not None:
-                    return (yes_emb[0] - no_emb[0]).astype(mx.float32)
-            except Exception as e:
-                print(f"[MLXBackend] Warning: Failed to get embeddings via module call: {e}")
+        hidden_size = self._resolve_attr(
+            self._reranker_model,
+            [
+                "language_model.model.args.hidden_size",
+                "language_model.args.hidden_size",
+                "config.text_config.hidden_size",
+                "language_model.model.embed_tokens.dims",
+            ],
+        )
+        if hidden_size is not None:
+            hidden_size = int(hidden_size)
+
+        if (
+            lm_head_weight is None
+            or len(lm_head_weight.shape) != 2
+            or (hidden_size is not None and lm_head_weight.shape[1] != hidden_size)
+        ):
+            # Fallback: calling embedding modules with token IDs returns dequantized rows.
+            if callable(lm_head):
+                try:
+                    yes_emb = self._to_mx_array(lm_head(mx.array([yes_id])))
+                    no_emb = self._to_mx_array(lm_head(mx.array([no_id])))
+                    if yes_emb is not None and no_emb is not None:
+                        return (yes_emb[0] - no_emb[0]).astype(mx.float32)
+                except Exception as e:
+                    print(f"[MLXBackend] Warning: Failed to get embeddings via module call: {e}")
             return None
 
         return (lm_head_weight[yes_id] - lm_head_weight[no_id]).astype(mx.float32)
 
     def _init_reranker_scoring(self) -> None:
         """Resolve score_linear or derive an equivalent projection from lm_head."""
+        tokenizer = getattr(self._reranker_processor, "tokenizer", self._reranker_processor)
+        if hasattr(tokenizer, "get_vocab"):
+            vocab = tokenizer.get_vocab()
+            self._reranker_yes_token_id = vocab.get("yes")
+            self._reranker_no_token_id = vocab.get("no")
+        else:
+            self._reranker_yes_token_id = None
+            self._reranker_no_token_id = None
+        self._reranker_use_direct_logits = False
+
         self._reranker_score_linear = self._resolve_attr(
             self._reranker_model,
             ["score_linear", "language_model.score_linear", "language_model.model.score_linear"],
@@ -655,13 +677,27 @@ class MLXBackend(ModelBackend):
                 return
 
         derived_weight = self._derive_binary_head_from_lm()
-        if derived_weight is None:
-            raise RuntimeError("Unable to locate reranker score head (score_linear/lm_head)")
+        if derived_weight is not None:
+            self._reranker_score_weight = derived_weight
+            self._reranker_score_bias = None
+            self._reranker_score_linear = None
+            print("[MLXBackend] score_linear missing; using lm_head yes-no projection fallback")
+            return
 
-        self._reranker_score_weight = derived_weight
-        self._reranker_score_bias = None
-        self._reranker_score_linear = None
-        print("[MLXBackend] score_linear missing; using lm_head yes-no projection fallback")
+        # Last-resort fallback for quantized tied embeddings: use direct language-model
+        # logits and compare yes/no token logits.
+        if (
+            self._reranker_yes_token_id is not None
+            and self._reranker_no_token_id is not None
+        ):
+            self._reranker_use_direct_logits = True
+            self._reranker_score_linear = None
+            self._reranker_score_weight = None
+            self._reranker_score_bias = None
+            print("[MLXBackend] score head missing; using direct yes/no logits fallback")
+            return
+
+        raise RuntimeError("Unable to locate reranker score head (score_linear/lm_head)")
 
     def _format_reranker_prompt(self, query: str, document: str, instruction: str) -> str:
         """Format a query-document pair as chat input for reranking."""
@@ -744,10 +780,21 @@ class MLXBackend(ModelBackend):
         input_ids = mx.array(inputs["input_ids"])
 
         cache = _make_cache(num_layers)
-        qwen_model = self._reranker_model.language_model.model
-        hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
-        last_hidden = hidden[:, -1, :]
-        logits = self._apply_reranker_linear(last_hidden)
+        if self._reranker_use_direct_logits:
+            if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
+                raise RuntimeError("yes/no token ids are unavailable for reranker fallback")
+            lm_out = self._reranker_model.language_model(input_ids, cache=cache)
+            full_logits = self._to_mx_array(getattr(lm_out, "logits", lm_out)).astype(mx.float32)
+            last_logits = full_logits[:, -1, :]
+            logits = (
+                last_logits[:, self._reranker_yes_token_id]
+                - last_logits[:, self._reranker_no_token_id]
+            ).reshape(-1, 1)
+        else:
+            qwen_model = self._reranker_model.language_model.model
+            hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
+            last_hidden = hidden[:, -1, :]
+            logits = self._apply_reranker_linear(last_hidden)
 
         probs = 1.0 / (1.0 + mx.exp(-logits))
         mx.eval(probs)
@@ -765,10 +812,33 @@ class MLXBackend(ModelBackend):
 
         print(f"[MLXBackend] Loading reranker: {self.RERANKER_MODEL}")
         try:
-            self._reranker_model, self._reranker_processor = load(
-                self.RERANKER_MODEL,
-                trust_remote_code=True,
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
+                warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
+                warnings.filterwarnings(
+                    "ignore",
+                    message=".*`torch_dtype` is deprecated! Use `dtype` instead!.*",
+                )
+
+                hf_logging = None
+                prev_hf_verbosity = None
+                try:
+                    from transformers.utils import logging as hf_logging  # type: ignore
+
+                    prev_hf_verbosity = hf_logging.get_verbosity()
+                    hf_logging.set_verbosity_error()
+                except Exception:
+                    hf_logging = None
+                    prev_hf_verbosity = None
+
+                try:
+                    self._reranker_model, self._reranker_processor = load(
+                        self.RERANKER_MODEL,
+                        trust_remote_code=True,
+                    )
+                finally:
+                    if hf_logging is not None and prev_hf_verbosity is not None:
+                        hf_logging.set_verbosity(prev_hf_verbosity)
             self._init_reranker_scoring()
         except Exception:
             self._reranker_model = None
@@ -776,6 +846,9 @@ class MLXBackend(ModelBackend):
             self._reranker_score_linear = None
             self._reranker_score_weight = None
             self._reranker_score_bias = None
+            self._reranker_yes_token_id = None
+            self._reranker_no_token_id = None
+            self._reranker_use_direct_logits = False
             raise
         print(f"[MLXBackend] Loaded reranker ({self._quantization})")
 
