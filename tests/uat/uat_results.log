@@ -1,8 +1,8 @@
 RecallForge UAT Results
 ======================
-Date: 2026-03-09 19:28:45 EDT
+Date: 2026-03-09 22:10:32 EDT
 Host: Mac (arm64)
-Python: Python 3.12.12
+Python: Python 3.14.3
 
 
 ═══════════════════════════════════════
@@ -14,44 +14,8 @@ Python: Python 3.12.12
 [1m[0;34m═══════════════════════════════════════[0m
 
 [0;36m--- Base Install (PyTorch) ---[0m
-  [0;36mINFO[0m  Installing recallforge (base) from /Users/brianmeyer/qmd-vl ...
-[notice] To update, run: python3.12 -m pip install --upgrade pip
-  [0;32mPASS[0m  recallforge --help works
-  [0;32mPASS[0m  recallforge --version prints version (RecallForge 0.1.0)
-  [0;32mPASS[0m  import recallforge works
-  [0;32mPASS[0m  Dependency present: lancedb
-  [0;32mPASS[0m  Dependency present: pyarrow
-  [0;32mPASS[0m  Dependency present: PIL
-  [0;32mPASS[0m  Dependency present: numpy
-  [0;32mPASS[0m  Dependency present: mcp
-  [0;32mPASS[0m  Dependency present: transformers
-  [0;32mPASS[0m  Dependency present: torch
-  [0;32mPASS[0m  Dependency present: scipy
-  [0;32mPASS[0m  Import: recallforge.backends
-  [0;32mPASS[0m  Import: recallforge.storage
-  [0;32mPASS[0m  Import: recallforge.search
-  [0;32mPASS[0m  Import: recallforge.server
-  [0;32mPASS[0m  Import: recallforge.cli
-
-[0;36m--- MLX Install (Apple Silicon) ---[0m
-  [0;36mINFO[0m  Installing recallforge[mlx] ...
-[notice] To update, run: python3.12 -m pip install --upgrade pip
-  [0;32mPASS[0m  MLX package installed
-  [0;32mPASS[0m  MLX_AVAILABLE is True
-  [0;32mPASS[0m  recallforge CLI works with MLX install
-
-[0;36m--- CUDA Install ---[0m
-  [0;33mSKIP[0m  CUDA install (no CUDA GPU)
-
-[1m═══════════════════════════════════════[0m
-[1m  Install Tests Summary[0m
-[1m═══════════════════════════════════════[0m
-  [0;32mPASS: 19[0m
-  [0;31mFAIL: 0[0m
-  [0;33mSKIP: 1[0m
-  Total: 20
-
-  [0;32m[1mRESULT: PASSED[0m
+  [0;36mINFO[0m  Installing recallforge (base) from /Users/brianmeyer/recallforge ...
+ERROR: Failed to build 'file:///Users/brianmeyer/recallforge' when getting requirements to build wheel
 
 
 ═══════════════════════════════════════
@@ -61,459 +25,3 @@ Python: Python 3.12.12
 [1m[0;34m═══════════════════════════════════════[0m
 [1m[0;34m  RecallForge Storage Tests[0m
 [1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Create DB & Insert ---[0m
-
-  [0;32mPASS[0m  Fresh DB has 0 documents
-  [0;32mPASS[0m  Fresh DB has 0 embeddings
-  [0;32mPASS[0m  Fresh DB has no vectors
-  [0;32mPASS[0m  Indexed doc1.md, hash=efeea805...
-  [0;32mPASS[0m  Indexed doc2.md, hash=91022181...
-  [0;32mPASS[0m  Indexed doc3.md, hash=b109b44e...
-  [0;32mPASS[0m  Indexed doc4.md, hash=3d90bce4...
-  [0;32mPASS[0m  Indexed doc5.md, hash=c6491de9...
-  [0;32mPASS[0m  Document count is 5 (expected 5)
-  [0;32mPASS[0m  Embedding count is 5 (>= 5)
-  [0;32mPASS[0m  DB now has vectors
-
-[0;36m--- Content Storage ---[0m
-
-  [0;32mPASS[0m  Content for doc1.md matches original
-  [0;32mPASS[0m  Content for doc2.md matches original
-  [0;32mPASS[0m  Content for doc3.md matches original
-  [0;32mPASS[0m  Content for doc4.md matches original
-  [0;32mPASS[0m  Content for doc5.md matches original
-  [0;32mPASS[0m  Nonexistent hash returns None
-
-[0;36m--- FTS Search ---[0m
-
-  [0;32mPASS[0m  FTS 'AI machine learning' returns 1 results
-  [0;32mPASS[0m  Top FTS result is AI doc: storage_test/doc1.md
-  [0;32mPASS[0m  FTS 'graph databases' returns 1 results
-  [0;32mPASS[0m  FTS 'pasta flour' returns 1 results
-  [0;32mPASS[0m  FTS with wrong collection returns 0 results
-
-[0;36m--- Vector Search ---[0m
-
-  [0;32mPASS[0m  Vector search returns 5 results
-  [0;32mPASS[0m  Vector search with wrong collection returns 0
-
-[0;36m--- Document Operations ---[0m
-
-  [0;32mPASS[0m  find_document returns doc1: title='doc1'
-  [0;32mPASS[0m  find_document for nonexistent returns None
-  [0;32mPASS[0m  Deactivated doc not found by find_document
-
-[0;36m--- Cache Operations ---[0m
-
-  [0;32mPASS[0m  Cache miss returns None
-  [0;32mPASS[0m  Cache set/get roundtrip works
-  [0;32mPASS[0m  Cache update/overwrite works
-
-[0;36m--- Rebuild FTS Index ---[0m
-
-  [0;32mPASS[0m  rebuild_fts_index completed without error
-  [0;32mPASS[0m  FTS works after rebuild: 1 results
-
-[0;36m--- Large Corpus Performance ---[0m
-
-  Indexing 1000 documents...
-    Indexed 200/1000
-    Indexed 400/1000
-    Indexed 600/1000
-    Indexed 800/1000
-    Indexed 1000/1000
-  Indexing 1000 docs took 194.8s (5 docs/sec)
-  [0;32mPASS[0m  Indexed 1000 docs in 194.8s
-  [0;32mPASS[0m  FTS on 1000 docs: 464ms (< 1s)
-  [0;32mPASS[0m  FTS returned 10 results from bulk corpus
-  [0;32mPASS[0m  Vector search on 1000 docs: 430ms (< 1s)
-  [0;32mPASS[0m  Vector search returned 10 results from bulk corpus
-
-[1m========================================[0m
-[1m  Storage Summary[0m
-[1m========================================[0m
-  [0;32mPASS: 37[0m
-  [0;31mFAIL: 0[0m
-
-  [0;32m[1mRESULT: PASSED[0m
-
-
-═══════════════════════════════════════
-  Backends
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Backend Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Torch Backend ---[0m
-  [0;36mINFO[0m  Testing Torch backend (embed_text, embed_image, rerank, expand_query)...
-Loading embedder...
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:01<18:41,  1.80s/it]Loading weights:  34%|███▍      | 212/625 [00:01<00:02, 153.34it/s]Loading weights:  50%|█████     | 314/625 [00:02<00:02, 136.36it/s]Loading weights:  60%|██████    | 375/625 [00:02<00:01, 169.51it/s]Loading weights:  70%|██████▉   | 436/625 [00:03<00:00, 209.25it/s]Loading weights:  79%|███████▉  | 496/625 [00:03<00:00, 251.69it/s]Loading weights:  89%|████████▊ | 554/625 [00:03<00:00, 297.51it/s]Loading weights:  98%|█████████▊| 612/625 [00:03<00:00, 212.00it/s]Loading weights: 100%|██████████| 625/625 [00:03<00:00, 168.40it/s]
-[TorchBackend] Loaded embedder on mps with torch.float16
-  Embedder loaded in 7.9s
-  PASS  Torch embed_text: 2048-dim float32 vector
-  PASS  Torch embed_texts batch: (3, 2048)
-  PASS  Torch embed_image: 2048-dim vector from food_pasta_dish.png
-Loading reranker...
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:03<35:07,  3.38s/it]Loading weights:  32%|███▏      | 201/625 [00:03<00:05, 77.12it/s]Loading weights:  40%|████      | 251/625 [00:04<00:05, 71.72it/s]Loading weights:  45%|████▍     | 281/625 [00:05<00:05, 67.34it/s]Loading weights:  48%|████▊     | 302/625 [00:05<00:05, 57.96it/s]Loading weights:  51%|█████     | 317/625 [00:05<00:04, 63.21it/s]Loading weights:  54%|█████▍    | 340/625 [00:05<00:03, 74.00it/s]Loading weights:  57%|█████▋    | 356/625 [00:06<00:03, 81.26it/s]Loading weights:  60%|█████▉    | 374/625 [00:06<00:02, 89.27it/s]Loading weights:  62%|██████▏   | 389/625 [00:06<00:02, 92.15it/s]Loading weights:  66%|██████▌   | 410/625 [00:06<00:01, 108.96it/s]Loading weights:  68%|██████▊   | 426/625 [00:06<00:01, 110.49it/s]Loading weights:  72%|███████▏  | 450/625 [00:06<00:01, 134.22it/s]Loading weights:  76%|███████▌  | 472/625 [00:06<00:01, 140.23it/s]Loading weights:  78%|███████▊  | 489/625 [00:06<00:00, 138.89it/s]Loading weights:  82%|████████▏ | 510/625 [00:07<00:00, 150.88it/s]Loading weights:  85%|████████▌ | 532/625 [00:07<00:00, 166.85it/s]Loading weights:  89%|████████▊ | 554/625 [00:07<00:00, 178.62it/s]Loading weights:  92%|█████████▏| 578/625 [00:07<00:00, 190.54it/s]Loading weights:  96%|█████████▌| 598/625 [00:07<00:00, 185.96it/s]Loading weights:  99%|█████████▉| 618/625 [00:07<00:00, 90.67it/s] Loading weights: 100%|██████████| 625/625 [00:07<00:00, 78.64it/s]
-/Users/brianmeyer/qmd-vl/.venv/lib/python3.12/site-packages/transformers/tokenization_utils_base.py:2333: UserWarning: `max_length` is ignored when `padding`=`True` and there is no truncation strategy. To pad to max length, use `padding='max_length'`.
-  warnings.warn(
-`torch_dtype` is deprecated! Use `dtype` instead!
-The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
-[TorchBackend] Loaded reranker on mps with torch.float32
-  Reranker loaded in 50.0s
-  PASS  Torch rerank: 3 scores = ['0.875', '0.077', '0.784']
-  PASS  Reranker correctly ranks memory docs above cooking
-Loading expander...
-Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:06<32:19,  6.08s/it]Loading weights: 100%|██████████| 320/320 [00:06<00:00, 52.53it/s]
-[TorchBackend] Loaded expander (tobil/qmd-query-expansion-qwen3.5-2B) on mps with torch.float16
-  Expander loaded in 363.3s
-  PASS  Torch expand_query: lex='machine learning training algorithm...'
-  INFO  Torch backend RSS: 315 MB (all 3 models loaded)
-  PASS  Backend info: name=torch device=mps mem=12.0GB
-
-Torch backend: ALL PASSED
-  [0;32mPASS[0m  Torch backend all tests
-
-[0;36m--- MLX Backend ---[0m
-  [0;36mINFO[0m  Testing MLX backend...
-Loading MLX embedder (bf16)...
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files:   8%|▊         | 1/13 [00:00<00:04,  2.67it/s]Fetching 13 files:  38%|███▊      | 5/13 [05:28<09:18, 69.77s/it]Fetching 13 files: 100%|██████████| 13/13 [05:28<00:00, 25.23s/it]
-[MLXBackend] Loaded embedder (bf16)
-  Loaded in 332.4s
-  PASS  MLX bf16 embed_text: shape=(2048,)
-Loading MLX reranker (bf16)...
-[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files:   8%|▊         | 1/13 [00:00<00:04,  2.83it/s]Fetching 13 files:  38%|███▊      | 5/13 [06:17<10:42, 80.28s/it]Fetching 13 files: 100%|██████████| 13/13 [06:17<00:00, 29.03s/it]
-`torch_dtype` is deprecated! Use `dtype` instead!
-The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
-[MLXBackend] Loaded reranker (bf16)
-  Loaded in 380.3s
-  PASS  MLX bf16 rerank: scores=['16.500', '16.375']
-Loading expander (torch fallback)...
-[MLXBackend] Loading expander via torch fallback on mps
-Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:08<44:40,  8.40s/it]Loading weights: 100%|██████████| 320/320 [00:08<00:00, 38.06it/s]
-[MLXBackend] Loaded expander (torch fallback)
-  Loaded in 21.4s
-  PASS  MLX expander (torch fallback): keys=['lex', 'vec', 'hyde']
-  PASS  MLX info: device=mps quant=bf16 mem=12.0GB
-
-MLX bf16 backend: ALL PASSED
-  [0;32mPASS[0m  MLX bf16 backend all tests
-  [0;36mINFO[0m  Testing MLX 4-bit backend...
-Loading MLX embedder (4-bit)...
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 184833.74it/s]
-[MLXBackend] Loaded embedder (4bit)
-  Loaded in 4.2s
-  PASS  MLX 4-bit embed_text: shape=(2048,)
-  PASS  MLX 4-bit info: quant=4bit mem=2.0GB
-
-MLX 4-bit backend: ALL PASSED
-  [0;32mPASS[0m  MLX 4-bit backend all tests
-
-[0;36m--- Backend Auto-Detection ---[0m
-  PASS  Auto-detection chose 'mlx' (expected 'mlx') on Darwin/arm64
-  [0;32mPASS[0m  Backend auto-detection
-
-[1m═══════════════════════════════════════[0m
-[1m  Backend Tests Summary[0m
-[1m═══════════════════════════════════════[0m
-  [0;32mPASS: 4[0m
-  [0;31mFAIL: 0[0m
-  [0;33mSKIP: 0[0m
-  Total: 4
-
-  [0;32m[1mRESULT: PASSED[0m
-
-
-═══════════════════════════════════════
-  Tiered Modes
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Tiered Mode Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Indexing test corpus ---[0m
-
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:01<16:40,  1.60s/it]Loading weights:  30%|███       | 190/625 [00:01<00:02, 153.40it/s]Loading weights:  46%|████▌     | 288/625 [00:02<00:02, 140.38it/s]Loading weights:  56%|█████▌    | 347/625 [00:02<00:01, 152.32it/s]Loading weights:  63%|██████▎   | 391/625 [00:02<00:01, 176.18it/s]Loading weights:  69%|██████▉   | 433/625 [00:03<00:01, 135.18it/s]Loading weights:  76%|███████▌  | 474/625 [00:03<00:00, 160.64it/s]Loading weights:  85%|████████▍ | 530/625 [00:03<00:00, 207.82it/s]Loading weights:  91%|█████████ | 570/625 [00:03<00:00, 232.09it/s]Loading weights:  97%|█████████▋| 609/625 [00:04<00:00, 209.74it/s]Loading weights: 100%|██████████| 625/625 [00:04<00:00, 152.72it/s]
-[TorchBackend] Loaded embedder on mps with torch.float16
-  Indexed: ai_agents.md
-  Indexed: ai_embeddings.md
-  Indexed: ai_transformers.md
-  Indexed: architecture_blueprints.md
-  Indexed: architecture_gothic.md
-  Indexed: architecture_modern.md
-  Indexed: cooking_grilling.md
-  Indexed: cooking_pasta.md
-  Indexed: cooking_sourdough.md
-  Indexed: nature_forests.md
-  Indexed: nature_mountains.md
-  Indexed: nature_oceans.md
-  Indexed: sports_basketball.md
-  Indexed: sports_running.md
-  Indexed: sports_soccer.md
-  Indexed: code_editor_screenshot.png
-  Indexed: floor_plan_blueprint.png
-  Indexed: food_pasta_dish.png
-  [0;32mPASS[0m  Indexed 18 documents, 18 embeddings
-
-[0;36m--- Embed Mode ---[0m
-
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:02<27:48,  2.67s/it]Loading weights:  32%|███▏      | 203/625 [00:02<00:04, 102.11it/s]Loading weights:  49%|████▉     | 309/625 [00:04<00:04, 76.50it/s] Loading weights:  59%|█████▉    | 369/625 [00:04<00:02, 92.59it/s]Loading weights:  66%|██████▋   | 415/625 [00:05<00:01, 107.99it/s]Loading weights:  73%|███████▎  | 454/625 [00:05<00:01, 122.73it/s]Loading weights:  78%|███████▊  | 489/625 [00:05<00:00, 137.33it/s]Loading weights:  83%|████████▎ | 520/625 [00:05<00:00, 147.98it/s]Loading weights:  88%|████████▊ | 548/625 [00:05<00:00, 158.65it/s]Loading weights:  92%|█████████▏| 578/625 [00:05<00:00, 174.53it/s]Loading weights:  97%|█████████▋| 604/625 [00:06<00:00, 135.81it/s]Loading weights: 100%|██████████| 625/625 [00:06<00:00, 124.16it/s]Loading weights: 100%|██████████| 625/625 [00:06<00:00, 98.96it/s] 
-[TorchBackend] Loaded embedder on mps with torch.float16
-  [0;32mPASS[0m  Mode set to 'embed'
-  [0;32mPASS[0m  Reranker not needed in embed mode
-  [0;32mPASS[0m  Expander not needed in embed mode
-  [0;32mPASS[0m  Embedder loaded
-  [0;32mPASS[0m  Reranker NOT loaded
-  [0;32mPASS[0m  Expander NOT loaded
-  [0;32mPASS[0m  Embed mode search returned 5 results in 1.24s
-  [0;32mPASS[0m  Embed mode: all rerank scores are 0.5 (neutral)
-    [0.237] Vector Embeddings and Semantic Search
-    [0.236] Mastering the Charcoal Grill
-    [0.236] Reading Architectural Blueprints
-    [0.236] Modern Architecture and Design
-    [0.235] Homemade Pasta from Scratch
-
-[0;36m--- Hybrid Mode ---[0m
-
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:03<33:18,  3.20s/it]Loading weights:  32%|███▏      | 201/625 [00:03<00:05, 84.12it/s]Loading weights:  45%|████▌     | 283/625 [00:04<00:04, 72.45it/s]Loading weights:  53%|█████▎    | 330/625 [00:05<00:04, 66.87it/s]Loading weights:  58%|█████▊    | 361/625 [00:05<00:03, 74.41it/s]Loading weights:  62%|██████▏   | 387/625 [00:06<00:03, 77.84it/s]Loading weights:  65%|██████▌   | 407/625 [00:06<00:02, 82.70it/s]Loading weights:  68%|██████▊   | 425/625 [00:06<00:02, 86.80it/s]Loading weights:  71%|███████   | 441/625 [00:06<00:02, 89.87it/s]Loading weights:  73%|███████▎  | 458/625 [00:06<00:01, 97.72it/s]Loading weights:  76%|███████▌  | 473/625 [00:06<00:01, 94.32it/s]Loading weights:  78%|███████▊  | 486/625 [00:06<00:01, 97.04it/s]Loading weights:  80%|███████▉  | 498/625 [00:07<00:01, 98.56it/s]Loading weights:  82%|████████▏ | 510/625 [00:07<00:01, 97.53it/s]Loading weights:  84%|████████▎ | 522/625 [00:07<00:01, 99.07it/s]Loading weights:  85%|████████▌ | 534/625 [00:07<00:00, 100.27it/s]Loading weights:  89%|████████▉ | 556/625 [00:07<00:00, 125.59it/s]Loading weights:  93%|█████████▎| 580/625 [00:07<00:00, 149.13it/s]Loading weights:  96%|█████████▌| 600/625 [00:07<00:00, 113.45it/s]Loading weights:  98%|█████████▊| 614/625 [00:08<00:00, 106.78it/s]Loading weights: 100%|██████████| 625/625 [00:08<00:00, 76.42it/s] 
-[TorchBackend] Loaded embedder on mps with torch.float16
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:30<5:12:07, 30.01s/it]Loading weights:  31%|███       | 195/625 [00:30<00:46,  9.18it/s]Loading weights:  31%|███       | 195/625 [00:50<00:46,  9.18it/s]Loading weights:  46%|████▌     | 289/625 [00:50<00:51,  6.58it/s]Loading weights:  48%|████▊     | 300/625 [00:51<00:49,  6.60it/s]Loading weights:  54%|█████▍    | 339/625 [00:52<00:33,  8.50it/s]Loading weights:  58%|█████▊    | 364/625 [00:53<00:26,  9.98it/s]Loading weights:  61%|██████    | 381/625 [00:53<00:21, 11.32it/s]Loading weights:  63%|██████▎   | 394/625 [00:53<00:17, 12.86it/s]Loading weights:  65%|██████▍   | 405/625 [00:53<00:15, 14.02it/s]Loading weights:  66%|██████▌   | 414/625 [00:56<00:20, 10.18it/s]Loading weights:  68%|██████▊   | 422/625 [00:56<00:17, 11.43it/s]Loading weights:  68%|██████▊   | 427/625 [00:57<00:22,  8.87it/s]Loading weights:  72%|███████▏  | 450/625 [00:58<00:11, 15.50it/s]Loading weights:  76%|███████▌  | 472/625 [00:58<00:06, 23.74it/s]Loading weights:  78%|███████▊  | 485/625 [00:58<00:05, 24.31it/s]Loading weights:  79%|███████▉  | 495/625 [00:58<00:04, 28.34it/s]Loading weights:  81%|████████  | 504/625 [00:59<00:03, 30.79it/s]Loading weights:  82%|████████▏ | 512/625 [00:59<00:03, 32.71it/s]Loading weights:  83%|████████▎ | 519/625 [00:59<00:02, 36.52it/s]Loading weights:  85%|████████▍ | 530/625 [00:59<00:02, 38.76it/s]Loading weights:  86%|████████▌ | 536/625 [00:59<00:02, 38.01it/s]Loading weights:  89%|████████▊ | 554/625 [00:59<00:01, 53.84it/s]Loading weights:  90%|████████▉ | 561/625 [01:00<00:01, 49.14it/s]Loading weights:  91%|█████████ | 570/625 [01:00<00:01, 35.58it/s]Loading weights:  93%|█████████▎| 580/625 [01:00<00:01, 38.32it/s]Loading weights:  94%|█████████▍| 586/625 [01:00<00:00, 40.16it/s]Loading weights:  95%|█████████▍| 591/625 [01:01<00:01, 21.42it/s]Loading weights:  95%|█████████▌| 595/625 [01:03<00:04,  7.29it/s]Loading weights:  96%|█████████▌| 600/625 [01:04<00:03,  6.56it/s]Loading weights:  98%|█████████▊| 612/625 [01:05<00:01, 10.40it/s]Loading weights:  99%|█████████▉| 618/625 [01:05<00:00, 10.36it/s]Loading weights: 100%|██████████| 625/625 [01:05<00:00,  9.52it/s]
-/Users/brianmeyer/qmd-vl/.venv/lib/python3.12/site-packages/transformers/tokenization_utils_base.py:2333: UserWarning: `max_length` is ignored when `padding`=`True` and there is no truncation strategy. To pad to max length, use `padding='max_length'`.
-  warnings.warn(
-[TorchBackend] Loaded reranker on mps with torch.float32
-  [0;32mPASS[0m  Mode set to 'hybrid'
-  [0;32mPASS[0m  Reranker needed in hybrid mode
-  [0;32mPASS[0m  Expander not needed in hybrid mode
-  [0;32mPASS[0m  Embedder loaded
-  [0;32mPASS[0m  Reranker loaded
-  [0;32mPASS[0m  Expander NOT loaded
-  [0;32mPASS[0m  Hybrid mode search returned 5 results in 105.62s
-  [0;32mPASS[0m  Hybrid mode: reranker produces varied scores
-    [0.251] AI Agents and Memory Systems (rerank=0.808)
-    [0.109] code_editor_screenshot (rerank=0.226)
-    [0.107] Vector Embeddings and Semantic Search (rerank=0.177)
-    [0.081] Transformer Architecture in Deep Learning (rerank=0.137)
-    [0.071] Modern Architecture and Design (rerank=0.088)
-
-[0;36m--- Full Mode ---[0m
-
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:07<1:23:01,  7.98s/it]Loading weights:  31%|███       | 195/625 [00:08<00:13, 32.81it/s]Loading weights:  36%|███▋      | 228/625 [00:11<00:16, 24.20it/s]Loading weights:  40%|███▉      | 247/625 [00:12<00:17, 21.68it/s]Loading weights:  41%|████▏     | 259/625 [00:13<00:17, 21.00it/s]Loading weights:  43%|████▎     | 268/625 [00:13<00:17, 20.81it/s]Loading weights:  44%|████▍     | 278/625 [00:14<00:16, 20.78it/s]Loading weights:  46%|████▌     | 287/625 [00:14<00:14, 23.46it/s]Loading weights:  47%|████▋     | 293/625 [00:15<00:17, 18.69it/s]Loading weights:  48%|████▊     | 300/625 [00:15<00:17, 18.36it/s]Loading weights:  50%|█████     | 314/625 [00:15<00:12, 25.17it/s]Loading weights:  51%|█████     | 320/625 [00:15<00:11, 27.73it/s]Loading weights:  52%|█████▏    | 328/625 [00:15<00:09, 32.61it/s]Loading weights:  55%|█████▍    | 342/625 [00:16<00:06, 44.05it/s]Loading weights:  58%|█████▊    | 362/625 [00:16<00:04, 64.71it/s]Loading weights:  60%|█████▉    | 372/625 [00:16<00:03, 69.97it/s]Loading weights:  61%|██████    | 382/625 [00:16<00:03, 62.89it/s]Loading weights:  64%|██████▎   | 398/625 [00:16<00:03, 68.91it/s]Loading weights:  66%|██████▌   | 412/625 [00:16<00:02, 74.17it/s]Loading weights:  68%|██████▊   | 424/625 [00:17<00:03, 65.23it/s]Loading weights:  70%|███████   | 438/625 [00:17<00:02, 77.92it/s]Loading weights:  72%|███████▏  | 448/625 [00:17<00:02, 59.86it/s]Loading weights:  73%|███████▎  | 456/625 [00:17<00:02, 59.02it/s]Loading weights:  74%|███████▍  | 463/625 [00:17<00:02, 58.72it/s]Loading weights:  76%|███████▌  | 472/625 [00:17<00:02, 64.48it/s]Loading weights:  77%|███████▋  | 482/625 [00:18<00:02, 62.98it/s]Loading weights:  78%|███████▊  | 489/625 [00:19<00:06, 19.75it/s]Loading weights:  80%|███████▉  | 498/625 [00:19<00:05, 23.45it/s]Loading weights:  83%|████████▎ | 518/625 [00:19<00:03, 28.78it/s]Loading weights:  84%|████████▎ | 523/625 [00:20<00:04, 23.54it/s]Loading weights:  85%|████████▌ | 532/625 [00:20<00:03, 28.87it/s]Loading weights:  86%|████████▌ | 537/625 [00:20<00:03, 23.93it/s]Loading weights:  87%|████████▋ | 544/625 [00:21<00:03, 24.30it/s]Loading weights:  88%|████████▊ | 548/625 [00:21<00:04, 15.79it/s]Loading weights:  89%|████████▊ | 554/625 [00:22<00:04, 17.23it/s]Loading weights:  89%|████████▉ | 557/625 [00:22<00:04, 15.80it/s]Loading weights:  91%|█████████ | 568/625 [00:22<00:02, 25.68it/s]Loading weights:  93%|█████████▎| 580/625 [00:22<00:01, 37.38it/s]Loading weights:  95%|█████████▍| 592/625 [00:22<00:00, 47.10it/s]Loading weights:  96%|█████████▌| 600/625 [00:23<00:01, 24.69it/s]Loading weights:  98%|█████████▊| 612/625 [00:23<00:00, 26.91it/s]Loading weights:  99%|█████████▉| 618/625 [00:24<00:00, 28.31it/s]Loading weights: 100%|██████████| 625/625 [00:24<00:00, 26.02it/s]
-[TorchBackend] Loaded embedder on mps with torch.float16
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:44<7:41:10, 44.34s/it]Loading weights:  30%|███       | 190/625 [00:44<01:11,  6.07it/s]Loading weights:  30%|███       | 190/625 [01:00<01:11,  6.07it/s]Loading weights:  39%|███▉      | 245/625 [01:00<01:16,  4.94it/s]Loading weights:  41%|████      | 255/625 [01:00<01:10,  5.28it/s]Loading weights:  47%|████▋     | 296/625 [01:10<01:05,  5.00it/s]Loading weights:  51%|█████     | 319/625 [01:12<00:54,  5.61it/s]Loading weights:  53%|█████▎    | 333/625 [01:14<00:52,  5.58it/s]Loading weights:  55%|█████▍    | 343/625 [01:16<00:50,  5.57it/s]Loading weights:  56%|█████▌    | 350/625 [01:17<00:46,  5.96it/s]Loading weights:  57%|█████▋    | 355/625 [01:18<00:49,  5.49it/s]Loading weights:  60%|██████    | 376/625 [01:18<00:28,  8.68it/s]Loading weights:  64%|██████▍   | 400/625 [01:18<00:16, 13.50it/s]Loading weights:  65%|██████▌   | 409/625 [01:19<00:14, 15.30it/s]Loading weights:  67%|██████▋   | 417/625 [01:19<00:12, 17.00it/s]Loading weights:  68%|██████▊   | 424/625 [01:19<00:11, 18.08it/s]Loading weights:  69%|██████▉   | 430/625 [01:20<00:12, 15.31it/s]Loading weights:  69%|██████▉   | 434/625 [01:20<00:12, 15.12it/s]Loading weights:  70%|███████   | 438/625 [01:20<00:12, 14.70it/s]Loading weights:  72%|███████▏  | 448/625 [01:21<00:10, 16.82it/s]Loading weights:  72%|███████▏  | 451/625 [01:21<00:13, 13.02it/s]Loading weights:  73%|███████▎  | 458/625 [01:22<00:13, 12.69it/s]Loading weights:  74%|███████▎  | 460/625 [01:23<00:21,  7.81it/s]Loading weights:  74%|███████▍  | 462/625 [01:24<00:25,  6.31it/s]Loading weights:  75%|███████▌  | 470/625 [01:24<00:17,  8.86it/s]Loading weights:  76%|███████▌  | 472/625 [01:25<00:24,  6.13it/s]Loading weights:  76%|███████▌  | 474/625 [01:26<00:30,  4.92it/s]Loading weights:  77%|███████▋  | 482/625 [01:26<00:16,  8.75it/s]Loading weights:  79%|███████▉  | 494/625 [01:26<00:09, 13.73it/s]Loading weights:  80%|███████▉  | 498/625 [01:27<00:08, 15.44it/s]Loading weights:  81%|████████▏ | 508/625 [01:27<00:05, 22.17it/s]Loading weights:  83%|████████▎ | 518/625 [01:27<00:03, 29.76it/s]Loading weights:  84%|████████▎ | 523/625 [01:27<00:03, 27.28it/s]Loading weights:  85%|████████▌ | 532/625 [01:27<00:03, 28.68it/s]Loading weights:  87%|████████▋ | 542/625 [01:28<00:02, 35.50it/s]Loading weights:  88%|████████▊ | 547/625 [01:29<00:06, 12.27it/s]Loading weights:  89%|████████▊ | 554/625 [01:30<00:08,  8.68it/s]Loading weights:  89%|████████▉ | 557/625 [01:31<00:09,  7.04it/s]Loading weights:  89%|████████▉ | 559/625 [01:32<00:12,  5.26it/s]Loading weights:  91%|█████████ | 566/625 [01:33<00:08,  7.25it/s]Loading weights:  91%|█████████ | 568/625 [01:34<00:10,  5.49it/s]Loading weights:  91%|█████████ | 570/625 [01:34<00:11,  4.98it/s]Loading weights:  92%|█████████▏| 578/625 [01:35<00:07,  6.69it/s]Loading weights:  93%|█████████▎| 580/625 [01:36<00:10,  4.42it/s]Loading weights:  93%|█████████▎| 582/625 [01:37<00:09,  4.61it/s]Loading weights:  94%|█████████▍| 590/625 [01:37<00:05,  6.80it/s]Loading weights:  95%|█████████▍| 592/625 [01:38<00:06,  4.96it/s]Loading weights:  95%|█████████▌| 594/625 [01:39<00:05,  5.25it/s]Loading weights:  96%|█████████▌| 600/625 [01:44<00:12,  1.96it/s]Loading weights:  96%|█████████▋| 603/625 [01:44<00:08,  2.49it/s]Loading weights:  97%|█████████▋| 606/625 [01:45<00:06,  2.85it/s]Loading weights:  98%|█████████▊| 611/625 [01:45<00:03,  4.39it/s]Loading weights:  98%|█████████▊| 613/625 [01:48<00:05,  2.09it/s]Loading weights:  99%|█████████▉| 618/625 [01:50<00:03,  2.26it/s]Loading weights: 100%|██████████| 625/625 [01:50<00:00,  5.64it/s]
-/Users/brianmeyer/qmd-vl/tests/uat/test_tiered_modes.sh: line 207: 53077 Killed: 9                  python3 <<PYEOF
-import os, sys, time, json
-sys.path.insert(0, "src")
-
-STORE = "${UAT_STORE}"
-CORPUS_TEXT = "${CORPUS_DIR}/text"
-CORPUS_IMAGES = "${CORPUS_DIR}/images"
-
-pass_count = 0
-fail_count = 0
-
-def report(ok, msg):
-    global pass_count, fail_count
-    if ok:
-        print(f"  \033[0;32mPASS\033[0m  {msg}")
-        pass_count += 1
-    else:
-        print(f"  \033[0;31mFAIL\033[0m  {msg}")
-        fail_count += 1
-
-# ── Index corpus once ──
-print("\n\033[0;36m--- Indexing test corpus ---\033[0m\n")
-
-os.environ["RECALLFORGE_BACKEND"] = "torch"
-os.environ["RECALLFORGE_MODE"] = "embed"
-os.environ["RECALLFORGE_STORE_PATH"] = STORE
-
-from recallforge import get_backend, get_storage
-from recallforge.search import HybridSearcher
-
-backend = get_backend()
-backend._load_embedder()
-storage = get_storage(STORE)
-
-# Index text docs
-text_files = sorted([f for f in os.listdir(CORPUS_TEXT) if f.endswith('.md')])
-for f in text_files:
-    path = os.path.join(CORPUS_TEXT, f)
-    with open(path) as fh:
-        text = fh.read()
-    storage.index_document(
-        path=f, text=text, collection="uat",
-        model="Qwen3-VL-Embedding-2B", embed_func=backend.embed_text,
-    )
-    print(f"  Indexed: {f}")
-
-# Index images
-img_files = sorted([f for f in os.listdir(CORPUS_IMAGES) if f.endswith('.png')])
-for f in img_files[:3]:  # Just 3 images for tiered mode test
-    path = os.path.join(CORPUS_IMAGES, f)
-    storage.index_image(path=path, collection="uat", embed_func=backend.embed_image)
-    print(f"  Indexed: {f}")
-
-total_docs = storage.count_documents()
-total_emb = storage.count_embeddings()
-report(total_docs > 0, f"Indexed {total_docs} documents, {total_emb} embeddings")
-
-query = "How do AI agents use memory and knowledge graphs?"
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Embed Mode ---\033[0m\n")
-# ═══════════════════════════════════
-
-backend_embed = get_backend()
-backend_embed.set_mode("embed")
-backend_embed._load_embedder()
-
-report(backend_embed.get_mode() == "embed", "Mode set to 'embed'")
-report(not backend_embed.needs_reranker(), "Reranker not needed in embed mode")
-report(not backend_embed.needs_expander(), "Expander not needed in embed mode")
-
-info_e = backend_embed.get_info()
-report(info_e.embedder_loaded, "Embedder loaded")
-report(not info_e.reranker_loaded, "Reranker NOT loaded")
-report(not info_e.expander_loaded, "Expander NOT loaded")
-
-searcher = HybridSearcher(backend=backend_embed, storage=storage, limit=5, collection="uat")
-t0 = time.time()
-results_embed = searcher.search(query)
-embed_time = time.time() - t0
-report(len(results_embed) > 0, f"Embed mode search returned {len(results_embed)} results in {embed_time:.2f}s")
-
-# All rerank scores should be 0.5 (neutral)
-all_neutral = all(r.rerank_score == 0.5 for r in results_embed)
-report(all_neutral, "Embed mode: all rerank scores are 0.5 (neutral)")
-
-for r in results_embed:
-    print(f"    [{r.score:.3f}] {r.title}")
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Hybrid Mode ---\033[0m\n")
-# ═══════════════════════════════════
-
-os.environ["RECALLFORGE_MODE"] = "hybrid"
-from recallforge.backends.torch_backend import TorchBackend
-backend_hybrid = TorchBackend(mode="hybrid")
-backend_hybrid._load_embedder()
-backend_hybrid._load_reranker()
-
-report(backend_hybrid.get_mode() == "hybrid", "Mode set to 'hybrid'")
-report(backend_hybrid.needs_reranker(), "Reranker needed in hybrid mode")
-report(not backend_hybrid.needs_expander(), "Expander not needed in hybrid mode")
-
-info_h = backend_hybrid.get_info()
-report(info_h.embedder_loaded, "Embedder loaded")
-report(info_h.reranker_loaded, "Reranker loaded")
-report(not info_h.expander_loaded, "Expander NOT loaded")
-
-searcher_h = HybridSearcher(backend=backend_hybrid, storage=storage, limit=5, collection="uat")
-t0 = time.time()
-results_hybrid = searcher_h.search(query)
-hybrid_time = time.time() - t0
-report(len(results_hybrid) > 0, f"Hybrid mode search returned {len(results_hybrid)} results in {hybrid_time:.2f}s")
-
-# At least some rerank scores should differ from 0.5
-has_varied = any(r.rerank_score != 0.5 for r in results_hybrid)
-report(has_varied, "Hybrid mode: reranker produces varied scores")
-
-for r in results_hybrid:
-    print(f"    [{r.score:.3f}] {r.title} (rerank={r.rerank_score:.3f})")
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Full Mode ---\033[0m\n")
-# ═══════════════════════════════════
-
-os.environ["RECALLFORGE_MODE"] = "full"
-backend_full = TorchBackend(mode="full")
-backend_full._load_embedder()
-backend_full._load_reranker()
-backend_full._load_expander()
-
-report(backend_full.get_mode() == "full", "Mode set to 'full'")
-report(backend_full.needs_reranker(), "Reranker needed in full mode")
-report(backend_full.needs_expander(), "Expander needed in full mode")
-
-info_f = backend_full.get_info()
-report(info_f.embedder_loaded, "Embedder loaded")
-report(info_f.reranker_loaded, "Reranker loaded")
-report(info_f.expander_loaded, "Expander loaded")
-
-searcher_f = HybridSearcher(backend=backend_full, storage=storage, limit=5, collection="uat")
-t0 = time.time()
-results_full = searcher_f.search(query)
-full_time = time.time() - t0
-report(len(results_full) > 0, f"Full mode search returned {len(results_full)} results in {full_time:.2f}s")
-
-for r in results_full:
-    print(f"    [{r.score:.3f}] {r.title} (rerank={r.rerank_score:.3f})")
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Mode Switching ---\033[0m\n")
-# ═══════════════════════════════════
-
-backend_switch = TorchBackend(mode="embed")
-backend_switch._load_embedder()
-report(backend_switch.get_mode() == "embed", "Start in embed mode")
-
-backend_switch.set_mode("full")
-report(backend_switch.get_mode() == "full", "Switched to full mode")
-report(backend_switch.needs_reranker(), "Reranker needed after switch")
-report(backend_switch.needs_expander(), "Expander needed after switch")
-
-# Load remaining models
-backend_switch._load_reranker()
-backend_switch._load_expander()
-info_s = backend_switch.get_info()
-report(info_s.reranker_loaded and info_s.expander_loaded, "All models loaded after switch")
-
-searcher_s = HybridSearcher(backend=backend_switch, storage=storage, limit=5, collection="uat")
-results_switch = searcher_s.search(query)
-report(len(results_switch) > 0, f"Search works after mode switch ({len(results_switch)} results)")
-
-# ═══════════════════════════════════
-print("\n\033[0;36m--- Timing Comparison ---\033[0m\n")
-# ═══════════════════════════════════
-
-print(f"  Embed mode:  {embed_time:.2f}s")
-print(f"  Hybrid mode: {hybrid_time:.2f}s")
-print(f"  Full mode:   {full_time:.2f}s")
-
-# ── Summary ──
-print(f"\n\033[1m{'='*40}\033[0m")
-print(f"\033[1m  Tiered Mode Summary\033[0m")
-print(f"\033[1m{'='*40}\033[0m")
-print(f"  \033[0;32mPASS: {pass_count}\033[0m")
-print(f"  \033[0;31mFAIL: {fail_count}\033[0m")
-
-if fail_count > 0:
-    print(f"\n  \033[0;31m\033[1mRESULT: FAILED\033[0m")
-    sys.exit(1)
-else:
-    print(f"\n  \033[0;32m\033[1mRESULT: PASSED\033[0m")
-PYEOF
-
-/opt/homebrew/Cellar/python@3.12/3.12.12_2/Frameworks/Python.framework/Versions/3.12/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
-  warnings.warn('resource_tracker: There appear to be %d '
-
-
-═══════════════════════════════════════
-  Cross-Modal ★
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Cross-Modal Search Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;33m  ★ THIS IS THE KEY DIFFERENTIATOR TEST ★[0m
-
-[0;36m--- Indexing Full Corpus ---[0m
-
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:02<29:52,  2.87s/it]Loading weights:  32%|███▏      | 201/625 [00:03<00:04, 93.04it/s]Loading weights:  45%|████▌     | 282/625 [00:04<00:03, 87.95it/s]Loading weights:  53%|█████▎    | 330/625 [00:04<00:03, 93.36it/s]Loading weights:  59%|█████▊    | 366/625 [00:04<00:02, 108.22it/s]Loading weights:  64%|██████▍   | 402/625 [00:04<00:01, 127.45it/s]Loading weights:  71%|███████▏  | 446/625 [00:04<00:01, 159.07it/s]Loading weights:  77%|███████▋  | 482/625 [00:04<00:00, 182.17it/s]Loading weights:  83%|████████▎ | 517/625 [00:04<00:00, 204.94it/s]Loading weights:  88%|████████▊ | 552/625 [00:05<00:00, 223.09it/s]Loading weights:  94%|█████████▎| 585/625 [00:05<00:00, 241.37it/s]Loading weights:  99%|█████████▉| 618/625 [00:05<00:00, 172.17it/s]Loading weights: 100%|██████████| 625/625 [00:05<00:00, 112.55it/s]
