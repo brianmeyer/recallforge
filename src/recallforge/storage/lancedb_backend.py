@@ -7,9 +7,11 @@ Provides vector search and full-text search (Tantivy).
 
 import fnmatch
 import hashlib
+import logging
 import math
 import os
 import re
+import struct
 import time
 import uuid
 from pathlib import Path
@@ -22,6 +24,22 @@ import pyarrow as pa
 import lancedb
 
 from .base import StorageBackend, SearchResult, Document
+
+
+# =============================================================================
+# Structured Logging
+# =============================================================================
+
+logger = logging.getLogger("recallforge.storage")
+
+# Enable trace mode via environment variable
+TRACE_ENABLED = os.environ.get("RECALLFORGE_TRACE", "0") == "1"
+
+
+def trace_log(operation: str, **kwargs) -> None:
+    """Structured trace logging for debugging."""
+    if TRACE_ENABLED:
+        logger.debug(f"[TRACE] {operation}: {kwargs}")
 
 
 # Default store directory
@@ -51,6 +69,46 @@ def escape_sql(s: str) -> str:
 def hash_content(content: str) -> str:
     """Compute SHA-256 hash of content."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def hash_file_bytes(file_path: str) -> str:
+    """
+    Compute SHA-256 hash of file contents + mtime for cache invalidation.
+    
+    This ensures that:
+    1. Same content at same path produces same hash
+    2. Modified file (different mtime) triggers re-indexing
+    
+    Args:
+        file_path: Absolute path to file
+        
+    Returns:
+        SHA-256 hash string (hex)
+    """
+    path = Path(file_path).expanduser().resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Cannot hash non-existent file: {file_path}")
+    
+    # Hash the file contents
+    h = hashlib.sha256()
+    
+    # Read file in chunks for memory efficiency
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+    except IOError as e:
+        logger.error(f"hash_file_bytes: failed to read {file_path}: {e}")
+        raise
+    
+    # Include mtime for cache invalidation
+    try:
+        mtime = path.stat().st_mtime
+        h.update(struct.pack(">d", mtime))
+    except OSError as e:
+        logger.warning(f"hash_file_bytes: failed to get mtime for {file_path}: {e}")
+    
+    return h.hexdigest()
 
 
 def extract_title(content: str, filename: str) -> str:
@@ -240,6 +298,10 @@ class LanceDBBackend(StorageBackend):
     
     EMBED_DIM = 2048  # Qwen3-VL-Embedding-2B dimension
     
+    # FTS rebuild debounce configuration
+    FTS_REBUILD_MIN_INTERVAL = 2.0  # Minimum seconds between rebuilds
+    FTS_REBUILD_PENDING_THRESHOLD = 10  # Rebuild after this many pending writes
+    
     def __init__(self, store_path: Optional[str] = None):
         """
         Initialize LanceDB backend.
@@ -253,6 +315,11 @@ class LanceDBBackend(StorageBackend):
         self._documents_table = None
         self._content_table = None
         self._cache_table = None
+        
+        # FTS rebuild debouncing state
+        self._fts_rebuild_pending = 0
+        self._fts_last_rebuild = 0.0
+        self._fts_needs_rebuild = False
     
     def initialize(self, store_path: Optional[str] = None) -> None:
         """Initialize the LanceDB database."""
@@ -332,11 +399,55 @@ class LanceDBBackend(StorageBackend):
     
     def close(self) -> None:
         """Close the database connection."""
+        # Flush any pending FTS rebuild before closing
+        if self._fts_needs_rebuild or self._fts_rebuild_pending > 0:
+            self._do_fts_rebuild()
+        
         self._conn = None
         self._embeddings_table = None
         self._documents_table = None
         self._content_table = None
         self._cache_table = None
+    
+    def _schedule_fts_rebuild(self) -> None:
+        """
+        Schedule a debounced FTS rebuild.
+        
+        Instead of rebuilding on every write, we track pending writes
+        and rebuild only when threshold is hit or on explicit request.
+        """
+        self._fts_rebuild_pending += 1
+        self._fts_needs_rebuild = True
+        
+        trace_log("schedule_fts_rebuild", pending=self._fts_rebuild_pending)
+        
+        # Immediate rebuild if threshold exceeded
+        if self._fts_rebuild_pending >= self.FTS_REBUILD_PENDING_THRESHOLD:
+            self._do_fts_rebuild()
+    
+    def _do_fts_rebuild(self) -> None:
+        """
+        Execute the actual FTS rebuild with rate limiting.
+        """
+        now = time.time()
+        elapsed = now - self._fts_last_rebuild
+        
+        # Rate limit: don't rebuild more than once per min interval
+        if elapsed < self.FTS_REBUILD_MIN_INTERVAL and self._fts_rebuild_pending < self.FTS_REBUILD_PENDING_THRESHOLD:
+            trace_log("fts_rebuild_skipped", reason="rate_limited", elapsed=elapsed)
+            return
+        
+        trace_log("fts_rebuild_executing", pending=self._fts_rebuild_pending)
+        
+        self._fts_last_rebuild = now
+        self._fts_rebuild_pending = 0
+        self._fts_needs_rebuild = False
+        
+        try:
+            self.ensure_fts_index(force_rebuild=True)
+        except Exception as e:
+            logger.error(f"FTS rebuild failed: {e}")
+            # Don't re-raise; FTS rebuild failure is non-fatal
     
     # =========================================================================
     # Schema Definitions
@@ -400,24 +511,24 @@ class LanceDBBackend(StorageBackend):
                     self._documents_table.create_index("file_path")
                 if "content_hash_scalar" not in doc_names:
                     self._documents_table.create_index("content_hash")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"_ensure_indices: failed to create document indices: {e}")
         
         try:
             if self._content_table:
                 content_indices = self._content_table.list_indices()
                 if not any(i.name == "hash_scalar" for i in content_indices):
                     self._content_table.create_index("hash")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"_ensure_indices: failed to create content index: {e}")
         
         try:
             if self._cache_table:
                 cache_indices = self._cache_table.list_indices()
                 if not any(i.name == "key_scalar" for i in cache_indices):
                     self._cache_table.create_index("key")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"_ensure_indices: failed to create cache index: {e}")
     
     # =========================================================================
     # Document Operations
@@ -458,8 +569,8 @@ class LanceDBBackend(StorageBackend):
                     }
                 )
                 return doc_id
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"insert_document: failed to check existing doc {collection}/{file_path}: {e}")
         
         # Insert new
         doc_id = str(uuid.uuid4())
@@ -500,7 +611,8 @@ class LanceDBBackend(StorageBackend):
                 created_at=r["created_at"],
                 updated_at=r["updated_at"],
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"find_document: failed to find {collection}/{file_path}: {e}")
             return None
     
     def deactivate_document(self, collection: str, file_path: str) -> None:
@@ -523,8 +635,8 @@ class LanceDBBackend(StorageBackend):
                 .to_list())
             if len(existing) > 0:
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"insert_content: failed to check existing hash {hash_str[:8]}: {e}")
         
         self._content_table.add([{
             "hash": hash_str,
@@ -543,7 +655,8 @@ class LanceDBBackend(StorageBackend):
             if len(rows) == 0:
                 return None
             return rows[0]["doc"]
-        except Exception:
+        except Exception as e:
+            logger.warning(f"get_content: failed to get hash {hash_str[:8]}: {e}")
             return None
     
     # =========================================================================
@@ -570,8 +683,10 @@ class LanceDBBackend(StorageBackend):
         # Delete existing
         try:
             self._embeddings_table.delete(f"hash_seq = '{escape_sql(hash_seq)}'")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
+        
+        trace_log("insert_embedding", hash_seq=hash_seq, collection=collection, file_path=file_path, seq=seq)
         
         self._embeddings_table.add([{
             "hash_seq": hash_seq,
@@ -593,7 +708,8 @@ class LanceDBBackend(StorageBackend):
         try:
             count = self._embeddings_table.count_rows()
             return count > 0
-        except Exception:
+        except Exception as e:
+            logger.warning(f"has_vectors: failed to count rows: {e}")
             return False
     
     # =========================================================================
@@ -605,24 +721,40 @@ class LanceDBBackend(StorageBackend):
         if self._embeddings_table is None:
             return
         
-        if self._embeddings_table.count_rows() == 0:
+        try:
+            row_count = self._embeddings_table.count_rows()
+        except Exception as e:
+            logger.error(f"ensure_fts_index: failed to count rows: {e}")
+            return
+        
+        if row_count == 0:
             return
         
         if force_rebuild:
             try:
                 self._embeddings_table.create_fts_index("text_body", replace=True)
-            except Exception:
-                pass
+                trace_log("fts_index_created", force=True, rows=row_count)
+            except Exception as e:
+                logger.error(f"ensure_fts_index: failed to create FTS index: {e}")
             return
         
-        indices = self._embeddings_table.list_indices()
+        try:
+            indices = self._embeddings_table.list_indices()
+        except Exception as e:
+            logger.warning(f"ensure_fts_index: failed to list indices: {e}")
+            return
+        
         has_fts = any(
             "text_body" in (i.columns or []) and "FTS" in str(i.index_type or i.type or "").upper()
             for i in indices
         )
         
         if not has_fts:
-            self._embeddings_table.create_fts_index("text_body", replace=True)
+            try:
+                self._embeddings_table.create_fts_index("text_body", replace=True)
+                trace_log("fts_index_created", force=False, rows=row_count)
+            except Exception as e:
+                logger.error(f"ensure_fts_index: failed to create FTS index: {e}")
     
     def rebuild_fts_index(self) -> None:
         """Rebuild the FTS index."""
@@ -715,6 +847,8 @@ class LanceDBBackend(StorageBackend):
         if not trimmed:
             return []
         
+        trace_log("search_fts_start", query=trimmed[:50], limit=limit, collection=collection, content_type=content_type)
+        
         self.ensure_fts_index()
         
         # Build filter
@@ -734,6 +868,7 @@ class LanceDBBackend(StorageBackend):
                 builder = builder.where(filter_clause)
             results = builder.to_list()
         except Exception as e:
+            logger.warning(f"search_fts: FTS index failed, using BM25 fallback: {e}")
             return self._bm25_fallback(trimmed, limit, collection, content_type)
         
         if not results:
@@ -754,7 +889,9 @@ class LanceDBBackend(StorageBackend):
             else:
                 seen[filepath] = self._make_search_result(r, score, "fts")
         
-        return sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
+        final_results = sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
+        trace_log("search_fts_done", count=len(final_results), query=trimmed[:50])
+        return final_results
     
     def search_vec(
         self,
@@ -769,6 +906,8 @@ class LanceDBBackend(StorageBackend):
         
         if not self.has_vectors():
             return []
+        
+        trace_log("search_vec_start", limit=limit, collection=collection, content_type=content_type)
         
         # Build filter
         filter_clause = None
@@ -803,7 +942,9 @@ class LanceDBBackend(StorageBackend):
             else:
                 seen[filepath] = self._make_search_result(r, score, "vec")
         
-        return sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
+        final_results = sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
+        trace_log("search_vec_done", count=len(final_results))
+        return final_results
     
     def _make_search_result(self, row: Dict[str, Any], score: float, source: str) -> SearchResult:
         """Convert LanceDB row to SearchResult."""
@@ -919,13 +1060,18 @@ class LanceDBBackend(StorageBackend):
         if not isinstance(text, str) or not text.strip():
             raise ValueError("text is required")
 
+        trace_log("upsert_memory_start", path=normalized_path, collection=collection)
+
         content_hash = hash_content(text)
         title = extract_title(text, normalized_path)
 
         # Remove prior vectors for this memory path to prevent duplicate chunks.
-        self._embeddings_table.delete(
-            f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
-        )
+        try:
+            self._embeddings_table.delete(
+                f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+            )
+        except Exception as e:
+            logger.warning(f"upsert_memory: failed to delete old vectors for {collection}/{normalized_path}: {e}")
 
         self.insert_content(content_hash, text, "text")
         self.insert_document(collection, normalized_path, title, content_hash, "text")
@@ -948,7 +1094,10 @@ class LanceDBBackend(StorageBackend):
                 content_type="text",
             )
 
-        self.ensure_fts_index(force_rebuild=True)
+        # Schedule debounced FTS rebuild instead of immediate rebuild
+        self._schedule_fts_rebuild()
+        
+        trace_log("upsert_memory_done", path=normalized_path, hash=content_hash[:8], chunks=len(chunks))
         return content_hash
 
     def delete_memory(self, path: str, collection: str) -> Dict[str, Any]:
@@ -956,6 +1105,8 @@ class LanceDBBackend(StorageBackend):
         normalized_path = path.strip()
         if not normalized_path:
             raise ValueError("path is required")
+
+        trace_log("delete_memory_start", path=normalized_path, collection=collection)
 
         removed_vectors = 0
         try:
@@ -966,15 +1117,23 @@ class LanceDBBackend(StorageBackend):
                 )
                 .to_list()
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"delete_memory: failed to count vectors for {collection}/{normalized_path}: {e}")
             removed_vectors = 0
 
-        self._embeddings_table.delete(
-            f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
-        )
+        try:
+            self._embeddings_table.delete(
+                f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+            )
+        except Exception as e:
+            logger.error(f"delete_memory: failed to delete embeddings for {collection}/{normalized_path}: {e}")
+        
         self.deactivate_document(collection, normalized_path)
-        self.ensure_fts_index(force_rebuild=True)
+        
+        # Schedule debounced FTS rebuild
+        self._schedule_fts_rebuild()
 
+        trace_log("delete_memory_done", path=normalized_path, removed_vectors=removed_vectors)
         return {
             "success": True,
             "path": normalized_path,
@@ -1040,6 +1199,8 @@ class LanceDBBackend(StorageBackend):
         if not root.exists() or not root.is_dir():
             raise ValueError(f"Folder not found: {folder_path}")
 
+        trace_log("index_folder_start", folder=str(root), collection=collection, recursive=recursive)
+
         include = include_globs or ["**/*"]
         exclude = exclude_globs or []
 
@@ -1077,9 +1238,14 @@ class LanceDBBackend(StorageBackend):
                     model=model,
                 )
                 indexed += 1
-            except Exception:
+            except Exception as e:
+                logger.error(f"index_folder: failed to index {rel}: {e}")
                 errors += 1
 
+        # Force FTS rebuild at end of batch
+        self._do_fts_rebuild()
+        
+        trace_log("index_folder_done", folder=str(root), indexed=indexed, skipped=skipped, errors=errors)
         return {
             "success": True,
             "folder_path": str(root),
@@ -1110,6 +1276,8 @@ class LanceDBBackend(StorageBackend):
         allowed = set(content_types)
         if not allowed.issubset({"text", "image"}):
             raise ValueError("content_types must be subset of ['text', 'image']")
+
+        trace_log("ingest_start", collection=collection, text=text is not None, file_path=file_path, folder_path=folder_path)
 
         summary = {
             "success": True,
@@ -1171,6 +1339,7 @@ class LanceDBBackend(StorageBackend):
                 summary["indexed_text"] += 1
                 mark(item_path, "text", "indexed")
             except Exception as e:
+                logger.error(f"ingest: failed to index {item_path}: {e}")
                 summary["errors"] += 1
                 mark(item_path, "image" if is_image else "text", "error", str(e))
 
@@ -1211,8 +1380,11 @@ class LanceDBBackend(StorageBackend):
         if text is None and not file_path and not folder_path:
             raise ValueError("Provide one of: text, file_path, or folder_path")
 
-        self.ensure_fts_index(force_rebuild=True)
+        # Force FTS rebuild at end of batch
+        self._do_fts_rebuild()
+        
         summary["total_seen"] = summary["indexed_text"] + summary["indexed_images"] + summary["skipped"] + summary["errors"]
+        trace_log("ingest_done", collection=collection, indexed_text=summary["indexed_text"], indexed_images=summary["indexed_images"])
         return summary
 
     def index_image(
@@ -1232,12 +1404,28 @@ class LanceDBBackend(StorageBackend):
             model: Embedding model name
         
         Returns:
-            Content hash
+            Content hash (hash of file bytes + mtime)
         """
-        content_hash = hash_content(path)
+        # Use file bytes + mtime hash for correctness
+        # This ensures re-indexing when file content changes
+        try:
+            content_hash = hash_file_bytes(path)
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            logger.error(f"index_image: failed to hash {path}: {e}")
+            raise
+        
+        trace_log("index_image_start", path=path, hash=content_hash[:8])
+        
         title = os.path.splitext(os.path.basename(path))[0]
-        modified_at = int(os.path.getmtime(path) * 1000)
-        created_at = int(os.path.getctime(path) * 1000)
+        try:
+            modified_at = int(os.path.getmtime(path) * 1000)
+            created_at = int(os.path.getctime(path) * 1000)
+        except OSError as e:
+            logger.warning(f"index_image: failed to get file times for {path}: {e}")
+            modified_at = int(time.time() * 1000)
+            created_at = modified_at
         
         self.insert_content(content_hash, path, content_type="image")
         self.insert_document(
@@ -1257,8 +1445,8 @@ class LanceDBBackend(StorageBackend):
         
         try:
             self._embeddings_table.delete(f"hash_seq = '{escape_sql(hash_seq)}'")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"index_image: no existing embedding to delete for {hash_seq}: {e}")
         
         self._embeddings_table.add([{
             "hash_seq": hash_seq,
@@ -1275,6 +1463,8 @@ class LanceDBBackend(StorageBackend):
             "vector": vector,
         }])
         
-        self.ensure_fts_index(force_rebuild=True)
+        # Schedule debounced FTS rebuild
+        self._schedule_fts_rebuild()
         
+        trace_log("index_image_done", path=path, hash=content_hash[:8])
         return content_hash
