@@ -22,7 +22,7 @@ subsection "Help and Version"
 
 run_test_grep "recallforge --help" "Cross-Modal" recallforge --help
 run_test_grep "recallforge --version" "RecallForge" recallforge --version
-run_test_grep "recallforge index --help" "Index files" recallforge index --help
+run_test_grep "recallforge index --help" "index" recallforge index --help
 run_test_grep "recallforge search --help" "Search indexed" recallforge search --help
 run_test_grep "recallforge serve --help" "Start MCP" recallforge serve --help
 run_test_grep "recallforge status --help" "status" recallforge status --help

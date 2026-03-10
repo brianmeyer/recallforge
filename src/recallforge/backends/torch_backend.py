@@ -280,7 +280,7 @@ class TorchBackend(ModelBackend):
         self._reranker = Qwen3VLReranker(
             model_name_or_path=self.RERANKER_MODEL,
             device=device,
-            torch_dtype=dtype,
+            dtype=dtype,
             attn_implementation=attn,
         )
         

@@ -272,34 +272,59 @@ class LanceDBBackend(StorageBackend):
         if "embeddings" in existing:
             self._embeddings_table = self._conn.open_table("embeddings")
         else:
-            self._embeddings_table = self._conn.create_table(
-                "embeddings",
-                schema=self._build_embeddings_schema()
-            )
+            try:
+                self._embeddings_table = self._conn.create_table(
+                    "embeddings",
+                    schema=self._build_embeddings_schema()
+                )
+            except ValueError as e:
+                # Table may have been created by another process; try to open it
+                if "already exists" in str(e):
+                    self._embeddings_table = self._conn.open_table("embeddings")
+                else:
+                    raise
         
         if "documents" in existing:
             self._documents_table = self._conn.open_table("documents")
         else:
-            self._documents_table = self._conn.create_table(
-                "documents",
-                schema=self._build_documents_schema()
-            )
+            try:
+                self._documents_table = self._conn.create_table(
+                    "documents",
+                    schema=self._build_documents_schema()
+                )
+            except ValueError as e:
+                if "already exists" in str(e):
+                    self._documents_table = self._conn.open_table("documents")
+                else:
+                    raise
         
         if "content" in existing:
             self._content_table = self._conn.open_table("content")
         else:
-            self._content_table = self._conn.create_table(
-                "content",
-                schema=self._build_content_schema()
-            )
+            try:
+                self._content_table = self._conn.create_table(
+                    "content",
+                    schema=self._build_content_schema()
+                )
+            except ValueError as e:
+                if "already exists" in str(e):
+                    self._content_table = self._conn.open_table("content")
+                else:
+                    raise
         
         if "cache" in existing:
             self._cache_table = self._conn.open_table("cache")
         else:
-            self._cache_table = self._conn.create_table(
-                "cache",
-                schema=self._build_cache_schema()
-            )
+            try:
+                self._cache_table = self._conn.create_table(
+                    "cache",
+                    schema=self._build_cache_schema()
+                )
+            except ValueError as e:
+                if "already exists" in str(e):
+                    self._cache_table = self._conn.open_table("cache")
+                else:
+                    raise
         
         self._ensure_indices()
     
