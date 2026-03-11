@@ -117,6 +117,85 @@ def main():
         help="Path to storage directory",
     )
     
+    # watch command
+    watch_parser = subparsers.add_parser("watch", help="Watch folder daemon commands")
+    watch_subparsers = watch_parser.add_subparsers(dest="watch_command", help="Watch commands")
+    
+    # watch start
+    watch_start_parser = watch_subparsers.add_parser("start", help="Start watching a folder")
+    watch_start_parser.add_argument(
+        "folder",
+        help="Folder path to watch",
+    )
+    watch_start_parser.add_argument(
+        "--collection", "-c",
+        default="default",
+        help="Collection name (default: default)",
+    )
+    watch_start_parser.add_argument(
+        "--recursive", "-r",
+        action="store_true",
+        default=True,
+        help="Watch recursively (default: true)",
+    )
+    watch_start_parser.add_argument(
+        "--include",
+        action="append",
+        help="Include glob pattern (can be specified multiple times)",
+    )
+    watch_start_parser.add_argument(
+        "--exclude",
+        action="append",
+        help="Exclude glob pattern (can be specified multiple times)",
+    )
+    watch_start_parser.add_argument(
+        "--debounce",
+        type=float,
+        default=2.0,
+        help="Debounce seconds (default: 2.0)",
+    )
+    watch_start_parser.add_argument(
+        "--store-path",
+        default=None,
+        help="Path to storage directory",
+    )
+    
+    # watch stop
+    watch_stop_parser = watch_subparsers.add_parser("stop", help="Stop watching a folder")
+    watch_stop_parser.add_argument(
+        "watch_id",
+        nargs="?",
+        default=None,
+        help="Watch ID to stop (or 'all' to stop all)",
+    )
+    watch_stop_parser.add_argument(
+        "--store-path",
+        default=None,
+        help="Path to storage directory",
+    )
+    
+    # watch list
+    watch_list_parser = watch_subparsers.add_parser("list", help="List active watches")
+    watch_list_parser.add_argument(
+        "--store-path",
+        default=None,
+        help="Path to storage directory",
+    )
+    
+    # watch status
+    watch_status_parser = watch_subparsers.add_parser("status", help="Show watch status")
+    watch_status_parser.add_argument(
+        "watch_id",
+        nargs="?",
+        default=None,
+        help="Watch ID to check status for",
+    )
+    watch_status_parser.add_argument(
+        "--store-path",
+        default=None,
+        help="Path to storage directory",
+    )
+    
     args = parser.parse_args()
     
     if args.command is None:
@@ -132,6 +211,8 @@ def main():
         return cmd_search(args)
     elif args.command == "status":
         return cmd_status(args)
+    elif args.command == "watch":
+        return cmd_watch(args)
     else:
         parser.print_help()
         return 1
@@ -295,6 +376,59 @@ def cmd_status(args):
     
     return 0
 
+
+
+def cmd_watch(args):
+    """Manage watch-folder daemon."""
+    from . import get_backend, get_storage
+    from .watch_folder import WatchConfig, get_daemon
+
+    store_path = args.store_path or os.environ.get("RECALLFORGE_STORE_PATH")
+    storage = get_storage(store_path)
+    backend = get_backend()
+    daemon = get_daemon(storage, backend, store_path)
+
+    if args.watch_command == "start":
+        includes = args.include or ["**/*.md", "**/*.txt", "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.webp"]
+        excludes = args.exclude or ["**/.git/**", "**/node_modules/**"]
+        config = WatchConfig(
+            folder_path=args.folder,
+            collection=args.collection,
+            recursive=args.recursive,
+            include_globs=includes,
+            exclude_globs=excludes,
+            debounce_seconds=args.debounce,
+        )
+        watch_id = daemon.start_watch(config)
+        print(json.dumps({"watch_id": watch_id, "status": "running", "folder": args.folder}, indent=2))
+        return 0
+
+    if args.watch_command == "stop":
+        if args.watch_id == "all":
+            stopped = daemon.stop_all()
+            print(json.dumps({"stopped": stopped}, indent=2))
+            return 0
+        if not args.watch_id:
+            print("watch stop requires watch_id or 'all'", file=sys.stderr)
+            return 2
+        ok = daemon.stop_watch(args.watch_id)
+        print(json.dumps({"watch_id": args.watch_id, "stopped": bool(ok)}, indent=2))
+        return 0 if ok else 1
+
+    if args.watch_command == "list":
+        print(json.dumps(daemon.list_watches(), indent=2))
+        return 0
+
+    if args.watch_command == "status":
+        if args.watch_id:
+            status = daemon.get_watch_status(args.watch_id)
+            print(json.dumps(status or {"error": "not_found", "watch_id": args.watch_id}, indent=2))
+            return 0 if status else 1
+        print(json.dumps(daemon.list_watches(), indent=2))
+        return 0
+
+    print("watch requires subcommand: start|stop|list|status", file=sys.stderr)
+    return 2
 
 if __name__ == "__main__":
     sys.exit(main())

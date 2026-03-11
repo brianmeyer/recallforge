@@ -518,6 +518,30 @@ recallforge serve \
   --store-path ~/.recallforge
 ```
 
+### Watch Folder Daemon
+
+Use the lightweight watch daemon to auto-index file changes.
+
+```bash
+# Start watching a folder
+recallforge watch start /path/to/notes \
+  --collection default \
+  --include '**/*.md' \
+  --include '**/*.txt' \
+  --exclude '**/.git/**' \
+  --debounce 0.5
+
+# List watches
+recallforge watch list
+
+# Watch status
+recallforge watch status <watch_id>
+
+# Stop one or all
+recallforge watch stop <watch_id>
+recallforge watch stop all
+```
+
 ## Architecture
 
 ```
