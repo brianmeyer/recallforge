@@ -360,10 +360,10 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
                 "rrf_rank": r.rrf_rank,
                 "source": r.source,
                 "snippet": (r.body or "")[:500] if r.body else None,
-                "user_id": r.user_id,
-                "session_id": r.session_id,
-                "project_id": r.project_id,
-                "profile": r.profile,
+                "user_id": getattr(r, "user_id", None),
+                "session_id": getattr(r, "session_id", None),
+                "project_id": getattr(r, "project_id", None),
+                "profile": getattr(r, "profile", None),
             }
             for r in results
         ],
