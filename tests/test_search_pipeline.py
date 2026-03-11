@@ -351,5 +351,83 @@ class TestHybridQueryConvenience(unittest.TestCase):
         self.assertGreater(len(results), 0)
 
 
+class TestN1LookupOptimization(unittest.TestCase):
+    """Test that storage backend prefers text_body over get_content() to avoid N+1 lookups."""
+
+    def test_prefers_text_body_over_get_content(self):
+        """Verify _make_search_result uses text_body from row without calling get_content()."""
+        from recallforge.storage.lancedb_backend import LanceDBBackend
+
+        # Create a mock LanceDBBackend
+        backend = LanceDBBackend.__new__(LanceDBBackend)
+
+        # Create a row that has text_body already populated
+        row = {
+            "collection": "test",
+            "file_path": "doc.md",
+            "content_hash": "abc123",
+            "content_type": "text",
+            "title": "Test Doc",
+            "pos": 0,
+            "text_body": "This is chunk text from embeddings table",
+            "user_id": None,
+            "session_id": None,
+            "project_id": None,
+            "profile": None,
+        }
+
+        # Track if get_content is called (it shouldn't be for rows with text_body)
+        get_content_called = False
+        original_get_content = backend.get_content
+
+        def mock_get_content(hash_str):
+            nonlocal get_content_called
+            get_content_called = True
+            return original_get_content(backend, hash_str)
+
+        # Patch get_content to track calls
+        backend.get_content = mock_get_content
+
+        # Call _make_search_result with a row that has text_body
+        result = backend._make_search_result(row, 0.9, "fts")
+
+        # Verify the body came from text_body, not get_content
+        self.assertEqual(result.body, "This is chunk text from embeddings table")
+        # get_content should NOT be called when text_body is available
+        self.assertFalse(get_content_called, "get_content() should not be called when text_body is available")
+
+    def test_falls_back_to_get_content_when_text_body_empty(self):
+        """Verify _make_search_result falls back to get_content when text_body is empty."""
+        from recallforge.storage.lancedb_backend import LanceDBBackend
+
+        backend = LanceDBBackend.__new__(LanceDBBackend)
+
+        # Create a row WITHOUT text_body (empty string)
+        row = {
+            "collection": "test",
+            "file_path": "doc.md",
+            "content_hash": "abc123",
+            "content_type": "text",
+            "title": "Test Doc",
+            "pos": 0,
+            "text_body": "",  # Empty!
+            "user_id": None,
+            "session_id": None,
+            "project_id": None,
+            "profile": None,
+        }
+
+        # Mock get_content to return fallback content
+        def mock_get_content(hash_str):
+            return "Full content from content table"
+
+        backend.get_content = mock_get_content
+
+        result = backend._make_search_result(row, 0.9, "fts")
+
+        # Should fall back to get_content result
+        self.assertEqual(result.body, "Full content from content table")
+
+
 if __name__ == "__main__":
     unittest.main()

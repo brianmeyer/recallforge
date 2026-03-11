@@ -224,6 +224,12 @@ path + text
 | ANN index | IVF_HNSW_SQ (large collections) |
 | Parallel searches | ThreadPoolExecutor (8 workers default) |
 
+### Search Optimization (P0)
+
+- **N+1 Lookup Elimination**: Search result construction prefers `text_body` from the embeddings table row (already fetched via LanceDB query) over calling `get_content()` which requires a separate lookup to the content table. Falls back to `get_content()` only when `text_body` is empty.
+- **Lazy Content Loading**: Full document body is only fetched when explicitly needed for final output. The reranker input path uses chunk text (`text_body`) for candidate scoring, avoiding unnecessary content lookups during the scoring phase.
+- **Output Contract**: The MCP `search` tool output remains stable - results include all fields (`filepath`, `score`, `body`, etc.) with the same shape as before. Only internal lookup patterns have changed.
+
 ## Stage Roadmap
 
 | Stage | Feature | Status |

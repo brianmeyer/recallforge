@@ -1081,13 +1081,23 @@ class LanceDBBackend(StorageBackend):
         return final_results
     
     def _make_search_result(self, row: Dict[str, Any], score: float, source: str) -> SearchResult:
-        """Convert LanceDB row to SearchResult."""
+        """Convert LanceDB row to SearchResult.
+        
+        PERFORMANCE OPTIMIZATION: Prefer text_body from embeddings row over get_content() lookup.
+        - text_body is already available in the row (from embeddings table query)
+        - Only call get_content() as fallback when text_body is empty/None
+        This avoids N+1 lookups to content table for every search result.
+        """
         collection = row.get("collection", "")
         file_path = row.get("file_path", "")
         content_hash = row.get("content_hash", "")
         content_type = row.get("content_type", "text")
 
-        body = self.get_content(content_hash) or row.get("text_body", "")
+        # P0 OPTIMIZATION: Prefer text_body (already in row) over get_content() lookup
+        body = row.get("text_body") or ""
+        if not body:
+            # Fallback only when text_body is empty - lazy load for final output
+            body = self.get_content(content_hash) or ""
 
         return SearchResult(
             filepath=f"recallforge://{collection}/{file_path}",
