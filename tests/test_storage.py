@@ -241,6 +241,31 @@ class TestIndexAndSearch(unittest.TestCase):
         self.assertGreater(len(results), 0)
 
 
+class BatchEmbedderWithMethod:
+    def __init__(self):
+        self.batch_calls = 0
+        self.single_calls = 0
+
+    def embed_texts(self, texts: List[str]):
+        self.batch_calls += 1
+        return [mock_embed(t) for t in texts]
+
+    def embed_text(self, text: str):
+        self.single_calls += 1
+        return mock_embed(text)
+
+
+class BatchEmbedCallable:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, payload):
+        self.calls.append(payload)
+        if isinstance(payload, list):
+            return [mock_embed(t) for t in payload]
+        return mock_embed(payload)
+
+
 class TestInlineMemoryOperations(unittest.TestCase):
     """Tests for upsert_memory/delete_memory/index_folder behavior."""
 
@@ -280,6 +305,59 @@ class TestInlineMemoryOperations(unittest.TestCase):
 
         self.assertEqual(len(second_hashes), 1)
         self.assertNotEqual(first_hashes, second_hashes)
+
+    def test_upsert_memory_uses_batch_embed_texts_when_available(self):
+        embedder = BatchEmbedderWithMethod()
+
+        self.backend.upsert_memory(
+            path="notes/batch-method.md",
+            text="batch method content " + ("x" * 1200),
+            collection="test",
+            embed_func=embedder,
+            model="mock-embedder",
+        )
+
+        self.assertGreaterEqual(embedder.batch_calls, 1)
+        self.assertEqual(embedder.single_calls, 0)
+
+    def test_upsert_memory_supports_callable_batch_signature(self):
+        embedder = BatchEmbedCallable()
+
+        self.backend.upsert_memory(
+            path="notes/batch-callable.md",
+            text="batch callable content " + ("y" * 1200),
+            collection="test",
+            embed_func=embedder,
+            model="mock-embedder",
+        )
+
+        self.assertTrue(any(isinstance(call, list) for call in embedder.calls))
+
+    def test_upsert_memory_skip_delete_still_prevents_stale_duplicates(self):
+        self.backend.upsert_memory(
+            path="notes/skip-delete.md",
+            text="first version " + ("a" * 900),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        del_filter = "collection = 'test' AND file_path = 'notes/skip-delete.md'"
+        self.backend._embeddings_table.delete(del_filter)
+
+        self.backend.upsert_memory(
+            path="notes/skip-delete.md",
+            text="second version " + ("b" * 1000),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            _skip_delete=True,
+        )
+
+        rows = self.backend._embeddings_table.search().where(del_filter).to_list()
+        hashes = {r["content_hash"] for r in rows}
+        self.assertEqual(len(hashes), 1)
+        self.assertGreater(len(rows), 0)
 
     def test_delete_memory_deactivates_doc_and_removes_embeddings(self):
         self.backend.upsert_memory(

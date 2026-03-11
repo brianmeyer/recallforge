@@ -1204,6 +1204,54 @@ class LanceDBBackend(StorageBackend):
             model=model,
         )
     
+    def _embed_chunks_batch(
+        self,
+        chunks: List[Dict[str, Any]],
+        embed_func,
+    ) -> List[List[float]]:
+        """Embed chunks with batch support and safe fallbacks.
+
+        Supports:
+        - embed_func.embed_texts(texts)
+        - embed_func(texts)
+        - embed_func.embed_text(text) / embed_func(text) per item fallback
+        """
+        texts = [chunk["text"] for chunk in chunks]
+
+        if not texts:
+            return []
+
+        if hasattr(embed_func, "embed_texts"):
+            try:
+                vectors = embed_func.embed_texts(texts)
+                if hasattr(vectors, "tolist"):
+                    vectors = vectors.tolist()
+                vectors = list(vectors)
+                if len(vectors) == len(texts):
+                    return [v.tolist() if hasattr(v, "tolist") else list(v) for v in vectors]
+            except Exception as e:
+                logger.debug(f"batch embed via embed_texts failed, falling back: {e}")
+
+        try:
+            vectors = embed_func(texts)
+            if hasattr(vectors, "tolist"):
+                vectors = vectors.tolist()
+            if isinstance(vectors, (list, tuple)) and len(vectors) == len(texts):
+                first = vectors[0]
+                if hasattr(first, "__len__") and not isinstance(first, (str, bytes)):
+                    return [v.tolist() if hasattr(v, "tolist") else list(v) for v in vectors]
+        except Exception:
+            pass
+
+        single_embed = embed_func.embed_text if hasattr(embed_func, "embed_text") else embed_func
+        output: List[List[float]] = []
+        for text in texts:
+            vector = single_embed(text)
+            if hasattr(vector, "tolist"):
+                vector = vector.tolist()
+            output.append(list(vector))
+        return output
+
     def upsert_memory(
         self,
         path: str,
@@ -1218,6 +1266,7 @@ class LanceDBBackend(StorageBackend):
         importance: Optional[float] = None,
         ttl_seconds: Optional[int] = None,
         tags: Optional[List[str]] = None,
+        _skip_delete: bool = False,
 
     ) -> str:
         """Create or update a text memory, replacing old vectors for this path.
@@ -1226,11 +1275,15 @@ class LanceDBBackend(StorageBackend):
             path: Memory path key within collection
             text: Memory content text
             collection: Collection name
-            embed_func: Function to embed text into vectors
+            embed_func: Function/object to embed text into vectors.
+                Supports embed_func(text), embed_func.embed_text(text),
+                embed_func(texts), or embed_func.embed_texts(texts).
             model: Embedding model name
             importance: Optional importance score (0.0-1.0)
             ttl_seconds: Optional time-to-live in seconds (0 or None = no expiration)
             tags: Optional list of string tags
+            _skip_delete: Internal optimization flag for callers that already
+                deleted path-scoped vectors in the same namespace.
         
         Returns:
             Content hash of the stored memory
@@ -1243,28 +1296,29 @@ class LanceDBBackend(StorageBackend):
 
         trace_log("upsert_memory_start", path=normalized_path, collection=collection,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
-                  importance=importance, ttl_seconds=ttl_seconds, tags=tags)
+                  importance=importance, ttl_seconds=ttl_seconds, tags=tags, _skip_delete=_skip_delete)
 
 
         content_hash = hash_content(text)
         title = extract_title(text, normalized_path)
 
-        # Build namespace filter for deletion
-        del_filter = f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
-        if user_id is not None:
-            del_filter += f" AND user_id = '{escape_sql(user_id)}'"
-        if session_id is not None:
-            del_filter += f" AND session_id = '{escape_sql(session_id)}'"
-        if project_id is not None:
-            del_filter += f" AND project_id = '{escape_sql(project_id)}'"
-        if profile is not None:
-            del_filter += f" AND profile = '{escape_sql(profile)}'"
+        if not _skip_delete:
+            # Build namespace filter for deletion
+            del_filter = f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+            if user_id is not None:
+                del_filter += f" AND user_id = '{escape_sql(user_id)}'"
+            if session_id is not None:
+                del_filter += f" AND session_id = '{escape_sql(session_id)}'"
+            if project_id is not None:
+                del_filter += f" AND project_id = '{escape_sql(project_id)}'"
+            if profile is not None:
+                del_filter += f" AND profile = '{escape_sql(profile)}'"
 
-        # Remove prior vectors for this memory path to prevent duplicate chunks.
-        try:
-            self._embeddings_table.delete(del_filter)
-        except Exception as e:
-            logger.warning(f"upsert_memory: failed to delete old vectors for {collection}/{normalized_path}: {e}")
+            # Remove prior vectors for this memory path to prevent duplicate chunks.
+            try:
+                self._embeddings_table.delete(del_filter)
+            except Exception as e:
+                logger.warning(f"upsert_memory: failed to delete old vectors for {collection}/{normalized_path}: {e}")
 
         self.insert_content(content_hash, text, "text")
         self.insert_document(
@@ -1273,15 +1327,13 @@ class LanceDBBackend(StorageBackend):
         )
 
         chunks = chunk_document(text)
+        vectors = self._embed_chunks_batch(chunks, embed_func)
         for i, chunk in enumerate(chunks):
-            vector = embed_func(chunk["text"])
-            if hasattr(vector, "tolist"):
-                vector = vector.tolist()
             self.insert_embedding(
                 content_hash=content_hash,
                 seq=i,
                 pos=chunk["pos"],
-                vector=vector,
+                vector=vectors[i],
                 model=model,
                 collection=collection,
                 file_path=normalized_path,
