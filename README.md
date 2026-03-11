@@ -83,11 +83,11 @@ pip install -e ".[mlx]"   # or just: pip install -e .
 Keep it simple and local:
 
 ```bash
-# 1) Start MCP server in lightweight mode
-recallforge serve --mode embed
+# 1) Start MCP server in default quality mode
+recallforge serve --mode full
 
-# 2) Add memory/docs/images
-recallforge index ~/Documents --collection default
+# 2) Use a single ingest pathway for agents (text/image/file/folder)
+#    via MCP tool: ingest
 
 # 3) Query from CLI (or via MCP client)
 recallforge search "what did I save about autonomous agents?"
