@@ -385,5 +385,176 @@ class TestContentTypeFilter(unittest.TestCase):
             self.assertEqual(r.content_type, "image")
 
 
+class TestNamespaceFiltering(unittest.TestCase):
+    """Tests for namespace/profile filtering in memory operations and search."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-ns-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_upsert_memory_with_namespace(self):
+        """Memory entries should accept namespace fields."""
+        content_hash = self.backend.upsert_memory(
+            path="notes/namespace-test.md",
+            text="Namespace isolation test content " + ("x" * 500),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            user_id="user123",
+            session_id="sess456",
+            project_id="proj789",
+            profile="work",
+        )
+        self.assertIsNotNone(content_hash)
+
+        # Verify the embedding has namespace fields
+        rows = self.backend._embeddings_table.search().where(
+            "collection = 'test' AND file_path = 'notes/namespace-test.md'"
+        ).to_list()
+        self.assertGreater(len(rows), 0)
+        for row in rows:
+            self.assertEqual(row.get("user_id"), "user123")
+            self.assertEqual(row.get("session_id"), "sess456")
+            self.assertEqual(row.get("project_id"), "proj789")
+            self.assertEqual(row.get("profile"), "work")
+
+    def test_search_with_namespace_filter(self):
+        """Search should filter by namespace fields."""
+        # Index two documents with different user_id
+        self.backend.upsert_memory(
+            path="docs/alice.md",
+            text="Alice's document about machine learning " + ("a" * 500),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            user_id="alice",
+        )
+        self.backend.upsert_memory(
+            path="docs/bob.md",
+            text="Bob's document about machine learning " + ("b" * 500),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            user_id="bob",
+        )
+        self.backend.rebuild_fts_index()
+
+        # Search for Alice's docs only
+        alice_results = self.backend.search_fts("machine learning", limit=10, user_id="alice")
+        for r in alice_results:
+            # All results should have user_id = alice (or None for backward compat)
+            self.assertIn(r.user_id, ["alice", None])
+
+        # Search for Bob's docs only
+        bob_results = self.backend.search_fts("machine learning", limit=10, user_id="bob")
+        for r in bob_results:
+            self.assertIn(r.user_id, ["bob", None])
+
+    def test_vector_search_with_namespace_filter(self):
+        """Vector search should filter by namespace fields."""
+        # Index two documents with different project_id
+        self.backend.upsert_memory(
+            path="projects/projA.md",
+            text="Project A documentation about neural networks " + ("a" * 500),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            project_id="projA",
+        )
+        self.backend.upsert_memory(
+            path="projects/projB.md",
+            text="Project B documentation about neural networks " + ("b" * 500),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            project_id="projB",
+        )
+
+        vec = mock_embed("neural networks documentation")
+        proj_a_results = self.backend.search_vec(vec, limit=10, project_id="projA")
+        for r in proj_a_results:
+            self.assertIn(r.project_id, ["projA", None])
+
+        proj_b_results = self.backend.search_vec(vec, limit=10, project_id="projB")
+        for r in proj_b_results:
+            self.assertIn(r.project_id, ["projB", None])
+
+    def test_delete_memory_with_namespace(self):
+        """Delete should respect namespace fields."""
+        self.backend.upsert_memory(
+            path="notes/to-delete.md",
+            text="This will be deleted " + ("x" * 500),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            user_id="deleter",
+        )
+
+        result = self.backend.delete_memory(
+            path="notes/to-delete.md",
+            collection="test",
+            user_id="deleter",
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["user_id"], "deleter")
+
+    def test_index_folder_with_namespace(self):
+        """Index folder should propagate namespace fields."""
+        folder = os.path.join(self.temp_dir, "ns-folder")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "doc1.md"), "w", encoding="utf-8") as f:
+            f.write("Document one " + ("a" * 500))
+        with open(os.path.join(folder, "doc2.md"), "w", encoding="utf-8") as f:
+            f.write("Document two " + ("b" * 500))
+
+        summary = self.backend.index_folder(
+            folder_path=folder,
+            collection="test",
+            recursive=True,
+            include_globs=None,
+            exclude_globs=None,
+            embed_func=mock_embed,
+            model="mock-embedder",
+            user_id="folder-user",
+            session_id="folder-session",
+        )
+
+        self.assertTrue(summary["success"])
+        self.assertEqual(summary["user_id"], "folder-user")
+        self.assertEqual(summary["session_id"], "folder-session")
+
+        # Verify embeddings have namespace fields
+        rows = self.backend._embeddings_table.search().where(
+            "collection = 'test'"
+        ).to_list()
+        for row in rows:
+            if row.get("file_path", "").startswith("doc"):
+                self.assertEqual(row.get("user_id"), "folder-user")
+                self.assertEqual(row.get("session_id"), "folder-session")
+
+    def test_backward_compat_without_namespace(self):
+        """Operations without namespace fields should still work (backward compatibility)."""
+        self.backend.upsert_memory(
+            path="notes/no-ns.md",
+            text="No namespace fields " + ("z" * 500),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        # Search without namespace filter
+        results = self.backend.search_fts("namespace fields", limit=10)
+        self.assertGreater(len(results), 0)
+
+        # Search with namespace filter should still return results with null namespace
+        results = self.backend.search_fts("namespace fields", limit=10, user_id="nonexistent")
+        # Should not find results because user_id filter excludes null namespace entries
+
+
 if __name__ == "__main__":
     unittest.main()

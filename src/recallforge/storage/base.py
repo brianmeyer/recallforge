@@ -31,6 +31,11 @@ class SearchResult:
     content_type: str = "text"
     chunk_pos: int = 0
     body: Optional[str] = None
+    # Namespace fields for multi-tenant isolation
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    project_id: Optional[str] = None
+    profile: Optional[str] = None
 
 
 @dataclass
@@ -45,6 +50,11 @@ class Document:
     active: bool
     created_at: int
     updated_at: int
+    # Namespace fields for multi-tenant isolation
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    project_id: Optional[str] = None
+    profile: Optional[str] = None
 
 
 class StorageBackend(ABC):
@@ -88,7 +98,11 @@ class StorageBackend(ABC):
         content_hash: str,
         content_type: str = "text",
         created_at: Optional[int] = None,
-        modified_at: Optional[int] = None
+        modified_at: Optional[int] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
     ) -> str:
         """
         Insert or update a document.
@@ -138,7 +152,11 @@ class StorageBackend(ABC):
         file_path: str = "",
         title: str = "",
         text_body: str = "",
-        content_type: str = "text"
+        content_type: str = "text",
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
     ) -> None:
         """Insert an embedding for a document chunk."""
         pass
@@ -158,7 +176,11 @@ class StorageBackend(ABC):
         query: str,
         limit: int = 20,
         collection: Optional[str] = None,
-        content_type: Optional[str] = None
+        content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
     ) -> List[SearchResult]:
         """Full-text search (BM25)."""
         pass
@@ -169,7 +191,11 @@ class StorageBackend(ABC):
         vector: List[float],
         limit: int = 20,
         collection: Optional[str] = None,
-        content_type: Optional[str] = None
+        content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
     ) -> List[SearchResult]:
         """Vector similarity search (ANN)."""
         pass
@@ -219,12 +245,24 @@ class StorageBackend(ABC):
         collection: str,
         embed_func: Callable[[str], List[float]],
         model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> str:
         """Create or update a memory entry and its embeddings."""
         pass
 
     @abstractmethod
-    def delete_memory(self, path: str, collection: str) -> Dict[str, Any]:
+    def delete_memory(
+        self,
+        path: str,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Deactivate a memory entry and remove associated embeddings."""
         pass
 
@@ -238,6 +276,10 @@ class StorageBackend(ABC):
         exclude_globs: Optional[List[str]],
         embed_func: Callable[[str], List[float]],
         model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Index text files from a folder and return summary counts."""
         pass
@@ -257,6 +299,10 @@ class StorageBackend(ABC):
         embed_text_func: Callable[[str], List[float]],
         embed_image_func: Callable[[str], List[float]],
         model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text/image/file/folder inputs."""
         pass

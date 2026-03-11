@@ -468,6 +468,11 @@ class LanceDBBackend(StorageBackend):
             pa.field("model", pa.string(), nullable=True),
             pa.field("embedded_at", pa.int64(), nullable=False),
             pa.field("vector", pa.list_(pa.float32(), list_size=self.EMBED_DIM), nullable=False),
+            # Namespace fields for multi-tenant isolation
+            pa.field("user_id", pa.string(), nullable=True),
+            pa.field("session_id", pa.string(), nullable=True),
+            pa.field("project_id", pa.string(), nullable=True),
+            pa.field("profile", pa.string(), nullable=True),
         ])
     
     def _build_documents_schema(self) -> pa.Schema:
@@ -482,6 +487,11 @@ class LanceDBBackend(StorageBackend):
             pa.field("active", pa.int8(), nullable=False),
             pa.field("created_at", pa.int64(), nullable=False),
             pa.field("updated_at", pa.int64(), nullable=False),
+            # Namespace fields for multi-tenant isolation
+            pa.field("user_id", pa.string(), nullable=True),
+            pa.field("session_id", pa.string(), nullable=True),
+            pa.field("project_id", pa.string(), nullable=True),
+            pa.field("profile", pa.string(), nullable=True),
         ])
     
     def _build_content_schema(self) -> pa.Schema:
@@ -542,20 +552,35 @@ class LanceDBBackend(StorageBackend):
         content_hash: str,
         content_type: str = "text",
         created_at: Optional[int] = None,
-        modified_at: Optional[int] = None
+        modified_at: Optional[int] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
     ) -> str:
         """Insert or update a document."""
         now = int(time.time() * 1000)
         created_ts = created_at or now
         modified_ts = modified_at or now
-        
+
+        # Build namespace filter for finding existing
+        ns_filter = f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}'"
+        if user_id is not None:
+            ns_filter += f" AND user_id = '{escape_sql(user_id)}'"
+        if session_id is not None:
+            ns_filter += f" AND session_id = '{escape_sql(session_id)}'"
+        if project_id is not None:
+            ns_filter += f" AND project_id = '{escape_sql(project_id)}'"
+        if profile is not None:
+            ns_filter += f" AND profile = '{escape_sql(profile)}'"
+
         # Check for existing
         try:
             existing = list(self._documents_table.search()
-                .where(f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}'")
+                .where(ns_filter)
                 .limit(1)
                 .to_list())
-            
+
             if len(existing) > 0:
                 doc_id = existing[0]["id"]
                 self._documents_table.update(
@@ -566,12 +591,16 @@ class LanceDBBackend(StorageBackend):
                         "content_type": content_type,
                         "active": 1,
                         "updated_at": modified_ts,
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "project_id": project_id,
+                        "profile": profile,
                     }
                 )
                 return doc_id
         except Exception as e:
             logger.warning(f"insert_document: failed to check existing doc {collection}/{file_path}: {e}")
-        
+
         # Insert new
         doc_id = str(uuid.uuid4())
         self._documents_table.add([{
@@ -584,8 +613,12 @@ class LanceDBBackend(StorageBackend):
             "active": 1,
             "created_at": created_ts,
             "updated_at": modified_ts,
+            "user_id": user_id,
+            "session_id": session_id,
+            "project_id": project_id,
+            "profile": profile,
         }])
-        
+
         return doc_id
     
     def find_document(self, collection: str, file_path: str) -> Optional[Document]:
@@ -674,20 +707,24 @@ class LanceDBBackend(StorageBackend):
         file_path: str = "",
         title: str = "",
         text_body: str = "",
-        content_type: str = "text"
+        content_type: str = "text",
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
     ) -> None:
         """Insert an embedding."""
         hash_seq = f"{content_hash}_{seq}"
         now = int(time.time() * 1000)
-        
+
         # Delete existing
         try:
             self._embeddings_table.delete(f"hash_seq = '{escape_sql(hash_seq)}'")
         except Exception as e:
             logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
-        
+
         trace_log("insert_embedding", hash_seq=hash_seq, collection=collection, file_path=file_path, seq=seq)
-        
+
         self._embeddings_table.add([{
             "hash_seq": hash_seq,
             "content_hash": content_hash,
@@ -701,6 +738,10 @@ class LanceDBBackend(StorageBackend):
             "model": model,
             "embedded_at": now,
             "vector": vector,
+            "user_id": user_id,
+            "session_id": session_id,
+            "project_id": project_id,
+            "profile": profile,
         }])
     
     def has_vectors(self) -> bool:
@@ -779,35 +820,48 @@ class LanceDBBackend(StorageBackend):
         limit: int = 20,
         collection: Optional[str] = None,
         content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> List[SearchResult]:
         """In-memory BM25 fallback when FTS index fails."""
         try:
             rows = self._embeddings_table.to_pandas()
         except Exception:
             return []
-        
+
         if rows.empty:
             return []
-        
+
         if collection:
             rows = rows[rows["collection"] == collection]
         if content_type:
             rows = rows[rows["content_type"] == content_type]
-        
+        # Apply namespace filters
+        if user_id is not None:
+            rows = rows[(rows["user_id"] == user_id) | (rows["user_id"].isna() & (user_id is None))]
+        if session_id is not None:
+            rows = rows[(rows["session_id"] == session_id) | (rows["session_id"].isna() & (session_id is None))]
+        if project_id is not None:
+            rows = rows[(rows["project_id"] == project_id) | (rows["project_id"].isna() & (project_id is None))]
+        if profile is not None:
+            rows = rows[(rows["profile"] == profile) | (rows["profile"].isna() & (profile is None))]
+
         query_terms = re.findall(r'\w+', query.lower())
         if not query_terms:
             return []
-        
+
         N = len(rows)
         avgdl = rows["text_body"].str.len().mean() or 1
         k1, b = 1.5, 0.75
-        
+
         doc_freqs: Dict[str, int] = defaultdict(int)
         for text in rows["text_body"]:
             seen_terms = set(re.findall(r'\w+', (text or "").lower()))
             for t in seen_terms:
                 doc_freqs[t] += 1
-        
+
         results: List[SearchResult] = []
         for _, row in rows.iterrows():
             text = row.get("text_body") or ""
@@ -824,7 +878,7 @@ class LanceDBBackend(StorageBackend):
                 score += idf * tf_comp
             if score > 0:
                 results.append(self._make_search_result(dict(row), score, "fts"))
-        
+
         results.sort(key=lambda x: x.score, reverse=True)
         if results:
             max_s = results[0].score
@@ -837,30 +891,42 @@ class LanceDBBackend(StorageBackend):
         query: str,
         limit: int = 20,
         collection: Optional[str] = None,
-        content_type: Optional[str] = None
+        content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
     ) -> List[SearchResult]:
         """Full-text search using LanceDB Tantivy."""
         if self._embeddings_table is None:
             return []
-        
+
         trimmed = query.strip()
         if not trimmed:
             return []
-        
-        trace_log("search_fts_start", query=trimmed[:50], limit=limit, collection=collection, content_type=content_type)
-        
+
+        trace_log("search_fts_start", query=trimmed[:50], limit=limit, collection=collection, content_type=content_type,
+                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+
         self.ensure_fts_index()
-        
-        # Build filter
-        filter_clause = None
+
+        # Build filter including namespace fields
+        filter_parts = []
         if collection:
-            filter_clause = f"collection = '{escape_sql(collection)}'"
+            filter_parts.append(f"collection = '{escape_sql(collection)}'")
         if content_type:
-            if filter_clause:
-                filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
-            else:
-                filter_clause = f"content_type = '{escape_sql(content_type)}'"
-        
+            filter_parts.append(f"content_type = '{escape_sql(content_type)}'")
+        if user_id is not None:
+            filter_parts.append(f"user_id = '{escape_sql(user_id)}'")
+        if session_id is not None:
+            filter_parts.append(f"session_id = '{escape_sql(session_id)}'")
+        if project_id is not None:
+            filter_parts.append(f"project_id = '{escape_sql(project_id)}'")
+        if profile is not None:
+            filter_parts.append(f"profile = '{escape_sql(profile)}'")
+
+        filter_clause = " AND ".join(filter_parts) if filter_parts else None
+
         # Run FTS search
         try:
             builder = self._embeddings_table.search(trimmed, query_type="fts").limit(limit * 2)
@@ -869,26 +935,26 @@ class LanceDBBackend(StorageBackend):
             results = builder.to_list()
         except Exception as e:
             logger.warning(f"search_fts: FTS index failed, using BM25 fallback: {e}")
-            return self._bm25_fallback(trimmed, limit, collection, content_type)
-        
+            return self._bm25_fallback(trimmed, limit, collection, content_type, user_id, session_id, project_id, profile)
+
         if not results:
-            return self._bm25_fallback(trimmed, limit, collection, content_type)
-        
+            return self._bm25_fallback(trimmed, limit, collection, content_type, user_id, session_id, project_id, profile)
+
         # Normalize scores
         max_score = max(r.get("_score", 0) for r in results) or 1
-        
+
         # Dedupe by filepath
         seen: Dict[str, SearchResult] = {}
         for r in results:
             filepath = f"recallforge://{r['collection']}/{r['file_path']}"
             score = r.get("_score", 0) / max_score
-            
+
             if filepath in seen:
                 if score > seen[filepath].score:
                     seen[filepath] = self._make_search_result(r, score, "fts")
             else:
                 seen[filepath] = self._make_search_result(r, score, "fts")
-        
+
         final_results = sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
         trace_log("search_fts_done", count=len(final_results), query=trimmed[:50])
         return final_results
@@ -898,50 +964,62 @@ class LanceDBBackend(StorageBackend):
         vector: List[float],
         limit: int = 20,
         collection: Optional[str] = None,
-        content_type: Optional[str] = None
+        content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
     ) -> List[SearchResult]:
         """Vector similarity search."""
         if self._embeddings_table is None:
             return []
-        
+
         if not self.has_vectors():
             return []
-        
-        trace_log("search_vec_start", limit=limit, collection=collection, content_type=content_type)
-        
-        # Build filter
-        filter_clause = None
+
+        trace_log("search_vec_start", limit=limit, collection=collection, content_type=content_type,
+                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+
+        # Build filter including namespace fields
+        filter_parts = []
         if collection:
-            filter_clause = f"collection = '{escape_sql(collection)}'"
+            filter_parts.append(f"collection = '{escape_sql(collection)}'")
         if content_type:
-            if filter_clause:
-                filter_clause += f" AND content_type = '{escape_sql(content_type)}'"
-            else:
-                filter_clause = f"content_type = '{escape_sql(content_type)}'"
-        
+            filter_parts.append(f"content_type = '{escape_sql(content_type)}'")
+        if user_id is not None:
+            filter_parts.append(f"user_id = '{escape_sql(user_id)}'")
+        if session_id is not None:
+            filter_parts.append(f"session_id = '{escape_sql(session_id)}'")
+        if project_id is not None:
+            filter_parts.append(f"project_id = '{escape_sql(project_id)}'")
+        if profile is not None:
+            filter_parts.append(f"profile = '{escape_sql(profile)}'")
+
+        filter_clause = " AND ".join(filter_parts) if filter_parts else None
+
         # Run vector search
         builder = self._embeddings_table.search(vector, query_type="vector").metric("cosine").limit(limit * 2)
         if filter_clause:
             builder = builder.where(filter_clause)
-        
+
         results = builder.to_list()
-        
+
         if not results:
             return []
-        
+
         # Dedupe by filepath
         seen: Dict[str, SearchResult] = {}
         for r in results:
             filepath = f"recallforge://{r['collection']}/{r['file_path']}"
             distance = r.get("_distance", 1.0)
             score = 1.0 - distance / 2.0
-            
+
             if filepath in seen:
                 if score > seen[filepath].score:
                     seen[filepath] = self._make_search_result(r, score, "vec")
             else:
                 seen[filepath] = self._make_search_result(r, score, "vec")
-        
+
         final_results = sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
         trace_log("search_vec_done", count=len(final_results))
         return final_results
@@ -952,9 +1030,9 @@ class LanceDBBackend(StorageBackend):
         file_path = row.get("file_path", "")
         content_hash = row.get("content_hash", "")
         content_type = row.get("content_type", "text")
-        
+
         body = self.get_content(content_hash) or row.get("text_body", "")
-        
+
         return SearchResult(
             filepath=f"recallforge://{collection}/{file_path}",
             display_path=f"{collection}/{file_path}",
@@ -970,6 +1048,10 @@ class LanceDBBackend(StorageBackend):
             content_type=content_type,
             chunk_pos=row.get("pos", 0) or 0,
             body=body,
+            user_id=row.get("user_id"),
+            session_id=row.get("session_id"),
+            project_id=row.get("project_id"),
+            profile=row.get("profile"),
         )
     
     # =========================================================================
@@ -1052,6 +1134,10 @@ class LanceDBBackend(StorageBackend):
         collection: str,
         embed_func,
         model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> str:
         """Create or update a text memory, replacing old vectors for this path."""
         normalized_path = path.strip()
@@ -1060,21 +1146,34 @@ class LanceDBBackend(StorageBackend):
         if not isinstance(text, str) or not text.strip():
             raise ValueError("text is required")
 
-        trace_log("upsert_memory_start", path=normalized_path, collection=collection)
+        trace_log("upsert_memory_start", path=normalized_path, collection=collection,
+                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
         content_hash = hash_content(text)
         title = extract_title(text, normalized_path)
 
+        # Build namespace filter for deletion
+        del_filter = f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+        if user_id is not None:
+            del_filter += f" AND user_id = '{escape_sql(user_id)}'"
+        if session_id is not None:
+            del_filter += f" AND session_id = '{escape_sql(session_id)}'"
+        if project_id is not None:
+            del_filter += f" AND project_id = '{escape_sql(project_id)}'"
+        if profile is not None:
+            del_filter += f" AND profile = '{escape_sql(profile)}'"
+
         # Remove prior vectors for this memory path to prevent duplicate chunks.
         try:
-            self._embeddings_table.delete(
-                f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
-            )
+            self._embeddings_table.delete(del_filter)
         except Exception as e:
             logger.warning(f"upsert_memory: failed to delete old vectors for {collection}/{normalized_path}: {e}")
 
         self.insert_content(content_hash, text, "text")
-        self.insert_document(collection, normalized_path, title, content_hash, "text")
+        self.insert_document(
+            collection, normalized_path, title, content_hash, "text",
+            user_id=user_id, session_id=session_id, project_id=project_id, profile=profile
+        )
 
         chunks = chunk_document(text)
         for i, chunk in enumerate(chunks):
@@ -1092,29 +1191,51 @@ class LanceDBBackend(StorageBackend):
                 title=title,
                 text_body=chunk["text"],
                 content_type="text",
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
             )
 
         # Schedule debounced FTS rebuild instead of immediate rebuild
         self._schedule_fts_rebuild()
-        
+
         trace_log("upsert_memory_done", path=normalized_path, hash=content_hash[:8], chunks=len(chunks))
         return content_hash
 
-    def delete_memory(self, path: str, collection: str) -> Dict[str, Any]:
+    def delete_memory(
+        self,
+        path: str,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Deactivate a memory and remove all associated vectors."""
         normalized_path = path.strip()
         if not normalized_path:
             raise ValueError("path is required")
 
-        trace_log("delete_memory_start", path=normalized_path, collection=collection)
+        trace_log("delete_memory_start", path=normalized_path, collection=collection,
+                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+
+        # Build namespace filter
+        del_filter = f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+        if user_id is not None:
+            del_filter += f" AND user_id = '{escape_sql(user_id)}'"
+        if session_id is not None:
+            del_filter += f" AND session_id = '{escape_sql(session_id)}'"
+        if project_id is not None:
+            del_filter += f" AND project_id = '{escape_sql(project_id)}'"
+        if profile is not None:
+            del_filter += f" AND profile = '{escape_sql(profile)}'"
 
         removed_vectors = 0
         try:
             removed_vectors = len(
                 self._embeddings_table.search()
-                .where(
-                    f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
-                )
+                .where(del_filter)
                 .to_list()
             )
         except Exception as e:
@@ -1122,14 +1243,12 @@ class LanceDBBackend(StorageBackend):
             removed_vectors = 0
 
         try:
-            self._embeddings_table.delete(
-                f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
-            )
+            self._embeddings_table.delete(del_filter)
         except Exception as e:
             logger.error(f"delete_memory: failed to delete embeddings for {collection}/{normalized_path}: {e}")
-        
+
         self.deactivate_document(collection, normalized_path)
-        
+
         # Schedule debounced FTS rebuild
         self._schedule_fts_rebuild()
 
@@ -1139,6 +1258,10 @@ class LanceDBBackend(StorageBackend):
             "path": normalized_path,
             "collection": collection,
             "removed_vectors": removed_vectors,
+            "user_id": user_id,
+            "session_id": session_id,
+            "project_id": project_id,
+            "profile": profile,
         }
 
     def _is_text_file(self, file_path: Path) -> bool:
@@ -1193,13 +1316,18 @@ class LanceDBBackend(StorageBackend):
         exclude_globs: Optional[List[str]],
         embed_func,
         model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Index text files from a folder and return summary counts."""
         root = Path(folder_path).expanduser().resolve()
         if not root.exists() or not root.is_dir():
             raise ValueError(f"Folder not found: {folder_path}")
 
-        trace_log("index_folder_start", folder=str(root), collection=collection, recursive=recursive)
+        trace_log("index_folder_start", folder=str(root), collection=collection, recursive=recursive,
+                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
         include = include_globs or ["**/*"]
         exclude = exclude_globs or []
@@ -1236,6 +1364,10 @@ class LanceDBBackend(StorageBackend):
                     collection=collection,
                     embed_func=embed_func,
                     model=model,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
                 )
                 indexed += 1
             except Exception as e:
@@ -1244,7 +1376,7 @@ class LanceDBBackend(StorageBackend):
 
         # Force FTS rebuild at end of batch
         self._do_fts_rebuild()
-        
+
         trace_log("index_folder_done", folder=str(root), indexed=indexed, skipped=skipped, errors=errors)
         return {
             "success": True,
@@ -1254,6 +1386,10 @@ class LanceDBBackend(StorageBackend):
             "skipped": skipped,
             "errors": errors,
             "total_seen": indexed + skipped + errors,
+            "user_id": user_id,
+            "session_id": session_id,
+            "project_id": project_id,
+            "profile": profile,
         }
 
     def ingest(
@@ -1270,6 +1406,10 @@ class LanceDBBackend(StorageBackend):
         embed_text_func,
         embed_image_func,
         model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text, file, or folder inputs."""
         content_types = content_types or ["text", "image"]
@@ -1277,7 +1417,8 @@ class LanceDBBackend(StorageBackend):
         if not allowed.issubset({"text", "image"}):
             raise ValueError("content_types must be subset of ['text', 'image']")
 
-        trace_log("ingest_start", collection=collection, text=text is not None, file_path=file_path, folder_path=folder_path)
+        trace_log("ingest_start", collection=collection, text=text is not None, file_path=file_path, folder_path=folder_path,
+                  user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
         summary = {
             "success": True,
@@ -1287,6 +1428,10 @@ class LanceDBBackend(StorageBackend):
             "skipped": 0,
             "errors": 0,
             "items": [],
+            "user_id": user_id,
+            "session_id": session_id,
+            "project_id": project_id,
+            "profile": profile,
         }
 
         def mark(item_path: str, item_type: str, status: str, error: Optional[str] = None) -> None:
@@ -1335,6 +1480,10 @@ class LanceDBBackend(StorageBackend):
                     collection=collection,
                     embed_func=embed_text_func,
                     model=model,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
                 )
                 summary["indexed_text"] += 1
                 mark(item_path, "text", "indexed")
@@ -1355,6 +1504,10 @@ class LanceDBBackend(StorageBackend):
                     collection=collection,
                     embed_func=embed_text_func,
                     model=model,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
                 )
                 summary["indexed_text"] += 1
                 mark(text_path, "text", "indexed")
@@ -1382,7 +1535,7 @@ class LanceDBBackend(StorageBackend):
 
         # Force FTS rebuild at end of batch
         self._do_fts_rebuild()
-        
+
         summary["total_seen"] = summary["indexed_text"] + summary["indexed_images"] + summary["skipped"] + summary["errors"]
         trace_log("ingest_done", collection=collection, indexed_text=summary["indexed_text"], indexed_images=summary["indexed_images"])
         return summary

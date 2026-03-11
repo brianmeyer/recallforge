@@ -92,11 +92,13 @@ class StubStorage:
         self._vec_results = vec_results or []
 
     def search_fts(self, query: str, limit: int = 20,
-                   collection=None, content_type=None) -> List[SearchResult]:
+                   collection=None, content_type=None,
+                   user_id=None, session_id=None, project_id=None, profile=None) -> List[SearchResult]:
         return list(self._fts_results[:limit])
 
     def search_vec(self, vector, limit: int = 20,
-                   collection=None, content_type=None) -> List[SearchResult]:
+                   collection=None, content_type=None,
+                   user_id=None, session_id=None, project_id=None, profile=None) -> List[SearchResult]:
         return list(self._vec_results[:limit])
 
 

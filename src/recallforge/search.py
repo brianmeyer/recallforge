@@ -42,15 +42,15 @@ class HybridResult:
 class HybridSearcher:
     """
     Full hybrid search pipeline with tiered modes.
-    
+
     Modes:
     - embed: Embedder only. Vector + FTS, no reranking or expansion.
     - hybrid: + Reranker. Cross-encoder refinement.
     - full: + Query Expander. Lex/vec/hyde expansions.
-    
+
     Uses ThreadPoolExecutor for concurrent searches.
     """
-    
+
     def __init__(
         self,
         backend: ModelBackend,
@@ -60,11 +60,15 @@ class HybridSearcher:
         rrf_k: int = 60,
         collection: Optional[str] = None,
         content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
         max_workers: int = 8,
     ):
         """
         Initialize hybrid searcher.
-        
+
         Args:
             backend: Model backend (TorchBackend or MLXBackend)
             storage: Storage backend (LanceDBBackend)
@@ -73,6 +77,10 @@ class HybridSearcher:
             rrf_k: RRF fusion constant
             collection: Optional collection filter
             content_type: Optional content type filter
+            user_id: Optional user namespace filter
+            session_id: Optional session namespace filter
+            project_id: Optional project namespace filter
+            profile: Optional profile namespace filter
             max_workers: ThreadPoolExecutor workers for parallel searches
         """
         self.backend = backend
@@ -82,8 +90,12 @@ class HybridSearcher:
         self.rrf_k = rrf_k
         self.collection = collection
         self.content_type = content_type
+        self.user_id = user_id
+        self.session_id = session_id
+        self.project_id = project_id
+        self.profile = profile
         self.max_workers = max_workers
-    
+
     def _bm25_probe(self, query: str) -> List[SearchResult]:
         """Run initial BM25 probe."""
         return self.storage.search_fts(
@@ -91,8 +103,12 @@ class HybridSearcher:
             limit=self.fts_probe_limit,
             collection=self.collection,
             content_type=self.content_type,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            project_id=self.project_id,
+            profile=self.profile,
         )
-    
+
     def _bm25_search(self, query: str) -> List[SearchResult]:
         """Run BM25 search."""
         return self.storage.search_fts(
@@ -100,8 +116,12 @@ class HybridSearcher:
             limit=self.fts_probe_limit,
             collection=self.collection,
             content_type=self.content_type,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            project_id=self.project_id,
+            profile=self.profile,
         )
-    
+
     def _vector_search(self, query: str) -> List[SearchResult]:
         """Run vector search."""
         vector = self.backend.embed_text(query)
@@ -110,6 +130,10 @@ class HybridSearcher:
             limit=self.fts_probe_limit,
             collection=self.collection,
             content_type=self.content_type,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            project_id=self.project_id,
+            profile=self.profile,
         )
     
     def _expand_query(self, query: str) -> List[Dict[str, str]]:
@@ -174,15 +198,19 @@ class HybridSearcher:
                     limit=self.fts_probe_limit,
                     collection=self.collection,
                     content_type=self.content_type,
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    project_id=self.project_id,
+                    profile=self.profile,
                 ),
                 (vec,)
             ))
-        
+
         # Lexical expansions - BM25 only
         lex_queries = [e["text"] for e in expansions if e["type"] == "lex"] if expansions else []
         for i, lex_q in enumerate(lex_queries[:3]):
             search_tasks.append((f'lex_{i}', self._bm25_search, (lex_q,)))
-        
+
         # Vector expansions
         for i, vec_q in enumerate([e["text"] for e in expansions if e["type"] == "vec"][:3] if expansions else []):
             if vec_q in vectors_by_query:
@@ -194,10 +222,14 @@ class HybridSearcher:
                         limit=self.fts_probe_limit,
                         collection=self.collection,
                         content_type=self.content_type,
+                        user_id=self.user_id,
+                        session_id=self.session_id,
+                        project_id=self.project_id,
+                        profile=self.profile,
                     ),
                     (vec,)
                 ))
-        
+
         # Hyde expansions
         for i, hyde_q in enumerate([e["text"] for e in expansions if e["type"] == "hyde"][:3] if expansions else []):
             if hyde_q in vectors_by_query:
@@ -209,6 +241,10 @@ class HybridSearcher:
                         limit=self.fts_probe_limit,
                         collection=self.collection,
                         content_type=self.content_type,
+                        user_id=self.user_id,
+                        session_id=self.session_id,
+                        project_id=self.project_id,
+                        profile=self.profile,
                     ),
                     (vec,)
                 ))
@@ -408,10 +444,14 @@ def hybrid_query(
     limit: int = 10,
     collection: Optional[str] = None,
     content_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> List[HybridResult]:
     """
     Convenience function for hybrid search.
-    
+
     Args:
         query: Search query
         backend: Model backend (default: get_backend())
@@ -419,24 +459,32 @@ def hybrid_query(
         limit: Max results
         collection: Optional collection filter
         content_type: Optional content type filter
-    
+        user_id: Optional user namespace filter
+        session_id: Optional session namespace filter
+        project_id: Optional project namespace filter
+        profile: Optional profile namespace filter
+
     Returns:
         List of HybridResult objects
     """
     if backend is None:
         from . import get_backend
         backend = get_backend()
-    
+
     if storage is None:
         from . import get_storage
         storage = get_storage()
-    
+
     searcher = HybridSearcher(
         backend=backend,
         storage=storage,
         limit=limit,
         collection=collection,
         content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
     )
-    
+
     return searcher.search(query)

@@ -89,6 +89,10 @@ async def create_server(
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
                         "collection": {"type": "string", "description": "Optional collection filter"},
                         "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
                     },
                     "required": ["query"],
                 },
@@ -103,6 +107,10 @@ async def create_server(
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
                         "collection": {"type": "string", "description": "Optional collection filter"},
                         "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
                     },
                     "required": ["query"],
                 },
@@ -117,6 +125,10 @@ async def create_server(
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
                         "collection": {"type": "string", "description": "Optional collection filter"},
                         "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
                     },
                     "required": ["query"],
                 },
@@ -140,7 +152,11 @@ async def create_server(
                             "default": ["text", "image"]
                         },
                         "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
-                        "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"}
+                        "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"},
+                        "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace"},
+                        "project_id": {"type": "string", "description": "Optional project namespace"},
+                        "profile": {"type": "string", "description": "Optional profile namespace"},
                     },
                 },
             ),
@@ -178,6 +194,10 @@ async def create_server(
                         "path": {"type": "string", "description": "Memory path key within collection"},
                         "text": {"type": "string", "description": "Memory content"},
                         "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                        "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace"},
+                        "project_id": {"type": "string", "description": "Optional project namespace"},
+                        "profile": {"type": "string", "description": "Optional profile namespace"},
                     },
                     "required": ["path", "text"],
                 },
@@ -191,6 +211,10 @@ async def create_server(
                         "path": {"type": "string", "description": "Memory path key within collection"},
                         "text": {"type": "string", "description": "Updated memory content"},
                         "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                        "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace"},
+                        "project_id": {"type": "string", "description": "Optional project namespace"},
+                        "profile": {"type": "string", "description": "Optional profile namespace"},
                     },
                     "required": ["path", "text"],
                 },
@@ -203,6 +227,10 @@ async def create_server(
                     "properties": {
                         "path": {"type": "string", "description": "Memory path key within collection"},
                         "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                        "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace"},
+                        "project_id": {"type": "string", "description": "Optional project namespace"},
+                        "profile": {"type": "string", "description": "Optional profile namespace"},
                     },
                     "required": ["path"],
                 },
@@ -217,7 +245,11 @@ async def create_server(
                         "collection": {"type": "string", "description": "Collection name", "default": "default"},
                         "recursive": {"type": "boolean", "description": "Recursively index subfolders", "default": True},
                         "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
-                        "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"}
+                        "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"},
+                        "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace"},
+                        "project_id": {"type": "string", "description": "Optional project namespace"},
+                        "profile": {"type": "string", "description": "Optional profile namespace"},
                     },
                     "required": ["folder_path"],
                 },
@@ -282,24 +314,33 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     limit = arguments.get("limit", 10)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
-    
-    trace_log("search_start", query=query[:50], limit=limit, collection=collection, content_type=content_type)
-    
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    trace_log("search_start", query=query[:50], limit=limit, collection=collection, content_type=content_type,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+
     if not query:
         return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
-    
+
     searcher = HybridSearcher(
         backend=backend,
         storage=storage,
         limit=limit,
         collection=collection,
         content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
     )
-    
+
     results = searcher.search(query)
-    
+
     trace_log("search_done", query=query[:50], count=len(results))
-    
+
     output = {
         "query": query,
         "mode": backend.get_mode(),
@@ -313,11 +354,15 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
                 "rrf_rank": r.rrf_rank,
                 "source": r.source,
                 "snippet": (r.body or "")[:500] if r.body else None,
+                "user_id": r.user_id,
+                "session_id": r.session_id,
+                "project_id": r.project_id,
+                "profile": r.profile,
             }
             for r in results
         ],
     }
-    
+
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
@@ -327,21 +372,30 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
     limit = arguments.get("limit", 20)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
-    
-    trace_log("search_fts_start", query=query[:50], limit=limit, collection=collection, content_type=content_type)
-    
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    trace_log("search_fts_start", query=query[:50], limit=limit, collection=collection, content_type=content_type,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+
     if not query:
         return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
-    
+
     results = storage.search_fts(
         query=query,
         limit=limit,
         collection=collection,
         content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
     )
-    
+
     trace_log("search_fts_done", query=query[:50], count=len(results))
-    
+
     output = {
         "query": query,
         "count": len(results),
@@ -351,11 +405,15 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
                 "title": r.title,
                 "score": round(r.score, 4),
                 "source": r.source,
+                "user_id": r.user_id,
+                "session_id": r.session_id,
+                "project_id": r.project_id,
+                "profile": r.profile,
             }
             for r in results
         ],
     }
-    
+
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
@@ -365,24 +423,33 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
     limit = arguments.get("limit", 20)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
-    
-    trace_log("search_vec_start", query=query[:50], limit=limit, collection=collection, content_type=content_type)
-    
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    trace_log("search_vec_start", query=query[:50], limit=limit, collection=collection, content_type=content_type,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+
     if not query:
         return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
-    
+
     # Embed query
     vector = backend.embed_text(query)
-    
+
     results = storage.search_vec(
         vector=vector.tolist() if hasattr(vector, 'tolist') else list(vector),
         limit=limit,
         collection=collection,
         content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
     )
-    
+
     trace_log("search_vec_done", query=query[:50], count=len(results))
-    
+
     output = {
         "query": query,
         "count": len(results),
@@ -392,11 +459,15 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
                 "title": r.title,
                 "score": round(r.score, 4),
                 "source": r.source,
+                "user_id": r.user_id,
+                "session_id": r.session_id,
+                "project_id": r.project_id,
+                "profile": r.profile,
             }
             for r in results
         ],
     }
-    
+
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
@@ -411,8 +482,13 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
     content_types = arguments.get("content_types", ["text", "image"])
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
 
-    trace_log("ingest_start", collection=collection, text=bool(text), file_path=file_path, folder_path=folder_path)
+    trace_log("ingest_start", collection=collection, text=bool(text), file_path=file_path, folder_path=folder_path,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     output = storage.ingest(
         collection=collection,
@@ -427,8 +503,12 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
         embed_text_func=backend.embed_text,
         embed_image_func=backend.embed_image,
         model="Qwen3-VL-Embedding-2B",
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
     )
-    
+
     trace_log("ingest_done", collection=collection, indexed_text=output.get("indexed_text", 0), indexed_images=output.get("indexed_images", 0))
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
@@ -500,8 +580,13 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
     path = arguments.get("path", "")
     text = arguments.get("text", "")
     collection = arguments.get("collection", "default")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
 
-    trace_log("memory_add_start", path=path, collection=collection)
+    trace_log("memory_add_start", path=path, collection=collection,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
@@ -512,6 +597,10 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
         collection=collection,
         model="Qwen3-VL-Embedding-2B",
         embed_func=backend.embed_text,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
     )
 
     trace_log("memory_add_done", path=path, hash=content_hash[:8])
@@ -522,6 +611,10 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
         "collection": collection,
         "hash": content_hash,
         "operation": "add",
+        "user_id": user_id,
+        "session_id": session_id,
+        "project_id": project_id,
+        "profile": profile,
     }
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
@@ -531,8 +624,13 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
     path = arguments.get("path", "")
     text = arguments.get("text", "")
     collection = arguments.get("collection", "default")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
 
-    trace_log("memory_update_start", path=path, collection=collection)
+    trace_log("memory_update_start", path=path, collection=collection,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
@@ -543,6 +641,10 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
         collection=collection,
         model="Qwen3-VL-Embedding-2B",
         embed_func=backend.embed_text,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
     )
 
     trace_log("memory_update_done", path=path, hash=content_hash[:8])
@@ -553,6 +655,10 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
         "collection": collection,
         "hash": content_hash,
         "operation": "update",
+        "user_id": user_id,
+        "session_id": session_id,
+        "project_id": project_id,
+        "profile": profile,
     }
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
@@ -561,16 +667,28 @@ async def _handle_memory_delete(arguments: dict, storage) -> list[TextContent]:
     """Handle memory delete."""
     path = arguments.get("path", "")
     collection = arguments.get("collection", "default")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
 
-    trace_log("memory_delete_start", path=path, collection=collection)
+    trace_log("memory_delete_start", path=path, collection=collection,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if not path:
         return [TextContent(type="text", text=json.dumps({"error": "path is required"}))]
 
-    output = storage.delete_memory(path=path, collection=collection)
-    
+    output = storage.delete_memory(
+        path=path,
+        collection=collection,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+    )
+
     trace_log("memory_delete_done", path=path, removed_vectors=output.get("removed_vectors", 0))
-    
+
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
@@ -581,8 +699,13 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
     recursive = arguments.get("recursive", True)
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
 
-    trace_log("index_folder_start", folder_path=folder_path, collection=collection, recursive=recursive)
+    trace_log("index_folder_start", folder_path=folder_path, collection=collection, recursive=recursive,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if not folder_path:
         return [TextContent(type="text", text=json.dumps({"error": "folder_path is required"}))]
@@ -595,10 +718,14 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
         exclude_globs=exclude_globs,
         model="Qwen3-VL-Embedding-2B",
         embed_func=backend.embed_text,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
     )
-    
+
     trace_log("index_folder_done", folder_path=folder_path, indexed=output.get("indexed", 0))
-    
+
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 

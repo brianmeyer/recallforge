@@ -242,6 +242,39 @@ Future support planned for:
 - ChromaDB
 - Qdrant
 
+### Namespace/Profile Filtering
+
+RecallForge supports optional namespace fields for multi-tenant isolation:
+
+- `user_id`: User namespace filter
+- `session_id`: Session namespace filter
+- `project_id`: Project namespace filter
+- `profile`: Profile namespace filter
+
+All memory tools (`memory_add`, `memory_update`, `memory_delete`, `index_folder`, `ingest`) accept these optional fields. Search tools (`search`, `search_fts`, `search_vec`) can filter by these fields.
+
+```python
+# Index with namespace
+storage.upsert_memory(
+    path="notes.md",
+    text="My notes",
+    collection="docs",
+    embed_func=embed,
+    model="Qwen3-VL-Embedding-2B",
+    user_id="alice",
+    project_id="proj123",
+)
+
+# Search with namespace filter
+results = storage.search_fts(
+    query="notes",
+    user_id="alice",
+    project_id="proj123",
+)
+```
+
+This enables multi-user, multi-project, and multi-session isolation within a single RecallForge instance.
+
 ## MCP Tools
 
 When running as an MCP server, use `ingest` as the **primary** tool for agents. It handles text, image, single-file, and folder ingestion in one call.
@@ -262,7 +295,11 @@ Unified ingest entry point.
   "collection": "default",
   "content_types": ["text", "image"],
   "include_globs": ["**/*"],
-  "exclude_globs": ["**/.git/**"]
+  "exclude_globs": ["**/.git/**"],
+  "user_id": "optional user namespace",
+  "session_id": "optional session namespace",
+  "project_id": "optional project namespace",
+  "profile": "optional profile namespace"
 }
 ```
 
@@ -282,7 +319,11 @@ Full hybrid search with all pipeline stages.
   "query": "machine learning algorithms",
   "limit": 10,
   "collection": "docs",
-  "content_type": "text"
+  "content_type": "text",
+  "user_id": "optional user namespace",
+  "session_id": "optional session namespace",
+  "project_id": "optional project namespace",
+  "profile": "optional profile namespace"
 }
 ```
 
@@ -293,7 +334,11 @@ BM25 full-text search only.
 ```json
 {
   "query": "neural networks",
-  "limit": 20
+  "limit": 20,
+  "user_id": "optional user namespace",
+  "session_id": "optional session namespace",
+  "project_id": "optional project namespace",
+  "profile": "optional profile namespace"
 }
 ```
 
@@ -304,7 +349,11 @@ Vector similarity search only.
 ```json
 {
   "query": "document about AI",
-  "limit": 20
+  "limit": 20,
+  "user_id": "optional user namespace",
+  "session_id": "optional session namespace",
+  "project_id": "optional project namespace",
+  "profile": "optional profile namespace"
 }
 ```
 
@@ -339,7 +388,11 @@ Add (or replace) a text memory by path.
 {
   "path": "memory/projects/recallforge.md",
   "text": "Phase 1 MCP memory tools are implemented.",
-  "collection": "default"
+  "collection": "default",
+  "user_id": "optional user namespace",
+  "session_id": "optional session namespace",
+  "project_id": "optional project namespace",
+  "profile": "optional profile namespace"
 }
 ```
 
@@ -351,7 +404,11 @@ Update existing memory text by path without duplicating old vectors.
 {
   "path": "memory/projects/recallforge.md",
   "text": "Phase 1 complete. Added update/delete/index_folder tooling.",
-  "collection": "default"
+  "collection": "default",
+  "user_id": "optional user namespace",
+  "session_id": "optional session namespace",
+  "project_id": "optional project namespace",
+  "profile": "optional profile namespace"
 }
 ```
 
@@ -362,7 +419,11 @@ Deactivate a memory entry and remove associated embeddings.
 ```json
 {
   "path": "memory/projects/recallforge.md",
-  "collection": "default"
+  "collection": "default",
+  "user_id": "optional user namespace",
+  "session_id": "optional session namespace",
+  "project_id": "optional project namespace",
+  "profile": "optional profile namespace"
 }
 ```
 
@@ -376,7 +437,11 @@ Index text files from a folder into memory entries.
   "collection": "default",
   "recursive": true,
   "include_globs": ["**/*.md", "**/*.txt"],
-  "exclude_globs": ["**/.git/**", "**/node_modules/**"]
+  "exclude_globs": ["**/.git/**", "**/node_modules/**"],
+  "user_id": "optional user namespace",
+  "session_id": "optional session namespace",
+  "project_id": "optional project namespace",
+  "profile": "optional profile namespace"
 }
 ```
 
