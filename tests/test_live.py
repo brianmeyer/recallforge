@@ -32,7 +32,10 @@ def backend():
     """Get the model backend (slow - loads models once)."""
     from recallforge import get_backend
     backend = get_backend()
-    backend.warm_up()
+    try:
+        backend.warm_up()
+    except (ImportError, ModuleNotFoundError) as e:
+        pytest.skip(f"Live backend dependencies unavailable: {e}")
     return backend
 
 
@@ -283,7 +286,10 @@ class TestHybridSearchLive:
         # Get embedder-only backend
         os.environ["RECALLFORGE_MODE"] = "embed"
         backend_embed = get_backend()
-        backend_embed._load_embedder()
+        try:
+            backend_embed._load_embedder()
+        except (ImportError, ModuleNotFoundError) as e:
+            pytest.skip(f"Live backend dependencies unavailable: {e}")
         
         for doc in docs:
             storage.index_document(

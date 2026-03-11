@@ -78,6 +78,29 @@ pip install -e ".[mlx]"   # or just: pip install -e .
 
 ## Quick Start
 
+### First-Principles Default (recommended)
+
+Keep it simple and local:
+
+```bash
+# 1) Start MCP server in lightweight mode
+recallforge serve --mode embed
+
+# 2) Add memory/docs/images
+recallforge index ~/Documents --collection default
+
+# 3) Query from CLI (or via MCP client)
+recallforge search "what did I save about autonomous agents?"
+```
+
+For local validation without optional live-model dependencies:
+
+```bash
+pytest -m "not live"
+bash tests/uat/test_mcp_contract.sh
+bash tests/uat/test_cli.sh
+```
+
 ### CLI Usage
 
 ```bash
