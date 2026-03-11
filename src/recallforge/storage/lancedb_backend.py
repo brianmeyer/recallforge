@@ -320,6 +320,7 @@ class LanceDBBackend(StorageBackend):
         self._fts_rebuild_pending = 0
         self._fts_last_rebuild = 0.0
         self._fts_needs_rebuild = False
+        self._bulk_mode = False  # When True, defer all FTS rebuilds until bulk ends
     
     def initialize(self, store_path: Optional[str] = None) -> None:
         """Initialize the LanceDB database."""
@@ -412,15 +413,21 @@ class LanceDBBackend(StorageBackend):
     def _schedule_fts_rebuild(self) -> None:
         """
         Schedule a debounced FTS rebuild.
-        
+
         Instead of rebuilding on every write, we track pending writes
         and rebuild only when threshold is hit or on explicit request.
+
+        In bulk mode, all rebuilds are deferred until bulk mode ends.
         """
         self._fts_rebuild_pending += 1
         self._fts_needs_rebuild = True
-        
-        trace_log("schedule_fts_rebuild", pending=self._fts_rebuild_pending)
-        
+
+        trace_log("schedule_fts_rebuild", pending=self._fts_rebuild_pending, bulk_mode=self._bulk_mode)
+
+        # In bulk mode, defer all rebuilds until bulk ends
+        if self._bulk_mode:
+            return
+
         # Immediate rebuild if threshold exceeded
         if self._fts_rebuild_pending >= self.FTS_REBUILD_PENDING_THRESHOLD:
             self._do_fts_rebuild()
@@ -431,28 +438,43 @@ class LanceDBBackend(StorageBackend):
         """
         now = time.time()
         elapsed = now - self._fts_last_rebuild
-        
+
         # Rate limit: don't rebuild more than once per min interval
         if elapsed < self.FTS_REBUILD_MIN_INTERVAL and self._fts_rebuild_pending < self.FTS_REBUILD_PENDING_THRESHOLD:
             trace_log("fts_rebuild_skipped", reason="rate_limited", elapsed=elapsed)
             return
-        
+
         trace_log("fts_rebuild_executing", pending=self._fts_rebuild_pending)
-        
+
         self._fts_last_rebuild = now
         self._fts_rebuild_pending = 0
         self._fts_needs_rebuild = False
-        
+
         try:
             self.ensure_fts_index(force_rebuild=True)
         except Exception as e:
             logger.error(f"FTS rebuild failed: {e}")
             # Don't re-raise; FTS rebuild failure is non-fatal
-    
+
+    def bulk_mode(self):
+        """
+        Context manager to defer FTS rebuilds during bulk operations.
+
+        Usage:
+            with storage.bulk_mode():
+                for doc in documents:
+                    storage.upsert_memory(...)
+            # FTS rebuild happens once at context exit
+
+        Returns:
+            Context manager that defers FTS rebuilds.
+        """
+        return _BulkModeContext(self)
+
     # =========================================================================
     # Schema Definitions
     # =========================================================================
-    
+
     def _build_embeddings_schema(self) -> pa.Schema:
         """Schema for embeddings table."""
         return pa.schema([
@@ -967,8 +989,11 @@ class LanceDBBackend(StorageBackend):
             logger.warning(f"search_fts: FTS index failed, using BM25 fallback: {e}")
             return self._bm25_fallback(trimmed, limit, collection, content_type, user_id, session_id, project_id, profile)
 
+        # Empty FTS results are normal (no matches), not an error.
+        # Do NOT run full-table BM25 fallback - only use fallback on true FTS errors.
         if not results:
-            return self._bm25_fallback(trimmed, limit, collection, content_type, user_id, session_id, project_id, profile)
+            trace_log("search_fts_empty", query=trimmed[:50])
+            return []
 
         # Normalize scores
         max_score = max(r.get("_score", 0) for r in results) or 1
@@ -1402,46 +1427,46 @@ class LanceDBBackend(StorageBackend):
         skipped = 0
         errors = 0
 
-        iterator = root.rglob("*") if recursive else root.glob("*")
-        for file_path in iterator:
-            if not file_path.is_file():
-                continue
+        # Use bulk mode to defer FTS rebuilds until the end
+        with self.bulk_mode():
+            iterator = root.rglob("*") if recursive else root.glob("*")
+            for file_path in iterator:
+                if not file_path.is_file():
+                    continue
 
-            rel = file_path.relative_to(root).as_posix()
-            if include and not any(fnmatch.fnmatch(rel, pattern) for pattern in include):
-                skipped += 1
-                continue
-            if exclude and any(fnmatch.fnmatch(rel, pattern) for pattern in exclude):
-                skipped += 1
-                continue
-            if not self._is_text_file(file_path):
-                skipped += 1
-                continue
+                rel = file_path.relative_to(root).as_posix()
+                if include and not any(fnmatch.fnmatch(rel, pattern) for pattern in include):
+                    skipped += 1
+                    continue
+                if exclude and any(fnmatch.fnmatch(rel, pattern) for pattern in exclude):
+                    skipped += 1
+                    continue
+                if not self._is_text_file(file_path):
+                    skipped += 1
+                    continue
 
-            text = self._read_text_robust(file_path)
-            if text is None or not text.strip():
-                skipped += 1
-                continue
+                text = self._read_text_robust(file_path)
+                if text is None or not text.strip():
+                    skipped += 1
+                    continue
 
-            try:
-                self.upsert_memory(
-                    path=rel,
-                    text=text,
-                    collection=collection,
-                    embed_func=embed_func,
-                    model=model,
-                    user_id=user_id,
-                    session_id=session_id,
-                    project_id=project_id,
-                    profile=profile,
-                )
-                indexed += 1
-            except Exception as e:
-                logger.error(f"index_folder: failed to index {rel}: {e}")
-                errors += 1
-
-        # Force FTS rebuild at end of batch
-        self._do_fts_rebuild()
+                try:
+                    self.upsert_memory(
+                        path=rel,
+                        text=text,
+                        collection=collection,
+                        embed_func=embed_func,
+                        model=model,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                    )
+                    indexed += 1
+                except Exception as e:
+                    logger.error(f"index_folder: failed to index {rel}: {e}")
+                    errors += 1
+        # FTS rebuild happens once at context exit
 
         trace_log("index_folder_done", folder=str(root), indexed=indexed, skipped=skipped, errors=errors)
         return {
@@ -1558,49 +1583,49 @@ class LanceDBBackend(StorageBackend):
                 summary["errors"] += 1
                 mark(item_path, "image" if is_image else "text", "error", str(e))
 
-        if text is not None:
-            if "text" not in allowed:
-                summary["skipped"] += 1
-                mark(path or "inline", "text", "skipped")
-            else:
-                text_path = (path or "inline").strip() or "inline"
-                self.upsert_memory(
-                    path=text_path,
-                    text=text,
-                    collection=collection,
-                    embed_func=embed_text_func,
-                    model=model,
-                    user_id=user_id,
-                    session_id=session_id,
-                    project_id=project_id,
-                    profile=profile,
-                )
-                summary["indexed_text"] += 1
-                mark(text_path, "text", "indexed")
-
-        if file_path:
-            ingest_single(Path(file_path))
-
-        if folder_path:
-            root = Path(folder_path).expanduser().resolve()
-            if not root.exists() or not root.is_dir():
-                raise ValueError(f"Folder not found: {folder_path}")
-            iterator = root.rglob("*") if recursive else root.glob("*")
-            for candidate in iterator:
-                if not candidate.is_file():
-                    continue
-                rel = candidate.relative_to(root).as_posix()
-                if not self._matches_globs(rel, include_globs, exclude_globs):
+        # Use bulk mode to defer FTS rebuilds until the end
+        with self.bulk_mode():
+            if text is not None:
+                if "text" not in allowed:
                     summary["skipped"] += 1
-                    mark(rel, "unknown", "skipped")
-                    continue
-                ingest_single(candidate, rel)
+                    mark(path or "inline", "text", "skipped")
+                else:
+                    text_path = (path or "inline").strip() or "inline"
+                    self.upsert_memory(
+                        path=text_path,
+                        text=text,
+                        collection=collection,
+                        embed_func=embed_text_func,
+                        model=model,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                    )
+                    summary["indexed_text"] += 1
+                    mark(text_path, "text", "indexed")
 
-        if text is None and not file_path and not folder_path:
-            raise ValueError("Provide one of: text, file_path, or folder_path")
+            if file_path:
+                ingest_single(Path(file_path))
 
-        # Force FTS rebuild at end of batch
-        self._do_fts_rebuild()
+            if folder_path:
+                root = Path(folder_path).expanduser().resolve()
+                if not root.exists() or not root.is_dir():
+                    raise ValueError(f"Folder not found: {folder_path}")
+                iterator = root.rglob("*") if recursive else root.glob("*")
+                for candidate in iterator:
+                    if not candidate.is_file():
+                        continue
+                    rel = candidate.relative_to(root).as_posix()
+                    if not self._matches_globs(rel, include_globs, exclude_globs):
+                        summary["skipped"] += 1
+                        mark(rel, "unknown", "skipped")
+                        continue
+                    ingest_single(candidate, rel)
+
+            if text is None and not file_path and not folder_path:
+                raise ValueError("Provide one of: text, file_path, or folder_path")
+        # FTS rebuild happens once at context exit
 
         summary["total_seen"] = summary["indexed_text"] + summary["indexed_images"] + summary["skipped"] + summary["errors"]
         trace_log("ingest_done", collection=collection, indexed_text=summary["indexed_text"], indexed_images=summary["indexed_images"])
@@ -1684,6 +1709,30 @@ class LanceDBBackend(StorageBackend):
         
         # Schedule debounced FTS rebuild
         self._schedule_fts_rebuild()
-        
+
         trace_log("index_image_done", path=path, hash=content_hash[:8])
         return content_hash
+
+
+class _BulkModeContext:
+    """Context manager for bulk mode FTS rebuild deferral."""
+
+    def __init__(self, backend: "LanceDBBackend"):
+        self._backend = backend
+        self._was_in_bulk = False
+
+    def __enter__(self):
+        self._was_in_bulk = self._backend._bulk_mode
+        self._backend._bulk_mode = True
+        trace_log("bulk_mode_enter", was_in_bulk=self._was_in_bulk)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._backend._bulk_mode = self._was_in_bulk
+        trace_log("bulk_mode_exit", needs_rebuild=self._backend._fts_needs_rebuild)
+
+        # Trigger a single rebuild at the end of bulk mode if needed
+        if not self._was_in_bulk and self._backend._fts_needs_rebuild:
+            self._backend._do_fts_rebuild()
+
+        return False  # Don't suppress exceptions

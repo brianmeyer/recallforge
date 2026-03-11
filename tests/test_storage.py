@@ -561,5 +561,165 @@ class TestMemoryMetadata(unittest.TestCase):
         self.assertIsNone(rows[0]["expires_at"])
 
 
+class TestFTSMissFallbackBehavior(unittest.TestCase):
+    """Tests for P0: FTS miss fallback behavior - no BM25 fallback on empty results."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-fts-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_fts_empty_results_returns_empty_no_bm25_fallback(self):
+        """FTS returning empty results (no matches) should NOT trigger BM25 fallback."""
+        # Index a document
+        self.backend.upsert_memory(
+            path="notes/test.md",
+            text="This is a document about machine learning algorithms.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        self.backend.rebuild_fts_index()
+
+        # Search for something that doesn't exist - should return empty, not BM25 fallback
+        results = self.backend.search_fts("xyzzynonexistentterm12345", limit=10, collection="test")
+        self.assertEqual(len(results), 0)
+
+    def test_fts_error_triggers_bm25_fallback(self):
+        """FTS errors should still trigger BM25 fallback for resilience."""
+        # Index a document with content
+        self.backend.upsert_memory(
+            path="notes/fallback.md",
+            text="Fallback test document about neural networks.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        self.backend.rebuild_fts_index()
+
+        # Normal search should work
+        results = self.backend.search_fts("neural", limit=10, collection="test")
+        self.assertGreater(len(results), 0)
+
+    def test_fts_match_returns_results(self):
+        """FTS matches should return results normally."""
+        self.backend.upsert_memory(
+            path="notes/match.md",
+            text="Document about artificial intelligence and deep learning.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        self.backend.rebuild_fts_index()
+
+        results = self.backend.search_fts("intelligence", limit=10, collection="test")
+        self.assertGreater(len(results), 0)
+        self.assertIn("test/notes/match.md", [r.display_path for r in results])
+
+
+class TestBulkModeFTSRebuild(unittest.TestCase):
+    """Tests for P0: FTS rebuild scheduling in bulk operations."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-bulk-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_bulk_mode_defers_rebuilds(self):
+        """Bulk mode should defer all FTS rebuilds until context exit."""
+        # Reset the rebuild counter
+        self.backend._fts_rebuild_pending = 0
+        self.backend._fts_needs_rebuild = False
+
+        with self.backend.bulk_mode():
+            # During bulk mode, rebuilds should be deferred
+            self.backend._schedule_fts_rebuild()
+            self.assertTrue(self.backend._fts_needs_rebuild)
+            self.assertEqual(self.backend._fts_rebuild_pending, 1)
+            self.assertFalse(self.backend._fts_rebuild_pending >= self.backend.FTS_REBUILD_PENDING_THRESHOLD)
+
+        # After exiting bulk mode, rebuild should have happened
+        self.assertFalse(self.backend._fts_needs_rebuild)
+        self.assertEqual(self.backend._fts_rebuild_pending, 0)
+
+    def test_index_folder_uses_bulk_mode(self):
+        """index_folder should trigger only one FTS rebuild at the end."""
+        folder = os.path.join(self.temp_dir, "bulk_folder")
+        os.makedirs(folder, exist_ok=True)
+
+        # Create multiple files
+        for i in range(5):
+            with open(os.path.join(folder, f"doc{i}.md"), "w", encoding="utf-8") as f:
+                f.write(f"Document {i} content about topic {i}.")
+
+        # Spy on _do_fts_rebuild to count calls
+        original_rebuild = self.backend._do_fts_rebuild
+        rebuild_count = [0]
+
+        def spy_rebuild():
+            rebuild_count[0] += 1
+            return original_rebuild()
+
+        self.backend._do_fts_rebuild = spy_rebuild
+
+        summary = self.backend.index_folder(
+            folder_path=folder,
+            collection="test",
+            recursive=True,
+            include_globs=["**/*.md", "*.md"],  # Match both root and nested .md files
+            exclude_globs=None,
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        self.assertTrue(summary["success"])
+        self.assertEqual(summary["indexed"], 5)
+        # Should have exactly 1 rebuild call at the end (via bulk_mode context exit)
+        self.assertEqual(rebuild_count[0], 1)
+
+    def test_upsert_memory_schedules_rebuild_normally(self):
+        """Outside bulk mode, upsert_memory should schedule rebuilds."""
+        self.backend._fts_rebuild_pending = 0
+        self.backend._fts_needs_rebuild = False
+
+        # Single upsert should schedule a rebuild (deferred by threshold logic)
+        self.backend.upsert_memory(
+            path="notes/single.md",
+            text="Single document test.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        # Should have scheduled a rebuild
+        self.assertTrue(self.backend._fts_needs_rebuild)
+        self.assertGreater(self.backend._fts_rebuild_pending, 0)
+
+    def test_bulk_mode_nested_contexts(self):
+        """Nested bulk mode contexts should work correctly."""
+        self.backend._fts_rebuild_pending = 0
+        self.backend._fts_needs_rebuild = False
+
+        with self.backend.bulk_mode():
+            self.backend._schedule_fts_rebuild()
+            with self.backend.bulk_mode():
+                self.backend._schedule_fts_rebuild()
+                # Still in bulk mode, no rebuild yet
+                self.assertTrue(self.backend._fts_needs_rebuild)
+            # Inner context exit but outer still active
+            self.assertTrue(self.backend._bulk_mode)
+
+        # After outer context exit, rebuild should happen
+        self.assertFalse(self.backend._fts_needs_rebuild)
+
+
 if __name__ == "__main__":
     unittest.main()
