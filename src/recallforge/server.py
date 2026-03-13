@@ -363,46 +363,157 @@ async def create_server(
                     },
                 },
             ),
+            Tool(
+                name="batch",
+                description="Execute multiple RecallForge operations in a single call",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "operations": {
+                            "type": "array",
+                            "description": "List of operations to execute (max 20)",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "tool": {"type": "string", "description": "Tool name to invoke"},
+                                    "arguments": {"type": "object", "description": "Arguments for the tool"},
+                                },
+                                "required": ["tool", "arguments"],
+                            },
+                        },
+                    },
+                    "required": ["operations"],
+                },
+            ),
         ]
     
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent | ImageContent | EmbeddedResource]:
         """Execute a tool."""
         try:
-            if name == "search":
-                return await _handle_search(arguments, backend, storage)
-            elif name == "search_fts":
-                return await _handle_search_fts(arguments, storage)
-            elif name == "search_vec":
-                return await _handle_search_vec(arguments, backend, storage)
-            elif name == "ingest":
-                return await _handle_ingest(arguments, backend, storage)
-            elif name == "index_document":
-                return await _handle_index_document(arguments, backend, storage)
-            elif name == "index_image":
-                return await _handle_index_image(arguments, backend, storage)
-            elif name == "memory_add":
-                return await _handle_memory_add(arguments, backend, storage)
-            elif name == "memory_update":
-                return await _handle_memory_update(arguments, backend, storage)
-            elif name == "memory_delete":
-                return await _handle_memory_delete(arguments, storage)
-            elif name == "index_folder":
-                return await _handle_index_folder(arguments, backend, storage)
-            elif name == "status":
-                return await _handle_status(backend, storage)
-            elif name == "rebuild_fts":
-                return await _handle_rebuild_fts(storage)
-            elif name == "list_collections":
-                return await _handle_list_collections(arguments, storage)
-            elif name == "list_namespaces":
-                return await _handle_list_namespaces(arguments, storage)
-            else:
-                raise ValueError(f"Unknown tool: {name}")
+            if name == "batch":
+                return await _handle_batch(arguments, backend, storage)
+            return await _dispatch_tool(name, arguments, backend, storage)
         except Exception as e:
             return _error_response("INTERNAL_ERROR", str(e), {"exception_type": type(e).__name__})
     
     return server
+
+
+_MAX_BATCH_SIZE = 20
+
+
+async def _dispatch_tool(
+    name: str,
+    arguments: dict,
+    backend,
+    storage,
+) -> list[TextContent | ImageContent | EmbeddedResource]:
+    """Route a single tool call to the appropriate handler."""
+    if name == "search":
+        return await _handle_search(arguments, backend, storage)
+    elif name == "search_fts":
+        return await _handle_search_fts(arguments, storage)
+    elif name == "search_vec":
+        return await _handle_search_vec(arguments, backend, storage)
+    elif name == "ingest":
+        return await _handle_ingest(arguments, backend, storage)
+    elif name == "index_document":
+        return await _handle_index_document(arguments, backend, storage)
+    elif name == "index_image":
+        return await _handle_index_image(arguments, backend, storage)
+    elif name == "memory_add":
+        return await _handle_memory_add(arguments, backend, storage)
+    elif name == "memory_update":
+        return await _handle_memory_update(arguments, backend, storage)
+    elif name == "memory_delete":
+        return await _handle_memory_delete(arguments, storage)
+    elif name == "index_folder":
+        return await _handle_index_folder(arguments, backend, storage)
+    elif name == "status":
+        return await _handle_status(backend, storage)
+    elif name == "rebuild_fts":
+        return await _handle_rebuild_fts(storage)
+    elif name == "list_collections":
+        return await _handle_list_collections(arguments, storage)
+    elif name == "list_namespaces":
+        return await _handle_list_namespaces(arguments, storage)
+    else:
+        raise ValueError(f"Unknown tool: {name}")
+
+
+async def _handle_batch(
+    arguments: dict,
+    backend,
+    storage,
+) -> list[TextContent]:
+    """Execute multiple RecallForge operations in a single call."""
+    operations = arguments.get("operations")
+    if not isinstance(operations, list):
+        return [TextContent(type="text", text=json.dumps({"error": "operations must be a list"}))]
+
+    if len(operations) > _MAX_BATCH_SIZE:
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {"error": f"Batch size {len(operations)} exceeds maximum of {_MAX_BATCH_SIZE}"}
+                ),
+            )
+        ]
+
+    batch_results = []
+    succeeded = 0
+    failed = 0
+
+    for i, op in enumerate(operations):
+        tool_name = op.get("tool", "")
+        op_args = op.get("arguments", {})
+
+        # Reject nested batch calls
+        if tool_name == "batch":
+            batch_results.append({
+                "index": i,
+                "tool": tool_name,
+                "status": "error",
+                "result": {"error": "Nested batch operations are not allowed"},
+            })
+            failed += 1
+            continue
+
+        try:
+            content_list = await _dispatch_tool(tool_name, op_args, backend, storage)
+            # Unwrap the first TextContent result into a parsed dict when possible
+            if content_list and hasattr(content_list[0], "text"):
+                try:
+                    result_payload = json.loads(content_list[0].text)
+                except (json.JSONDecodeError, AttributeError):
+                    result_payload = content_list[0].text
+            else:
+                result_payload = None
+            batch_results.append({
+                "index": i,
+                "tool": tool_name,
+                "status": "success",
+                "result": result_payload,
+            })
+            succeeded += 1
+        except Exception as exc:
+            batch_results.append({
+                "index": i,
+                "tool": tool_name,
+                "status": "error",
+                "result": {"error": str(exc)},
+            })
+            failed += 1
+
+    output = {
+        "batch_results": batch_results,
+        "total": len(operations),
+        "succeeded": succeeded,
+        "failed": failed,
+    }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
 async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]:
