@@ -22,6 +22,7 @@ This roadmap is honest about where RecallForge is, where it's going, and what's 
 - **Debug logging** — Structured JSON logs at each pipeline stage for local tracing and performance analysis.
 
 ### Collections & Query
+- **Multimodal query expansion** — When searching with image/video + text, expand the text portion through the query expander. Long-term: VLM-based expansion that captions visual content into searchable text.
 - **Intent-aware query steering** — Allow optional `intent` parameter that pre-weights retrieval strategies (e.g., `intent="exact_lookup"` boosts BM25, `intent="semantic"` prioritizes vector).
 - **Collection management API** — Add, remove, and rename collections without rebuilding the entire index.
 
