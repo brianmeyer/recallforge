@@ -26,15 +26,13 @@ fi
 export RECALLFORGE_STORE_PATH="${UAT_STORE}"
 export UAT_VIDEO_USE_LIVE="${USE_LIVE_BACKEND}"
 
-VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
-    "${UAT_STORE}/sample_video.mp4" \
-    "${CORPUS_DIR}/images/food_pasta_dish.png" \
-    "${CORPUS_DIR}/images/forest_landscape.png" \
-    "${CORPUS_DIR}/images/whiteboard_architecture.png")
-
-export UAT_VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
-export UAT_VIDEO_FFMPEG=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read())["ffmpeg_available"] else "0")' <<<"$VIDEO_META")
-export UAT_VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
+export UAT_VIDEO_PATH="${CORPUS_DIR}/videos/whiteboard_session.mp4"
+export UAT_VIDEO_FFMPEG=0
+if command -v ffmpeg >/dev/null 2>&1; then
+    export UAT_VIDEO_FFMPEG=1
+fi
+# Corpus videos are committed real MP4s
+export UAT_VIDEO_REAL=1
 export UAT_VIDEO_IMAGE="${CORPUS_DIR}/images/whiteboard_architecture.png"
 
 python3 <<'PYEOF'
@@ -173,8 +171,8 @@ else:
 
 print("\n\033[0;36m--- Retrieval Matrix ---\033[0m\n")
 
-expected_transcript = "sample_video.mp4::transcript:"
-expected_frame = "sample_video.mp4::frame:"
+expected_transcript = "whiteboard_session.mp4::transcript:"
+expected_frame = "whiteboard_session.mp4::frame:"
 expected_video = VIDEO_PATH
 query_text = "whiteboard architecture diagram from a meeting"
 

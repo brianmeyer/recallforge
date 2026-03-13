@@ -40,22 +40,20 @@ else
     exit 0
 fi
 
-subsection "Generate Synthetic Video"
+subsection "Corpus Video Fixture"
 
-VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
-    "${UAT_STORE}/sample_video.mp4" \
-    "${CORPUS_DIR}/images/food_pasta_dish.png" \
-    "${CORPUS_DIR}/images/forest_landscape.png" \
-    "${CORPUS_DIR}/images/whiteboard_architecture.png")
-
-VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
-FFMPEG_AVAILABLE=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read())["ffmpeg_available"] else "0")' <<<"$VIDEO_META")
-VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
+VIDEO_PATH="${CORPUS_DIR}/videos/whiteboard_session.mp4"
+FFMPEG_AVAILABLE=0
+if command -v ffmpeg >/dev/null 2>&1; then
+    FFMPEG_AVAILABLE=1
+fi
+# Corpus videos are committed real MP4s
+VIDEO_REAL=1
 
 if [[ -f "$VIDEO_PATH" ]]; then
-    pass "synthetic video fixture created"
+    pass "corpus video fixture present"
 else
-    fail "synthetic video fixture created"
+    fail "corpus video fixture present"
 fi
 
 subsection "CLI Video Index"
@@ -75,7 +73,7 @@ OUTPUT=$(recallforge search "whiteboard architecture diagram from a meeting" \
     --content-type text \
     --store-path "$UAT_STORE" 2>&1 || true)
 
-if echo "$OUTPUT" | grep -q "sample_video.mp4::transcript:"; then
+if echo "$OUTPUT" | grep -q "whiteboard_session.mp4::transcript:"; then
     pass "video transcript assets searchable via CLI"
 else
     fail "video transcript assets searchable via CLI"
@@ -164,7 +162,7 @@ if [[ "$FFMPEG_AVAILABLE" == "1" ]]; then
         --collection video_cli_test \
         --content-type image \
         --store-path "$UAT_STORE" 2>&1 || true)
-    if echo "$OUTPUT" | grep -q "sample_video.mp4::frame:"; then
+    if echo "$OUTPUT" | grep -q "whiteboard_session.mp4::frame:"; then
         pass "video frames retrievable via CLI image query"
     else
         fail "video frames retrievable via CLI image query"
