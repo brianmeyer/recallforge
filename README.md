@@ -12,12 +12,14 @@ Search text, images, documents, and video in one unified query. Type "whiteboard
 # 1. Install
 pip install recallforge
 
-# 2. Index something
+# 2. Index anything — text, images, documents, video
 recallforge index ./photos ./docs
+recallforge index ~/Movies/demo.mp4
 
-# 3. Search
+# 3. Search any modality
 recallforge search "whiteboard diagram from last meeting"
 recallforge search --image ./photos/whiteboard.png
+recallforge search --video ~/Movies/demo.mp4
 ```
 
 That's it. RecallForge auto-detects MLX on Apple Silicon, PyTorch elsewhere.
@@ -30,7 +32,7 @@ Run as a Model Context Protocol server for AI agents:
 recallforge serve --mode embed --backend mlx --quantize 4bit
 ```
 
-Exposes **12 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`, `status`, `rebuild_fts`.
+Exposes **17 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
 
 Configure in Claude Desktop:
 
@@ -50,9 +52,9 @@ Configure in Claude Desktop:
 - **Cross-modal search:** Text↔Text, Text↔Image, Image↔Text, Image↔Image, Video↔Text, Video↔Image, Video↔Video
 - **Shared embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
 - **3-stage pipeline:** Embedding → Reranking → Query expansion (all multimodal)
-- **Runs anywhere:** MLX 4-bit on Apple Silicon (~2GB), PyTorch on CUDA/MPS/CPU
+- **Runs anywhere:** MLX 4-bit on Apple Silicon (~1.7GB RAM), PyTorch on CUDA/MPS/CPU
 - **Fast:** Cold start 3.8s, warm search 161ms (MLX 4-bit)
-- **Tiered modes:** embed (~2GB), hybrid (~4GB), full (~8GB) — pick your tradeoff
+- **Tiered modes:** embed (~1.7GB), hybrid (~3.4GB), full (~4.4GB) — pick your tradeoff
 - **100% local:** Your data never leaves your machine
 
 ## Performance
@@ -61,7 +63,7 @@ Configure in Claude Desktop:
 |--------|-----------|--------------|
 | Warm search | 161ms | 414ms |
 | Cold start | 3.8s | ~36s |
-| Memory (embed) | ~2GB | ~4-8GB |
+| Memory (embed) | ~1.7GB | ~4GB |
 
 ## Installation
 
@@ -84,9 +86,9 @@ pip install -e ".[mlx]"
 
 | Mode | Memory | Models | Use Case |
 |------|--------|--------|----------|
-| `embed` | ~2GB | Embedder only | Memory-constrained, fast searches |
-| `hybrid` | ~4GB | + Reranker | Balanced quality and memory |
-| `full` | ~8GB | + Query Expander | Maximum retrieval quality |
+| `embed` | ~1.7GB | Embedder only | Memory-constrained, fast searches |
+| `hybrid` | ~3.4GB | + Reranker | Balanced quality and memory |
+| `full` | ~4.4GB | + Query Expander | Maximum retrieval quality |
 
 ```bash
 recallforge serve --mode embed   # minimal
@@ -174,6 +176,10 @@ Full hybrid search with all pipeline stages:
 - `index_folder` — Batch index a folder
 - `status` — Server health check
 - `rebuild_fts` — Rebuild full-text index
+- `list_collections` — List all collections
+- `list_namespaces` — List namespace combinations
+- `batch` — Execute multiple operations in one call
+- `get_config` / `set_config` — Inspect and adjust runtime config
 
 ## Configuration
 
@@ -191,7 +197,7 @@ RecallForge
 ├── backends/          # Model backends (MLX, PyTorch)
 ├── storage/          # LanceDB + Tantivy FTS
 ├── search.py         # Hybrid search pipeline
-├── server.py         # MCP server (12 tools)
+├── server.py         # MCP server (17 tools)
 ├── documents.py      # PDF/DOCX/PPTX extraction
 ├── video.py          # Frame/transcript extraction
 └── cli.py            # CLI interface
