@@ -157,6 +157,19 @@ class TestVectorSearch(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].filepath, "sample_video.mp4")
 
+    def test_search_video_raises_when_backend_lacks_support(self):
+        """Backend without callable embed_video should raise NotImplementedError."""
+
+        class NoVideoBackend(StubBackend):
+            embed_video = None  # Override to non-callable
+
+        backend = NoVideoBackend()
+        storage = StubStorage(vec_results=[])
+        searcher = HybridSearcher(backend=backend, storage=storage)
+
+        with self.assertRaises(NotImplementedError):
+            searcher.search_video("sample_video.mp4")
+
 
 class TestStrongSignalDetected(unittest.TestCase):
     def test_no_results_no_signal(self):
