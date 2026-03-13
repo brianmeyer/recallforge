@@ -1,3 +1,0 @@
-[submodule "Qwen3-VL-Embedding"]
-	path = Qwen3-VL-Embedding
-	url = https://github.com/QwenLM/Qwen3-VL-Embedding.git
