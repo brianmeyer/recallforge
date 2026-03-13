@@ -78,6 +78,33 @@ Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
 | Text → Image | 23.6% | 36.8% | 46.4% |
 | Image → Text | 30.0% | 42.0% | 54.0% |
 
+## How RecallForge compares
+
+| Capability | RecallForge | Chroma | Mem0 | Qdrant | Weaviate |
+|------------|-------------|--------|------|--------|----------|
+| Cross-modal search | ✅ Native | ✅ OpenCLIP | ❌ Text only | ❌ | ✅ CLIP modules |
+| Video support | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
+| Query expansion | ✅ Multimodal | ❌ | ❌ | ❌ | ✅ Generative |
+| MCP-native | ✅ 17 tools | ❌ | ❌ | ❌ | ❌ |
+| 100% local | ✅ | ✅ | ⚠️ Cloud default | ✅ | ✅ Docker |
+| Apple Silicon optimized | ✅ MLX 4-bit | ❌ | ❌ | ❌ | ❌ |
+| Cloud option | ❌ | ✅ | ✅ | ✅ | ✅ |
+| JS/TS SDK | ❌ | ✅ | ✅ | ✅ | ✅ |
+
+**Use RecallForge when:** You need multimodal memory for AI agents that runs entirely on your machine, especially on Apple Silicon. One search across text, images, documents, and video.
+
+**Use something else when:** You need cloud hosting, massive scale (millions+ vectors), or a JS/TS-first ecosystem.
+
+## Search modes at a glance
+
+| Mode | Models loaded | Memory (MLX 4-bit) | Quality | Best for |
+|------|--------------|-------------------|---------|----------|
+| `embed` | Embedder | ~1.7GB | Good | Memory-constrained, fast searches |
+| `hybrid` | + Reranker | ~3.4GB | Better | Balanced quality and memory |
+| `full` | + Query Expander | ~4.4GB | Best | Maximum retrieval quality |
+
 ## Installation
 
 RecallForge requires a backend for inference. Choose the right one for your platform:
@@ -102,16 +129,10 @@ pip install -e ".[mlx]"
 
 ## Tiered Search Modes
 
-| Mode | Memory | Models | Use Case |
-|------|--------|--------|----------|
-| `embed` | ~1.7GB | Embedder only | Memory-constrained, fast searches |
-| `hybrid` | ~3.4GB | + Reranker | Balanced quality and memory |
-| `full` | ~4.4GB | + Query Expander | Maximum retrieval quality |
-
 ```bash
-recallforge serve --mode embed   # minimal
-recallforge serve --mode hybrid  # balanced
-recallforge serve --mode full    # best quality (default)
+recallforge serve --mode embed   # minimal (~1.7GB)
+recallforge serve --mode hybrid  # balanced (~3.4GB)
+recallforge serve --mode full    # best quality (~4.4GB, default)
 ```
 
 ## CLI Usage
