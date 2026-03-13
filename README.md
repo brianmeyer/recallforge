@@ -1,177 +1,36 @@
 # RecallForge
 
+![CI Status](https://img.shields.io/badge/CI-pending-yellow) ![PyPI](https://img.shields.io/badge/PyPI-coming_soon-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Python](https://img.shields.io/badge/Python-3.12+-blue)
+
 **Every modality, one search. Local first.**
 
-Images, text, office documents, and video-derived assets live in the same search surface. Search locally. Nothing leaves your machine.
+Search text, images, documents, and video in one unified query. Type "whiteboard diagram from last meeting" to find the photo. Drop an image to find related notes. Index `pdf`/`docx`/`pptx` locally for agent memory. All embeddings stay on your machine.
 
-![RecallForge Architecture](docs/architecture.png)
-
-Type a text query, find the relevant photo. Submit an image, find related notes. Submit a video, find related clips, frames, or transcript chunks. Index `pdf` / `docx` / `pptx` locally for agent memory. RecallForge puts text, images, and video into a shared Qwen3-VL embedding space so cross-modal retrieval just works.
+## Quick Start (30 seconds)
 
 ```bash
-pip install recallforge            # auto-detects: MLX on Apple Silicon, PyTorch elsewhere
-pip install recallforge[mlx]       # force MLX backend (Apple Silicon)
-pip install recallforge[cuda]      # force CUDA backend (NVIDIA GPU)
-pip install recallforge[docs]      # richer PDF extraction
-```
-
-```bash
-recallforge index ./photos ./docs  # index images and text together
-recallforge index ./documents/board-deck.pptx ./documents/notes.docx
-recallforge index ./clips/demo.mp4  # ingest video transcript + frames
-recallforge search "whiteboard diagram from last meeting"
-recallforge search "photo of pasta dish on a white plate"
-recallforge search --image ./photos/whiteboard.png
-recallforge search --video ./clips/demo.mp4
-```
-
-## What makes RecallForge different
-
-- **Cross-modal search across text, image, and video:** Text→Text, Text→Image, Image→Text, Image→Image, Video→Text, Video→Image, Video→Video
-- **Shared vision-language embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
-- **3-stage retrieval pipeline:** embedding → reranking → query expansion (all multimodal)
-- **Runs on anything:** MLX 4-bit on Apple Silicon (~2GB), PyTorch fp16 on CUDA/MPS/CPU. Auto-detects the best backend.
-- **Fast:** 161ms warm search (MLX), 414ms (PyTorch). Cold start 3.8s on MLX 4-bit.
-- **Pick your tradeoff:** embed mode (1 model, ~2GB), hybrid (+ reranker, ~4GB), full (+ query expansion, ~8GB)
-- **MCP server** for agent/tool integration
-- **Local-first document ingest:** built-in `docx` / `pptx`, optional richer `pdf` parsing
-- **100% local:** All models run on-device. Your data never leaves your machine.
-- **Swappable storage:** LanceDB default, ChromaDB and Qdrant coming
-
-## Attribution
-
-**RecallForge is inspired by [QMD](https://github.com/tobil/qmd) by [Tobi](https://github.com/tobil).**
-
-QMD pioneered the multi-stage retrieval pipeline: embedding, reranking, and query expansion working together for high-quality search. RecallForge takes that pattern into the vision-language domain with cross-modal retrieval, multi-backend support, and tiered resource modes. Huge thanks to Tobi for the original architecture that made this possible.
-
----
-
-## Features
-
-- **Cross-Modal Search**: Query text, images, or raw video against the same local corpus
-- **Hybrid Search**: Combines BM25 + vector search with RRF fusion
-- **Query Expansion**: Generates lexical, vector, and HyDE variants
-- **Cross-Encoder Reranking**: Refines results with joint query-document scoring
-- **Multi-Backend**: PyTorch (CUDA/MPS/CPU) or MLX (Apple Silicon)
-- **Tiered Modes**: Choose your memory/quality tradeoff
-- **MCP Integration**: Use as a Model Context Protocol server
-
-## Installation
-
-```bash
+# 1. Install
 pip install recallforge
+
+# 2. Index something
+recallforge index ./photos ./docs
+
+# 3. Search
+recallforge search "whiteboard diagram from last meeting"
+recallforge search --image ./photos/whiteboard.png
 ```
 
-RecallForge auto-detects the best backend for your hardware:
-- **Apple Silicon** → MLX 4-bit (fastest, ~2GB memory)
-- **NVIDIA GPU** → PyTorch/CUDA
-- **Everything else** → PyTorch/CPU
+That's it. RecallForge auto-detects MLX on Apple Silicon, PyTorch elsewhere.
 
-To force a specific backend, install the extra:
+## MCP Server
+
+Run as a Model Context Protocol server for AI agents:
 
 ```bash
-pip install recallforge[mlx]       # force MLX (Apple Silicon only)
-pip install recallforge[cuda]      # force CUDA (NVIDIA only)
-pip install recallforge[docs]      # richer PDF extraction
+recallforge serve --mode embed --backend mlx --quantize 4bit
 ```
 
-Video ingest extracts keyframes when `ffmpeg` and `ffprobe` are installed. Transcript sidecars (`.srt`, `.vtt`, `.txt`) are indexed even when those tools are absent.
-Document ingest extracts `docx` and `pptx` locally using built-in OOXML parsing. PDF ingest works with a lightweight fallback parser by default and improves when `recallforge[docs]` is installed.
-
-### From Source
-
-```bash
-git clone https://github.com/brianmeyer/recallforge.git
-cd recallforge
-pip install -e ".[mlx]"   # or just: pip install -e .
-```
-
-## Quick Start
-
-### First-Principles Default (recommended)
-
-Keep it simple and local:
-
-```bash
-# 1) Start MCP server in default quality mode
-recallforge serve --mode full
-
-# 2) Use a single ingest pathway for agents (text/image/video/document/file/folder)
-#    via MCP tool: ingest
-
-# 3) Query from CLI (or via MCP client)
-recallforge search "what did I save about autonomous agents?"
-recallforge search --image ./images/whiteboard.png
-recallforge search --video ./clips/demo.mp4
-```
-
-For local validation without optional live-model dependencies:
-
-```bash
-pytest -m "not live"
-bash tests/uat/test_mcp_server.sh
-bash tests/uat/test_cli.sh
-```
-
-### CLI Usage
-
-```bash
-# Index files
-recallforge index ~/Documents --collection docs
-recallforge index ~/Movies/demo.mp4 --collection docs
-recallforge index ~/Documents/roadmap.pptx ~/Documents/notes.docx --collection docs
-
-# Search
-recallforge search "machine learning algorithms"
-recallforge search --image ~/Pictures/diagram.png --content-type image
-recallforge search --video ~/Movies/demo.mp4 --content-type video
-
-# Start MCP server
-recallforge serve --mode full
-
-# Check status
-recallforge status
-```
-
-### Python API
-
-```python
-from recallforge import get_backend, get_storage
-from recallforge.search import HybridSearcher
-
-# Initialize
-backend = get_backend()  # Auto-detect best backend
-storage = get_storage()  # Default: ~/.recallforge
-
-# Warm up models
-backend.warm_up()
-
-# Index documents
-storage.index_document(
-    path="notes.md",
-    text="My important notes about AI and machine learning...",
-    collection="my_docs",
-    model="Qwen3-VL-Embedding-2B",
-    embed_func=backend.embed_text,
-)
-
-# Search
-searcher = HybridSearcher(backend=backend, storage=storage, limit=10)
-results = searcher.search("artificial intelligence")
-
-for r in results:
-    print(f"[{r.score:.3f}] {r.title}")
-```
-
-### MCP Server
-
-```bash
-# Start the MCP server
-recallforge serve
-
-# Or with specific mode
-recallforge serve --mode hybrid --backend torch
-```
+Exposes **12 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`, `status`, `rebuild_fts`.
 
 Configure in Claude Desktop:
 
@@ -186,501 +45,173 @@ Configure in Claude Desktop:
 }
 ```
 
+## What makes RecallForge different
+
+- **Cross-modal search:** Text↔Text, Text↔Image, Image↔Text, Image↔Image, Video↔Text, Video↔Image, Video↔Video
+- **Shared embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
+- **3-stage pipeline:** Embedding → Reranking → Query expansion (all multimodal)
+- **Runs anywhere:** MLX 4-bit on Apple Silicon (~2GB), PyTorch on CUDA/MPS/CPU
+- **Fast:** Cold start 3.8s, warm search 161ms (MLX 4-bit)
+- **Tiered modes:** embed (~2GB), hybrid (~4GB), full (~8GB) — pick your tradeoff
+- **100% local:** Your data never leaves your machine
+
+## Performance
+
+| Metric | MLX 4-bit | PyTorch fp16 |
+|--------|-----------|--------------|
+| Warm search | 161ms | 414ms |
+| Cold start | 3.8s | ~36s |
+| Memory (embed) | ~2GB | ~4-8GB |
+
+## Installation
+
+```bash
+pip install recallforge            # auto-detects best backend
+pip install recallforge[mlx]       # force MLX (Apple Silicon)
+pip install recallforge[cuda]      # force CUDA (NVIDIA)
+pip install recallforge[docs]      # richer PDF extraction
+```
+
+From source:
+
+```bash
+git clone https://github.com/brianmeyer/recallforge.git
+cd recallforge
+pip install -e ".[mlx]"
+```
+
 ## Tiered Search Modes
 
-RecallForge supports three search modes with different memory/quality tradeoffs:
-
-### `embed` Mode (~2GB MLX 4-bit / ~4GB PyTorch)
-
-- **Models**: Embedder only
-- **Search**: BM25 + Vector
-- **Best for**: Memory-constrained environments, fast searches
-- **Measured**: 161ms warm search, 3.7GB peak RSS (MLX 4-bit, 1000+ docs indexed)
+| Mode | Memory | Models | Use Case |
+|------|--------|--------|----------|
+| `embed` | ~2GB | Embedder only | Memory-constrained, fast searches |
+| `hybrid` | ~4GB | + Reranker | Balanced quality and memory |
+| `full` | ~8GB | + Query Expander | Maximum retrieval quality |
 
 ```bash
-recallforge serve --mode embed
+recallforge serve --mode embed   # minimal
+recallforge serve --mode hybrid  # balanced
+recallforge serve --mode full    # best quality (default)
 ```
+
+## CLI Usage
+
+```bash
+# Index files
+recallforge index ~/Documents --collection docs
+recallforge index ~/Movies/demo.mp4 --collection docs
+recallforge index ~/Documents/roadmap.pptx ~/Documents/notes.docx
+
+# Search
+recallforge search "machine learning algorithms"
+recallforge search --image ~/Pictures/diagram.png
+recallforge search --video ~/Movies/demo.mp4
+
+# Status
+recallforge status
+```
+
+## Python API
 
 ```python
-os.environ["RECALLFORGE_MODE"] = "embed"
-```
+from recallforge import get_backend, get_storage
+from recallforge.search import HybridSearcher
 
-### `hybrid` Mode (~4GB MLX 4-bit / ~8GB PyTorch)
+backend = get_backend()
+storage = get_storage()
+backend.warm_up()
 
-- **Models**: Embedder + Reranker
-- **Search**: BM25 + Vector + Reranking
-- **Best for**: Balanced quality and memory usage
-
-```bash
-recallforge serve --mode hybrid
-```
-
-### `full` Mode (~8GB MLX / ~12GB PyTorch) [Default]
-
-- **Models**: Embedder + Reranker + Query Expander
-- **Search**: BM25 + Vector + Expansion + Reranking
-- **Best for**: Maximum retrieval quality
-
-```bash
-recallforge serve --mode full
-```
-
-## Model Backends
-
-RecallForge auto-detects the best backend (`RECALLFORGE_BACKEND=auto`):
-
-| Hardware | Backend | Cold Start | Warm Search | Peak RSS (embed) |
-|----------|---------|-----------|-------------|-----------------|
-| Apple Silicon | MLX 4-bit | 3.8s | 161ms | ~2GB |
-| Apple Silicon | MLX bf16 | 4.5s | 200ms | ~4GB |
-| Apple Silicon | PyTorch/MPS | 8.4s | 412ms | ~4GB |
-| NVIDIA GPU | PyTorch/CUDA | varies | varies | ~4GB |
-
-### MLX Backend (Default on Apple Silicon)
-
-Auto-selected on Apple Silicon. Uses 4-bit quantization by default for minimal memory.
-
-```bash
-export RECALLFORGE_BACKEND=mlx           # explicit
-export RECALLFORGE_MLX_QUANTIZE=4bit     # default (or bf16 for higher precision)
-```
-
-Runtime safety: RecallForge probes MLX in a subprocess before auto-selecting it. If the probe fails, it automatically falls back to PyTorch instead of crashing the process.
-
-```bash
-export RECALLFORGE_BACKEND=torch          # force torch fallback
-export RECALLFORGE_DISABLE_MLX=1          # disable MLX probing/selection
-```
-
-**Model IDs (4-bit — fully native MLX):**
-- Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`
-- Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit`
-- Expander: `bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit`
-
-**Model IDs (BF16):**
-- Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx`
-- Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx`
-- Expander: `tobil/qmd-query-expansion-qwen3.5-2B` (PyTorch fallback)
-
-### PyTorch Backend
-
-Works on CUDA, MPS (Apple Silicon), and CPU. Auto-selected when MLX is unavailable.
-
-```bash
-export RECALLFORGE_BACKEND=torch
-```
-
-**Model IDs:**
-- Embedder: `Qwen/Qwen3-VL-Embedding-2B`
-- Reranker: `Qwen/Qwen3-VL-Reranker-2B`
-- Expander: `tobil/qmd-query-expansion-qwen3.5-2B`
-
-## Storage Backend
-
-Currently supports **LanceDB** with vector search and Tantivy FTS:
-
-```bash
-export RECALLFORGE_STORAGE=lancedb  # Default
-export RECALLFORGE_STORE_PATH=~/.recallforge  # Default
-```
-
-Future support planned for:
-- ChromaDB
-- Qdrant
-
-### Namespace/Profile Filtering
-
-RecallForge supports optional namespace fields for multi-tenant isolation:
-
-- `user_id`: User namespace filter
-- `session_id`: Session namespace filter
-- `project_id`: Project namespace filter
-- `profile`: Profile namespace filter
-
-All memory tools (`memory_add`, `memory_update`, `memory_delete`, `index_folder`, `ingest`) accept these optional fields. Search tools (`search`, `search_fts`, `search_vec`) can filter by these fields.
-
-```python
-# Index with namespace
-storage.upsert_memory(
+# Index
+storage.index_document(
     path="notes.md",
-    text="My notes",
-    collection="docs",
-    embed_func=embed,
+    text="My notes about AI...",
+    collection="my_docs",
     model="Qwen3-VL-Embedding-2B",
-    user_id="alice",
-    project_id="proj123",
+    embed_func=backend.embed_text,
 )
 
-# Search with namespace filter
-results = storage.search_fts(
-    query="notes",
-    user_id="alice",
-    project_id="proj123",
-)
+# Search
+searcher = HybridSearcher(backend=backend, storage=storage, limit=10)
+results = searcher.search("artificial intelligence")
+for r in results:
+    print(f"[{r.score:.3f}] {r.title}")
 ```
-
-This enables multi-user, multi-project, and multi-session isolation within a single RecallForge instance.
 
 ## MCP Tools
 
-When running as an MCP server, use `ingest` as the **primary** tool for agents. It handles text, image, video, office-document, single-file, and folder ingestion in one call.
-
-The lower-level tools (`index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`) remain available for advanced or explicit workflows.
-
 ### `ingest` (recommended)
 
-Unified ingest entry point.
+Unified entry point for all content types:
 
 ```json
 {
-  "text": "optional raw text content",
-  "path": "optional/path/for/raw-text.md",
-  "file_path": "/path/to/file-or-image-or-document",
+  "file_path": "/path/to/file",
   "folder_path": "/path/to/folder",
-  "recursive": true,
   "collection": "default",
-  "content_types": ["text", "image", "video", "document"],
-  "include_globs": ["**/*"],
-  "exclude_globs": ["**/.git/**"],
-  "user_id": "optional user namespace",
-  "session_id": "optional session namespace",
-  "project_id": "optional project namespace",
-  "profile": "optional profile namespace"
+  "recursive": true
 }
 ```
 
-Returns a unified summary with:
-- `indexed_text`
-- `indexed_images`
-- `indexed_documents`
-- `indexed_document_sections`
-- `indexed_videos`
-- `indexed_video_frames`
-- `indexed_video_transcripts`
-- `skipped`
-- `errors`
-- `items[]` (`path`, `type`, `status`)
-
 ### `search`
 
-Full hybrid search with all pipeline stages.
+Full hybrid search with all pipeline stages:
 
 ```json
 {
   "query": "machine learning algorithms",
   "limit": 10,
-  "collection": "docs",
-  "content_type": "text",
-  "user_id": "optional user namespace",
-  "session_id": "optional session namespace",
-  "project_id": "optional project namespace",
-  "profile": "optional profile namespace"
+  "collection": "docs"
 }
 ```
 
-### `search_fts`
+### Other tools
 
-BM25 full-text search only.
-
-```json
-{
-  "query": "neural networks",
-  "limit": 20,
-  "user_id": "optional user namespace",
-  "session_id": "optional session namespace",
-  "project_id": "optional project namespace",
-  "profile": "optional profile namespace"
-}
-```
-
-### `search_vec`
-
-Vector similarity search only.
-
-```json
-{
-  "query": "document about AI",
-  "limit": 20,
-  "user_id": "optional user namespace",
-  "session_id": "optional session namespace",
-  "project_id": "optional project namespace",
-  "profile": "optional profile namespace"
-}
-```
-
-### `index_document`
-
-Index a text document.
-
-```json
-{
-  "path": "notes.md",
-  "text": "Document content here...",
-  "collection": "my_docs"
-}
-```
-
-### `index_image`
-
-Index an image for cross-modal search.
-
-```json
-{
-  "path": "/path/to/image.png",
-  "collection": "images"
-}
-```
-
-### `memory_add`
-
-Add (or replace) a text memory by path. Supports optional metadata for importance, TTL, and tags.
-
-```json
-{
-  "path": "memory/projects/recallforge.md",
-  "text": "Phase 1 MCP memory tools are implemented.",
-  "collection": "default",
-  "user_id": "optional user namespace",
-  "session_id": "optional session namespace",
-  "project_id": "optional project namespace",
-  "profile": "optional profile namespace",
-  "importance": 0.8,
-  "ttl_seconds": 86400,
-  "tags": ["project", "ai", "mcp"]
-}
-```
-
-**Parameters:**
-- `path` (required): Memory path key within collection
-- `text` (required): Memory content
-- `collection` (optional): Collection name, default "default"
-- `user_id` (optional): Optional user namespace for multi-tenant isolation
-- `session_id` (optional): Optional session namespace
-- `project_id` (optional): Optional project namespace
-- `profile` (optional): Optional profile namespace
-- `importance` (optional): Importance score 0.0-1.0 for ranking/filtering
-- `ttl_seconds` (optional): Time-to-live in seconds (0 or null = no expiration)
-- `tags` (optional): Array of string tags for categorization
-
-### `memory_update`
-
-Update existing memory text by path without duplicating old vectors. Supports the same metadata as `memory_add`.
-
-```json
-{
-  "path": "memory/projects/recallforge.md",
-  "text": "Phase 1 complete. Added update/delete/index_folder tooling.",
-  "collection": "default",
-  "user_id": "optional user namespace",
-  "session_id": "optional session namespace",
-  "project_id": "optional project namespace",
-  "profile": "optional profile namespace",
-  "importance": 0.9,
-  "ttl_seconds": 604800,
-  "tags": ["project", "ai", "mcp", "completed"]
-}
-```
-
-**Parameters:**
-- `path` (required): Memory path key within collection
-- `text` (required): Updated memory content
-- `collection` (optional): Collection name, default "default"
-- `user_id` (optional): Optional user namespace for multi-tenant isolation
-- `session_id` (optional): Optional session namespace
-- `project_id` (optional): Optional project namespace
-- `profile` (optional): Optional profile namespace
-- `importance` (optional): Importance score 0.0-1.0
-- `ttl_seconds` (optional): Time-to-live in seconds
-- `tags` (optional): Array of string tags
-
-**TTL Behavior:**
-- Memories with `ttl_seconds > 0` will automatically expire and be excluded from search results
-- Expired entries are filtered out in both FTS and vector search
-- Setting `ttl_seconds` to 0 or omitting it creates a permanent memory (no expiration)
-
-### `memory_delete`
-
-Deactivate a memory entry and remove associated embeddings.
-
-```json
-{
-  "path": "memory/projects/recallforge.md",
-  "collection": "default",
-  "user_id": "optional user namespace",
-  "session_id": "optional session namespace",
-  "project_id": "optional project namespace",
-  "profile": "optional profile namespace"
-}
-```
-
-### `index_folder`
-
-Index text files from a folder into memory entries.
-
-```json
-{
-  "folder_path": "/Users/me/notes",
-  "collection": "default",
-  "recursive": true,
-  "include_globs": ["**/*.md", "**/*.txt"],
-  "exclude_globs": ["**/.git/**", "**/node_modules/**"],
-  "user_id": "optional user namespace",
-  "session_id": "optional session namespace",
-  "project_id": "optional project namespace",
-  "profile": "optional profile namespace"
-}
-```
-
-### `status`
-
-Get server status.
-
-```json
-{}
-```
-
-### `rebuild_fts`
-
-Rebuild the full-text search index.
-
-```json
-{}
-```
+- `search_fts` — BM25 full-text search only
+- `search_vec` — Vector similarity search only
+- `index_document` — Index a text document
+- `index_image` — Index an image for cross-modal search
+- `memory_add` / `memory_update` / `memory_delete` — Manage agent memory
+- `index_folder` — Batch index a folder
+- `status` — Server health check
+- `rebuild_fts` — Rebuild full-text index
 
 ## Configuration
 
-### Environment Variables
-
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RECALLFORGE_BACKEND` | `auto` | Model backend: `auto`, `mlx`, `torch` |
-| `RECALLFORGE_MODE` | `full` | Search mode: `embed`, `hybrid`, `full` |
-| `RECALLFORGE_MLX_QUANTIZE` | `4bit` | MLX quantization: `4bit`, `bf16` |
-| `RECALLFORGE_DISABLE_MLX` | `0` | Set to `1` to skip MLX probing and force non-MLX backend selection |
-| `RECALLFORGE_STORAGE` | `lancedb` | Storage backend |
+| `RECALLFORGE_BACKEND` | `auto` | `auto`, `mlx`, `torch` |
+| `RECALLFORGE_MODE` | `full` | `embed`, `hybrid`, `full` |
+| `RECALLFORGE_MLX_QUANTIZE` | `4bit` | `4bit`, `bf16` |
 | `RECALLFORGE_STORE_PATH` | `~/.recallforge` | Storage directory |
-
-### CLI Options
-
-```bash
-recallforge serve \
-  --mode full \
-  --backend auto \
-  --quantize bf16 \
-  --store-path ~/.recallforge
-```
-
-### Watch Folder Daemon
-
-Use the lightweight watch daemon to auto-index file changes.
-
-```bash
-# Start watching a folder
-recallforge watch start /path/to/notes \
-  --collection default \
-  --include '**/*.md' \
-  --include '**/*.txt' \
-  --include '**/*.mp4' \
-  --exclude '**/.git/**' \
-  --debounce 0.5
-
-# List watches
-recallforge watch list
-
-# Watch status
-recallforge watch status <watch_id>
-
-# Stop one or all
-recallforge watch stop <watch_id>
-recallforge watch stop all
-```
 
 ## Architecture
 
 ```
 RecallForge
-├── recallforge/
-│   ├── backends/          # Model backends
-│   │   ├── base.py        # ModelBackend ABC
-│   │   ├── torch_backend.py
-│   │   └── mlx_backend.py
-│   ├── storage/           # Storage backends
-│   │   ├── base.py        # StorageBackend ABC
-│   │   └── lancedb_backend.py
-│   ├── search.py          # Hybrid search pipeline
-│   ├── server.py          # MCP server
-│   ├── documents.py       # PDF/DOCX/PPTX extraction
-│   ├── video.py           # Video frame/transcript extraction
-│   └── cli.py             # CLI interface
-└── tests/
-    ├── test_live.py       # Live tests with real models
-    └── benchmark.py       # Benchmark suite
+├── backends/          # Model backends (MLX, PyTorch)
+├── storage/          # LanceDB + Tantivy FTS
+├── search.py         # Hybrid search pipeline
+├── server.py         # MCP server (12 tools)
+├── documents.py      # PDF/DOCX/PPTX extraction
+├── video.py          # Frame/transcript extraction
+└── cli.py            # CLI interface
 ```
 
-### Search Pipeline
-
-1. **BM25 Probe**: Initial retrieval to detect strong signal
-2. **Query Expansion** (full mode): Generate lex/vec/hyde variants
-3. **Parallel Searches**: BM25 + Vector searches via ThreadPoolExecutor
-4. **RRF Fusion**: Reciprocal Rank Fusion to combine result lists
-5. **Reranking** (hybrid/full): Cross-encoder relevance scoring
-6. **Score Blending**: Weighted combination of RRF and rerank scores
-
-## Benchmarks
-
-### Performance (Mac mini M4 16GB, MLX 4-bit, embed mode)
-
-| Metric | Value |
-|--------|-------|
-| Cold start | 3.8s |
-| Warm search p50 | 161ms |
-| Warm search p95 | 200ms |
-| Text indexing | 5 docs/sec |
-| Peak RSS | 3.7 GB |
-| FTS (1000 docs) | 473ms |
-| Vector search (1000 docs) | 429ms |
-
-### Cross-Modal Retrieval Accuracy
-
-Run the benchmark:
-
-```bash
-python benchmarks/cross_modal_accuracy.py --backend auto --mode embed --dataset coco --limit 1000
-```
-
-Results are saved to `benchmarks/cross_modal_results.json` and `benchmarks/CROSS_MODAL.md`.
+**Search pipeline:** BM25 probe → Query expansion (full mode) → Parallel BM25 + Vector → RRF fusion → Reranking (hybrid/full) → Score blending
 
 ## Development
 
-### Running Tests
-
 ```bash
-# Unit tests (with mocks)
-pytest tests/ -m "not live"
-
-# Live tests (real models, slow)
-pytest tests/ -m live -v
-
-# All tests
-pytest tests/ -v
+pytest tests/ -m "not live"    # Unit tests (no model download needed)
+pytest tests/ -m live -v       # Integration tests (requires models)
 ```
 
-### Code Style
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full development guidelines.
 
-```bash
-# Format
-black recallforge tests
+## Attribution
 
-# Lint
-ruff check recallforge tests
-```
+RecallForge is inspired by [QMD](https://github.com/tobil/qmd) by Tobi. QMD pioneered the multi-stage retrieval pipeline (embedding, reranking, query expansion). RecallForge extends this pattern to vision-language with cross-modal retrieval and multi-backend support.
 
 ## License
 
 MIT License
-
-## Acknowledgments
-
-- **Tobi** for [QMD](https://github.com/tobil/qmd) - the original inspiration
-- **Qwen Team** for Qwen3-VL-Embedding and Qwen3-VL-Reranker
-- **LanceDB** for the excellent vector database
