@@ -21,6 +21,7 @@ VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
     "${CORPUS_DIR}/images/whiteboard_architecture.png")
 
 VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
+VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
 
 if [[ -f "$VIDEO_PATH" ]]; then
     pass "synthetic video fixture created"
@@ -28,6 +29,12 @@ else
     fail "synthetic video fixture created"
     print_summary "Raw Video Query Contract"
     exit 1
+fi
+
+if [[ "$VIDEO_REAL" != "1" ]]; then
+    skip "raw video query smoke requires a real video fixture"
+    print_summary "Raw Video Query Contract"
+    exit 0
 fi
 
 subsection "Interface Detection"
@@ -89,12 +96,39 @@ else
     echo "    Output: $(echo "$OUTPUT" | head -5)"
 fi
 
-OUTPUT=$(recallforge search --video "$VIDEO_PATH" --collection video_query_contract --store-path "$UAT_STORE" 2>&1 || true)
-if echo "$OUTPUT" | grep -qE "sample_video\\.mp4(::(transcript|frame):|\\b)"; then
+OUTPUT=$(recallforge search --video "$VIDEO_PATH" --collection video_query_contract --content-type video --store-path "$UAT_STORE" 2>&1 || true)
+if echo "$OUTPUT" | grep -qE "sample_video\\.mp4(\\b|')"; then
     pass "recallforge search --video returns video-linked results"
 else
     fail "recallforge search --video returns video-linked results"
     echo "    Output: $(echo "$OUTPUT" | head -8)"
 fi
+
+python3 <<PYEOF
+import os
+import sys
+sys.path.insert(0, "src")
+
+from recallforge import get_backend, get_storage
+from recallforge.search import HybridSearcher
+
+os.environ["RECALLFORGE_STORE_PATH"] = "${UAT_STORE}"
+backend = get_backend()
+storage = get_storage("${UAT_STORE}")
+searcher = HybridSearcher(
+    backend=backend,
+    storage=storage,
+    limit=5,
+    collection="video_query_contract",
+    content_type="text",
+)
+results = searcher.search_video("${VIDEO_PATH}")
+paths = [r.filepath for r in results]
+if any("sample_video.mp4::transcript:" in path for path in paths):
+    print("  \033[0;32mPASS\033[0m  HybridSearcher.search_video returns transcript-linked results")
+else:
+    print("  \033[0;31mFAIL\033[0m  HybridSearcher.search_video returns transcript-linked results")
+    raise SystemExit(1)
+PYEOF
 
 print_summary "Raw Video Query Contract"

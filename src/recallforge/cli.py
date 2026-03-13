@@ -90,6 +90,12 @@ def main():
         help="Image query path (mutually exclusive with text query)",
     )
     search_parser.add_argument(
+        "--video",
+        dest="video_path",
+        default=None,
+        help="Video query path (mutually exclusive with text query and --image)",
+    )
+    search_parser.add_argument(
         "--limit", "-l",
         type=int,
         default=10,
@@ -102,7 +108,7 @@ def main():
     )
     search_parser.add_argument(
         "--content-type",
-        choices=["text", "image"],
+        choices=["text", "image", "video"],
         default=None,
         help="Filter by content type",
     )
@@ -269,6 +275,7 @@ def cmd_index(args):
                     collection=args.collection,
                     embed_text_func=backend.embed_text,
                     embed_image_func=backend.embed_image,
+                    embed_video_func=getattr(backend, "embed_video", None),
                 )
             elif _is_document_file(path):
                 print(f"Indexing document: {path}")
@@ -316,6 +323,7 @@ def cmd_index(args):
                                 collection=args.collection,
                                 embed_text_func=backend.embed_text,
                                 embed_image_func=backend.embed_image,
+                                embed_video_func=getattr(backend, "embed_video", None),
                             )
                         elif _is_document_file(fp):
                             print(f"Indexing document: {fp}")
@@ -383,13 +391,18 @@ def cmd_search(args):
 
     query_text = args.query.strip() if isinstance(args.query, str) else ""
     image_path = args.image_path.strip() if isinstance(args.image_path, str) else ""
-    if bool(query_text) == bool(image_path):
-        print("Provide exactly one of: query or --image", file=sys.stderr)
+    video_path = args.video_path.strip() if isinstance(args.video_path, str) else ""
+    provided = [bool(query_text), bool(image_path), bool(video_path)]
+    if sum(provided) != 1:
+        print("Provide exactly one of: query, --image, or --video", file=sys.stderr)
         return 2
 
     if image_path:
         results = searcher.search_image(image_path)
         print(f"\nResults for image: '{image_path}'\n")
+    elif video_path:
+        results = searcher.search_video(video_path)
+        print(f"\nResults for video: '{video_path}'\n")
     else:
         results = searcher.search(query_text)
         print(f"\nResults for: '{query_text}'\n")

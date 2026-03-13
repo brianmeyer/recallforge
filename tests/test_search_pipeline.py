@@ -64,6 +64,12 @@ class StubBackend(ModelBackend):
     def embed_images(self, image_paths: List[str]) -> np.ndarray:
         return self.embed_texts(image_paths)
 
+    def embed_video(self, video_path: str) -> np.ndarray:
+        return self.embed_text(video_path)
+
+    def embed_videos(self, video_paths: List[str]) -> np.ndarray:
+        return self.embed_texts(video_paths)
+
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
         # Return descending scores
         return [0.9 - i * 0.05 for i in range(len(documents))]
@@ -140,6 +146,16 @@ class TestVectorSearch(unittest.TestCase):
         found = searcher._vector_search("how do agents remember")
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0].filepath, "vec1.md")
+
+    def test_search_video_delegates_to_storage(self):
+        results = [_make_search_result("sample_video.mp4", 0.82, "vec", content_type="video")]
+        backend = StubBackend()
+        storage = StubStorage(vec_results=results)
+        searcher = HybridSearcher(backend=backend, storage=storage)
+
+        found = searcher.search_video("sample_video.mp4")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].filepath, "sample_video.mp4")
 
 
 class TestStrongSignalDetected(unittest.TestCase):

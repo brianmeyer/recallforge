@@ -194,19 +194,26 @@ class MLXBackend(ModelBackend):
         h = qwen_model(input_ids, cache=cache)
         return h
 
-    def _embed_hidden_with_vision(
-        self, input_ids: "mx.array", pixel_values: "mx.array",
-        image_grid_thw: "mx.array", cache,
+    def _embed_hidden_with_media(
+        self,
+        input_ids: "mx.array",
+        pixel_values: "mx.array",
+        cache,
+        image_grid_thw: Optional["mx.array"] = None,
+        video_grid_thw: Optional["mx.array"] = None,
     ) -> "mx.array":
         """
-        Vision pipeline (MLX): processor + process_vision_info -> input embeddings -> transformer.
+        Multimodal vision pipeline (MLX): processor output -> input embeddings -> transformer.
 
         This is the proven path:
         get_input_embeddings(...) -> qwen_model(None, inputs_embeds=..., cache=...).
         """
         # Merge vision features with text embeddings
         emb_features = self._embedder_model.get_input_embeddings(
-            input_ids, pixel_values, image_grid_thw=image_grid_thw,
+            input_ids,
+            pixel_values,
+            image_grid_thw=image_grid_thw,
+            video_grid_thw=video_grid_thw,
         )
         try:
             inputs_embeds = emb_features.to_dict()["inputs_embeds"]
@@ -322,6 +329,41 @@ class MLXBackend(ModelBackend):
                 raise ValueError(
                     f"Image file at index {idx} is unreadable or corrupt: '{raw_path}'."
                 ) from exc
+
+            normalized_paths.append(path)
+
+        return normalized_paths
+
+    def _validate_video_paths(self, video_paths: List[str]) -> List[str]:
+        """Validate video paths and surface clear missing-file errors."""
+        if video_paths is None:
+            raise ValueError("Video batch is None; expected a list of video paths.")
+
+        if not isinstance(video_paths, list):
+            raise TypeError(
+                f"Video batch must be a list[str], got {type(video_paths).__name__}."
+            )
+
+        normalized_paths = []
+        for idx, raw_path in enumerate(video_paths):
+            if not isinstance(raw_path, str):
+                raise TypeError(
+                    f"Video path at index {idx} must be a string, got {type(raw_path).__name__}."
+                )
+            if not raw_path.strip():
+                raise ValueError(
+                    f"Video path at index {idx} is empty. Provide a valid file path."
+                )
+
+            path = os.path.expanduser(raw_path)
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"Video file not found at index {idx}: '{raw_path}'."
+                )
+            if not os.path.isfile(path):
+                raise ValueError(
+                    f"Video path at index {idx} is not a file: '{raw_path}'."
+                )
 
             normalized_paths.append(path)
 
@@ -532,8 +574,11 @@ class MLXBackend(ModelBackend):
             ) from exc
 
         try:
-            h = self._embed_hidden_with_vision(
-                input_ids, pixel_values, image_grid_thw, cache,
+            h = self._embed_hidden_with_media(
+                input_ids,
+                pixel_values,
+                cache,
+                image_grid_thw=image_grid_thw,
             )
         except Exception as exc:
             raise MLXEmbeddingError(
@@ -553,6 +598,124 @@ class MLXBackend(ModelBackend):
             )
 
         return embeddings
+
+    def embed_video(self, video_path: str) -> np.ndarray:
+        """Embed a single video."""
+        return self.embed_videos([video_path])[0]
+
+    def embed_videos(self, video_paths: List[str]) -> np.ndarray:
+        """
+        Embed multiple videos using the MLX video pipeline.
+
+        Qwen3-VL's video processor currently expects per-video sampling kwargs,
+        so we process each video independently and stack the resulting vectors.
+        """
+        video_paths = self._validate_video_paths(video_paths)
+        if not video_paths:
+            return np.empty((0, self._EMBED_DIM), dtype=np.float32)
+
+        self._load_embedder()
+        num_layers = self._get_embedder_num_layers()
+
+        try:
+            from qwen_vl_utils import process_vision_info
+        except ImportError as exc:
+            raise MLXEmbeddingError(
+                "qwen-vl-utils vision dependencies are missing. "
+                "Install qwen-vl-utils and torchvision for video embeddings."
+            ) from exc
+
+        embeddings: List[np.ndarray] = []
+        for path in video_paths:
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "video", "video": path},
+                    {"type": "text", "text": "Describe this video."},
+                ],
+            }]
+
+            try:
+                chat_text = self._embedder_processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True,
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    f"Failed to build chat template for video '{path}'."
+                ) from exc
+
+            try:
+                _, video_inputs, video_kwargs = process_vision_info(
+                    [messages],
+                    return_video_kwargs=True,
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    f"Failed to process video inputs for '{path}'."
+                ) from exc
+
+            if not video_inputs:
+                raise MLXEmbeddingError(
+                    f"Video pre-processing produced no video inputs for '{path}'."
+                )
+
+            normalized_video_kwargs = dict(video_kwargs or {})
+            fps_value = normalized_video_kwargs.get("fps")
+            if isinstance(fps_value, list):
+                normalized_video_kwargs["fps"] = fps_value[0] if fps_value else None
+
+            try:
+                inputs = self._embedder_processor(
+                    text=[chat_text],
+                    videos=video_inputs,
+                    return_tensors="pt",
+                    padding=True,
+                    **normalized_video_kwargs,
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    f"Failed to tokenize video '{path}' with processor."
+                ) from exc
+
+            for required_key in ("input_ids", "pixel_values_videos", "video_grid_thw"):
+                if required_key not in inputs:
+                    raise MLXEmbeddingError(
+                        f"Video processor output is missing '{required_key}' for '{path}'."
+                    )
+
+            input_ids = self._to_mx_array(inputs["input_ids"], "input_ids")
+            pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
+            video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
+
+            try:
+                cache = _make_cache(num_layers)
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    f"Failed to initialize KV cache for video '{path}'."
+                ) from exc
+
+            try:
+                h = self._embed_hidden_with_media(
+                    input_ids,
+                    pixel_values,
+                    cache,
+                    video_grid_thw=video_grid_thw,
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    f"MLX video forward pass failed for '{path}'."
+                ) from exc
+
+            try:
+                embedding = self._pool_and_normalize(h)
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    f"Failed to pool and normalize video embedding for '{path}'."
+                ) from exc
+
+            embeddings.append(embedding[0])
+
+        return np.stack(embeddings).astype(np.float32)
 
     # =========================================================================
     # Reranker

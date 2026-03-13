@@ -10,6 +10,16 @@ section "RecallForge Backend Tests"
 cd "$REPO_ROOT"
 trap cleanup_store EXIT
 
+ensure_test_images
+VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
+    "${UAT_STORE}/backend_sample_video.mp4" \
+    "${CORPUS_DIR}/images/food_pasta_dish.png" \
+    "${CORPUS_DIR}/images/forest_landscape.png" \
+    "${CORPUS_DIR}/images/whiteboard_architecture.png")
+export UAT_BACKEND_VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
+export UAT_BACKEND_VIDEO_FFMPEG=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read())["ffmpeg_available"] else "0")' <<<"$VIDEO_META")
+export UAT_BACKEND_VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
+
 MLX_HEALTHY=0
 TORCH_HEALTHY=0
 
@@ -53,8 +63,7 @@ subsection "MLX Backend (4-bit Embed Coverage)"
 # ──────────────────────────────────────────────
 
 if [[ "${MLX_HEALTHY}" -eq 1 ]]; then
-    info "Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image)..."
-    ensure_test_images
+    info "Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image, embed_video)..."
 
     python3 << 'PYEOF'
 import os, sys, time
@@ -90,6 +99,14 @@ assert os.path.exists(img_path), f"FAIL: missing test image {img_path}"
 vec_img = backend.embed_image(img_path)
 assert vec_img.shape == (2048,), f"FAIL: embed_image shape {vec_img.shape}"
 print("  PASS  MLX 4-bit embed_image: 2048-dim vector")
+
+video_path = os.environ["UAT_BACKEND_VIDEO_PATH"]
+if os.environ.get("UAT_BACKEND_VIDEO_REAL") == "1":
+    vec_vid = backend.embed_video(video_path)
+    assert vec_vid.shape == (2048,), f"FAIL: embed_video shape {vec_vid.shape}"
+    print("  PASS  MLX 4-bit embed_video: 2048-dim vector")
+else:
+    print("  SKIP  MLX 4-bit embed_video: no real video fixture available")
 
 print("\nMLX 4-bit embed coverage: ALL PASSED")
 PYEOF
@@ -228,7 +245,7 @@ subsection "Torch Backend"
 # ──────────────────────────────────────────────
 
 if [[ "${TORCH_HEALTHY}" -eq 1 ]]; then
-    info "Testing Torch backend (embed_text, embed_image, rerank, expand_query)..."
+    info "Testing Torch backend (embed_text, embed_image, embed_video, rerank, expand_query)..."
 
     python3 << 'PYEOF'
 import os, sys, time
@@ -272,6 +289,14 @@ if os.path.exists(img_dir):
         print("  SKIP  No test images found")
 else:
     print("  SKIP  Image corpus not generated yet")
+
+video_path = os.environ["UAT_BACKEND_VIDEO_PATH"]
+if os.environ.get("UAT_BACKEND_VIDEO_REAL") == "1":
+    vec_vid = backend.embed_video(video_path)
+    assert vec_vid.shape == (2048,), f"FAIL: embed_video shape {vec_vid.shape}"
+    print("  PASS  Torch embed_video: 2048-dim vector")
+else:
+    print("  SKIP  Torch embed_video: no real video fixture available")
 
 # ── Reranker ──
 print("Loading reranker...")

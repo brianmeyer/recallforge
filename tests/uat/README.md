@@ -46,10 +46,10 @@ Each test is self-contained and can be run independently:
 # Video ingest (transcript fallback + ffmpeg frame extraction when available)
 ./tests/uat/test_video_ingest.sh
 
-# Video retrieval quality (text->video and image->video across modes)
+# Video retrieval quality (text/image/video query coverage across modes)
 ./tests/uat/test_video_quality.sh
 
-# Raw video query contract (explicitly skips until native video query ships)
+# Raw video query smoke test
 ./tests/uat/test_video_query_contract.sh
 
 # ★ CROSS-MODAL SEARCH (the key differentiator) ★
@@ -173,7 +173,7 @@ Each test script exits 0 on success, 1 on any failure.
 
 7. **Video ingest depends on host capabilities**: Transcript sidecars (`.srt`, `.vtt`, `.txt`) are always supported. Frame extraction runs when `ffmpeg` and `ffprobe` are installed; otherwise video UAT validates transcript-only fallback.
 
-8. **Raw video query is contract-tested but not shipped yet**: `test_video_query_contract.sh` is included in the suite so the gap is explicit. It skips until a native `--video` / `search_video()` path exists, then becomes an active smoke test.
+8. **Raw video query requires a real video fixture**: `test_video_query_contract.sh` and the raw-video portions of CLI/MCP/video-quality UAT require `ffmpeg` so the suite can generate a valid synthetic video. Without it, those checks skip cleanly.
 
 9. **Document ingest is local-first**: DOCX and PPTX fixtures are extracted through built-in OOXML parsing. PDF ingestion uses a lightweight fallback extractor by default and gets richer parsing when optional PDF tooling is installed.
 

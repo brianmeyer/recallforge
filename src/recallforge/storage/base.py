@@ -328,6 +328,7 @@ class StorageBackend(ABC):
         exclude_globs: Optional[List[str]],
         embed_text_func: Callable[[str], List[float]],
         embed_image_func: Callable[[str], List[float]],
+        embed_video_func: Optional[Callable[[str], List[float]]],
         model: str,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,

@@ -170,6 +170,19 @@ class HybridSearcher:
     def search_image(self, image_path: str) -> List[HybridResult]:
         """Run image-query search through the vector path."""
         vector = self.backend.embed_image(image_path)
+        return self._search_vector(vector)
+
+    def search_video(self, video_path: str) -> List[HybridResult]:
+        """Run raw-video query search through the vector path."""
+        embed_video = getattr(self.backend, "embed_video", None)
+        if callable(embed_video):
+            vector = embed_video(video_path)
+        else:
+            vector = self.backend.embed_image(video_path)
+        return self._search_vector(vector)
+
+    def _search_vector(self, vector) -> List[HybridResult]:
+        """Run a direct vector search and convert to hybrid-style results."""
         results = self.storage.search_vec(
             vector.tolist() if hasattr(vector, 'tolist') else list(vector),
             limit=self.limit,
@@ -239,7 +252,7 @@ class HybridSearcher:
             vec = vectors_by_query[query]
             search_tasks.append((
                 'original_vec',
-                lambda v: self.storage.search_vec(
+                lambda v=vec: self.storage.search_vec(
                     v.tolist() if hasattr(v, 'tolist') else list(v),
                     limit=self.fts_probe_limit,
                     collection=self.collection,
@@ -249,7 +262,7 @@ class HybridSearcher:
                     project_id=self.project_id,
                     profile=self.profile,
                 ),
-                (vec,)
+                ()
             ))
 
         # Lexical expansions - BM25 only
@@ -263,7 +276,7 @@ class HybridSearcher:
                 vec = vectors_by_query[vec_q]
                 search_tasks.append((
                     f'vec_{i}',
-                    lambda v: self.storage.search_vec(
+                    lambda v=vec: self.storage.search_vec(
                         v.tolist() if hasattr(v, 'tolist') else list(v),
                         limit=self.fts_probe_limit,
                         collection=self.collection,
@@ -273,7 +286,7 @@ class HybridSearcher:
                         project_id=self.project_id,
                         profile=self.profile,
                     ),
-                    (vec,)
+                    ()
                 ))
 
         # Hyde expansions
@@ -282,7 +295,7 @@ class HybridSearcher:
                 vec = vectors_by_query[hyde_q]
                 search_tasks.append((
                     f'hyde_{i}',
-                    lambda v: self.storage.search_vec(
+                    lambda v=vec: self.storage.search_vec(
                         v.tolist() if hasattr(v, 'tolist') else list(v),
                         limit=self.fts_probe_limit,
                         collection=self.collection,
@@ -292,7 +305,7 @@ class HybridSearcher:
                         project_id=self.project_id,
                         profile=self.profile,
                     ),
-                    (vec,)
+                    ()
                 ))
         
         # Execute all searches in parallel
@@ -586,3 +599,37 @@ def hybrid_query_image(
         profile=profile,
     )
     return searcher.search_image(image_path)
+
+
+def hybrid_query_video(
+    video_path: str,
+    backend: Optional[ModelBackend] = None,
+    storage: Optional[StorageBackend] = None,
+    limit: int = 10,
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> List[HybridResult]:
+    """Convenience function for raw-video vector search."""
+    if backend is None:
+        from . import get_backend
+        backend = get_backend()
+    if storage is None:
+        from . import get_storage
+        storage = get_storage()
+
+    searcher = HybridSearcher(
+        backend=backend,
+        storage=storage,
+        limit=limit,
+        collection=collection,
+        content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+    )
+    return searcher.search_video(video_path)

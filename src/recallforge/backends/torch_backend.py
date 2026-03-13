@@ -208,14 +208,7 @@ class TorchBackend(ModelBackend):
         ]
         
         embeddings = self._embedder.process(inputs)
-        
-        if isinstance(embeddings, np.ndarray):
-            return embeddings.astype(np.float32)
-        else:
-            import torch
-            if isinstance(embeddings, torch.Tensor):
-                return embeddings.cpu().numpy().astype(np.float32)
-            return np.array(embeddings, dtype=np.float32)
+        return self._coerce_embeddings(embeddings)
     
     def embed_image(self, image_path: str) -> np.ndarray:
         """Embed a single image."""
@@ -234,14 +227,37 @@ class TorchBackend(ModelBackend):
         ]
         
         embeddings = self._embedder.process(inputs)
-        
+        return self._coerce_embeddings(embeddings)
+
+    def embed_video(self, video_path: str) -> np.ndarray:
+        """Embed a single video."""
+        return self.embed_videos([video_path])[0]
+
+    def embed_videos(self, video_paths: List[str]) -> np.ndarray:
+        """Embed multiple videos in a batch."""
+        self._load_embedder()
+
+        inputs = [
+            {
+                "video": path,
+                "instruction": "Retrieve content relevant to the video.",
+            }
+            for path in video_paths
+        ]
+
+        embeddings = self._embedder.process(inputs)
+        return self._coerce_embeddings(embeddings)
+
+    def _coerce_embeddings(self, embeddings) -> np.ndarray:
+        """Normalize backend outputs to float32 numpy arrays."""
         if isinstance(embeddings, np.ndarray):
             return embeddings.astype(np.float32)
-        else:
-            import torch
-            if isinstance(embeddings, torch.Tensor):
-                return embeddings.cpu().numpy().astype(np.float32)
-            return np.array(embeddings, dtype=np.float32)
+
+        import torch
+
+        if isinstance(embeddings, torch.Tensor):
+            return embeddings.cpu().numpy().astype(np.float32)
+        return np.array(embeddings, dtype=np.float32)
     
     # =========================================================================
     # Reranker (Qwen3-VL-Reranker-2B, ~4GB)

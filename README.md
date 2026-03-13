@@ -6,7 +6,7 @@ Images, text, office documents, and video-derived assets live in the same search
 
 ![RecallForge Architecture](docs/architecture.png)
 
-Type a text query, find the relevant photo. Submit an image, find related notes. Index `pdf` / `docx` / `pptx` locally for agent memory. Search image-to-image for visual similarity. RecallForge puts text and images into a shared Qwen3-VL embedding space so cross-modal retrieval just works.
+Type a text query, find the relevant photo. Submit an image, find related notes. Submit a video, find related clips, frames, or transcript chunks. Index `pdf` / `docx` / `pptx` locally for agent memory. RecallForge puts text, images, and video into a shared Qwen3-VL embedding space so cross-modal retrieval just works.
 
 ```bash
 pip install recallforge            # auto-detects: MLX on Apple Silicon, PyTorch elsewhere
@@ -22,11 +22,12 @@ recallforge index ./clips/demo.mp4  # ingest video transcript + frames
 recallforge search "whiteboard diagram from last meeting"
 recallforge search "photo of pasta dish on a white plate"
 recallforge search --image ./photos/whiteboard.png
+recallforge search --video ./clips/demo.mp4
 ```
 
 ## What makes RecallForge different
 
-- **Cross-modal search in all four directions:** Text→Text, Text→Image, Image→Text, Image→Image
+- **Cross-modal search across text, image, and video:** Text→Text, Text→Image, Image→Text, Image→Image, Video→Text, Video→Image, Video→Video
 - **Shared vision-language embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
 - **3-stage retrieval pipeline:** embedding → reranking → query expansion (all multimodal)
 - **Runs on anything:** MLX 4-bit on Apple Silicon (~2GB), PyTorch fp16 on CUDA/MPS/CPU. Auto-detects the best backend.
@@ -47,7 +48,7 @@ QMD pioneered the multi-stage retrieval pipeline: embedding, reranking, and quer
 
 ## Features
 
-- **Cross-Modal Search**: Query text to find images, or images to find text
+- **Cross-Modal Search**: Query text, images, or raw video against the same local corpus
 - **Hybrid Search**: Combines BM25 + vector search with RRF fusion
 - **Query Expansion**: Generates lexical, vector, and HyDE variants
 - **Cross-Encoder Reranking**: Refines results with joint query-document scoring
@@ -101,6 +102,7 @@ recallforge serve --mode full
 # 3) Query from CLI (or via MCP client)
 recallforge search "what did I save about autonomous agents?"
 recallforge search --image ./images/whiteboard.png
+recallforge search --video ./clips/demo.mp4
 ```
 
 For local validation without optional live-model dependencies:
@@ -122,6 +124,7 @@ recallforge index ~/Documents/roadmap.pptx ~/Documents/notes.docx --collection d
 # Search
 recallforge search "machine learning algorithms"
 recallforge search --image ~/Pictures/diagram.png --content-type image
+recallforge search --video ~/Movies/demo.mp4 --content-type video
 
 # Start MCP server
 recallforge serve --mode full

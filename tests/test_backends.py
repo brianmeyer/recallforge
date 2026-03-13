@@ -39,6 +39,12 @@ class StubBackend(ModelBackend):
     def embed_images(self, image_paths: List[str]) -> np.ndarray:
         return np.ones((len(image_paths), 2048), dtype=np.float32)
 
+    def embed_video(self, video_path: str) -> np.ndarray:
+        return np.ones(2048, dtype=np.float32)
+
+    def embed_videos(self, video_paths: List[str]) -> np.ndarray:
+        return np.ones((len(video_paths), 2048), dtype=np.float32)
+
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
         return [0.9 - i * 0.1 for i in range(len(documents))]
 

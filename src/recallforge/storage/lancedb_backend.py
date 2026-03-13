@@ -63,9 +63,89 @@ CHUNK_WINDOW_CHARS = 200
 # Helper Functions
 # =============================================================================
 
+# SQL metacharacters that indicate injection attempts
+_SQL_METACHARACTERS = frozenset("'\";\\\n\r\x00\x1a")
+_SQL_COMMENT_PATTERNS = ("--", "/*", "*/")
+# Allowlist pattern: alphanumeric, hyphens, underscores, dots, forward slashes.
+# Also allow spaces plus a minimal set of common safe separators used by RecallForge
+# paths and identifiers, such as colon for derived assets and @ for user-style ids.
+_SAFE_VALUE_PATTERN = re.compile(r"^[\w\-\.\/\s@:+]+$")
+
+
+def _validate_identifier(value: str, field_name: str = "value") -> str:
+    """
+    Validate a value against SQL injection patterns.
+
+    Args:
+        value: The string value to validate
+        field_name: Name of the field for error messages
+
+    Returns:
+        The validated value if safe
+
+    Raises:
+        ValueError: If the value contains SQL metacharacters or invalid patterns
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string, got {type(value).__name__}")
+
+    # Check for SQL comment patterns
+    for pattern in _SQL_COMMENT_PATTERNS:
+        if pattern in value:
+            raise ValueError(f"{field_name} contains forbidden SQL pattern: {pattern}")
+
+    # Check for SQL metacharacters
+    if any(c in _SQL_METACHARACTERS for c in value):
+        raise ValueError(f"{field_name} contains forbidden SQL metacharacters")
+
+    # Validate against allowlist pattern
+    if not _SAFE_VALUE_PATTERN.match(value):
+        raise ValueError(f"{field_name} contains characters outside allowed set (alphanumeric, hyphen, underscore, dot, slash, space, @, :)")
+
+    return value
+
+
+def _safe_filter(field: str, value: str) -> str:
+    """
+    Build a safe SQL filter clause for a field-value pair.
+
+    Args:
+        field: The field/column name (must be a valid identifier)
+        value: The value to filter by
+
+    Returns:
+        A safe SQL filter string like "field = 'validated_value'"
+
+    Raises:
+        ValueError: If the field or value contains invalid characters
+    """
+    # Validate field name (stricter - no spaces allowed)
+    if not re.match(r"^[\w_]+$", field):
+        raise ValueError(f"Invalid field name: {field}")
+
+    # Validate and escape the value
+    validated = _validate_identifier(value, field)
+    escaped = validated.replace("'", "''")
+    return f"{field} = '{escaped}'"
+
+
 def escape_sql(s: str) -> str:
-    """Escape single quotes for SQL filters."""
-    return s.replace("'", "''")
+    """
+    DEPRECATED: Escape single quotes for SQL filters.
+
+    This function is deprecated and will be removed in a future version.
+    Use _safe_filter() or _validate_identifier() instead.
+
+    Args:
+        s: The string to escape
+
+    Returns:
+        The validated and escaped string
+
+    Raises:
+        ValueError: If the input contains SQL injection patterns
+    """
+    return _validate_identifier(s, "value").replace("'", "''")
 
 
 def hash_content(content: str) -> str:
@@ -615,15 +695,15 @@ class LanceDBBackend(StorageBackend):
         modified_ts = modified_at or now
 
         # Build namespace filter for finding existing
-        ns_filter = f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}'"
+        ns_filter = f"{_safe_filter('collection', collection)} AND {_safe_filter('file_path', file_path)}"
         if user_id is not None:
-            ns_filter += f" AND user_id = '{escape_sql(user_id)}'"
+            ns_filter += f" AND {_safe_filter('user_id', user_id)}"
         if session_id is not None:
-            ns_filter += f" AND session_id = '{escape_sql(session_id)}'"
+            ns_filter += f" AND {_safe_filter('session_id', session_id)}"
         if project_id is not None:
-            ns_filter += f" AND project_id = '{escape_sql(project_id)}'"
+            ns_filter += f" AND {_safe_filter('project_id', project_id)}"
         if profile is not None:
-            ns_filter += f" AND profile = '{escape_sql(profile)}'"
+            ns_filter += f" AND {_safe_filter('profile', profile)}"
 
         # Check for existing
         try:
@@ -635,7 +715,7 @@ class LanceDBBackend(StorageBackend):
             if len(existing) > 0:
                 doc_id = existing[0]["id"]
                 self._documents_table.update(
-                    where=f"id = '{escape_sql(doc_id)}'",
+                    where=_safe_filter("id", doc_id),
                     values={
                         "title": title,
                         "content_hash": content_hash,
@@ -676,7 +756,7 @@ class LanceDBBackend(StorageBackend):
         """Find a document by collection and path."""
         try:
             rows = list(self._documents_table.search()
-                .where(f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}' AND active = 1")
+                .where(f"{_safe_filter('collection', collection)} AND {_safe_filter('file_path', file_path)} AND active = 1")
                 .limit(1)
                 .to_list())
             
@@ -702,7 +782,7 @@ class LanceDBBackend(StorageBackend):
     def deactivate_document(self, collection: str, file_path: str) -> None:
         """Mark a document as inactive."""
         self._documents_table.update(
-            where=f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(file_path)}' AND active = 1",
+            where=f"{_safe_filter('collection', collection)} AND {_safe_filter('file_path', file_path)} AND active = 1",
             values={"active": 0, "updated_at": int(time.time() * 1000)}
         )
     
@@ -714,7 +794,7 @@ class LanceDBBackend(StorageBackend):
         """Store content by hash."""
         try:
             existing = list(self._content_table.search()
-                .where(f"hash = '{escape_sql(hash_str)}'")
+                .where(_safe_filter("hash", hash_str))
                 .limit(1)
                 .to_list())
             if len(existing) > 0:
@@ -733,7 +813,7 @@ class LanceDBBackend(StorageBackend):
         """Retrieve content by hash."""
         try:
             rows = list(self._content_table.search()
-                .where(f"hash = '{escape_sql(hash_str)}'")
+                .where(_safe_filter("hash", hash_str))
                 .limit(1)
                 .to_list())
             if len(rows) == 0:
@@ -784,7 +864,7 @@ class LanceDBBackend(StorageBackend):
 
         # Delete existing
         try:
-            self._embeddings_table.delete(f"hash_seq = '{escape_sql(hash_seq)}'")
+            self._embeddings_table.delete(_safe_filter("hash_seq", hash_seq))
         except Exception as e:
             logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
 
@@ -900,17 +980,17 @@ class LanceDBBackend(StorageBackend):
         try:
             filter_parts = [self._get_ttl_filter()]
             if collection:
-                filter_parts.append(f"collection = '{escape_sql(collection)}'")
+                filter_parts.append(_safe_filter("collection", collection))
             if content_type:
-                filter_parts.append(f"content_type = '{escape_sql(content_type)}'")
+                filter_parts.append(_safe_filter("content_type", content_type))
             if user_id is not None:
-                filter_parts.append(f"user_id = '{escape_sql(user_id)}'")
+                filter_parts.append(_safe_filter("user_id", user_id))
             if session_id is not None:
-                filter_parts.append(f"session_id = '{escape_sql(session_id)}'")
+                filter_parts.append(_safe_filter("session_id", session_id))
             if project_id is not None:
-                filter_parts.append(f"project_id = '{escape_sql(project_id)}'")
+                filter_parts.append(_safe_filter("project_id", project_id))
             if profile is not None:
-                filter_parts.append(f"profile = '{escape_sql(profile)}'")
+                filter_parts.append(_safe_filter("profile", profile))
             filter_clause = " AND ".join(filter_parts)
 
             # Keep fallback bounded to avoid OOM on large corpora.
@@ -996,17 +1076,17 @@ class LanceDBBackend(StorageBackend):
         filter_parts = [self._get_ttl_filter()]
 
         if collection:
-            filter_parts.append(f"collection = '{escape_sql(collection)}'")
+            filter_parts.append(_safe_filter("collection", collection))
         if content_type:
-            filter_parts.append(f"content_type = '{escape_sql(content_type)}'")
+            filter_parts.append(_safe_filter("content_type", content_type))
         if user_id is not None:
-            filter_parts.append(f"user_id = '{escape_sql(user_id)}'")
+            filter_parts.append(_safe_filter("user_id", user_id))
         if session_id is not None:
-            filter_parts.append(f"session_id = '{escape_sql(session_id)}'")
+            filter_parts.append(_safe_filter("session_id", session_id))
         if project_id is not None:
-            filter_parts.append(f"project_id = '{escape_sql(project_id)}'")
+            filter_parts.append(_safe_filter("project_id", project_id))
         if profile is not None:
-            filter_parts.append(f"profile = '{escape_sql(profile)}'")
+            filter_parts.append(_safe_filter("profile", profile))
 
         filter_clause = " AND ".join(filter_parts) if filter_parts else None
 
@@ -1070,17 +1150,17 @@ class LanceDBBackend(StorageBackend):
         filter_parts = [self._get_ttl_filter()]
 
         if collection:
-            filter_parts.append(f"collection = '{escape_sql(collection)}'")
+            filter_parts.append(_safe_filter("collection", collection))
         if content_type:
-            filter_parts.append(f"content_type = '{escape_sql(content_type)}'")
+            filter_parts.append(_safe_filter("content_type", content_type))
         if user_id is not None:
-            filter_parts.append(f"user_id = '{escape_sql(user_id)}'")
+            filter_parts.append(_safe_filter("user_id", user_id))
         if session_id is not None:
-            filter_parts.append(f"session_id = '{escape_sql(session_id)}'")
+            filter_parts.append(_safe_filter("session_id", session_id))
         if project_id is not None:
-            filter_parts.append(f"project_id = '{escape_sql(project_id)}'")
+            filter_parts.append(_safe_filter("project_id", project_id))
         if profile is not None:
-            filter_parts.append(f"profile = '{escape_sql(profile)}'")
+            filter_parts.append(_safe_filter("profile", profile))
 
         filter_clause = " AND ".join(filter_parts) if filter_parts else None
 
@@ -1173,7 +1253,7 @@ class LanceDBBackend(StorageBackend):
         
         try:
             rows = list(self._cache_table.search()
-                .where(f"key = '{escape_sql(key)}'")
+                .where(_safe_filter("key", key))
                 .limit(1)
                 .to_list())
             if len(rows) == 0:
@@ -1335,15 +1415,15 @@ class LanceDBBackend(StorageBackend):
 
         if not _skip_delete:
             # Build namespace filter for deletion
-            del_filter = f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+            del_filter = f"{_safe_filter('collection', collection)} AND {_safe_filter('file_path', normalized_path)}"
             if user_id is not None:
-                del_filter += f" AND user_id = '{escape_sql(user_id)}'"
+                del_filter += f" AND {_safe_filter('user_id', user_id)}"
             if session_id is not None:
-                del_filter += f" AND session_id = '{escape_sql(session_id)}'"
+                del_filter += f" AND {_safe_filter('session_id', session_id)}"
             if project_id is not None:
-                del_filter += f" AND project_id = '{escape_sql(project_id)}'"
+                del_filter += f" AND {_safe_filter('project_id', project_id)}"
             if profile is not None:
-                del_filter += f" AND profile = '{escape_sql(profile)}'"
+                del_filter += f" AND {_safe_filter('profile', profile)}"
 
             # Remove prior vectors for this memory path to prevent duplicate chunks.
             try:
@@ -1405,15 +1485,15 @@ class LanceDBBackend(StorageBackend):
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
         # Build namespace filter
-        del_filter = f"collection = '{escape_sql(collection)}' AND file_path = '{escape_sql(normalized_path)}'"
+        del_filter = f"{_safe_filter('collection', collection)} AND {_safe_filter('file_path', normalized_path)}"
         if user_id is not None:
-            del_filter += f" AND user_id = '{escape_sql(user_id)}'"
+            del_filter += f" AND {_safe_filter('user_id', user_id)}"
         if session_id is not None:
-            del_filter += f" AND session_id = '{escape_sql(session_id)}'"
+            del_filter += f" AND {_safe_filter('session_id', session_id)}"
         if project_id is not None:
-            del_filter += f" AND project_id = '{escape_sql(project_id)}'"
+            del_filter += f" AND {_safe_filter('project_id', project_id)}"
         if profile is not None:
-            del_filter += f" AND profile = '{escape_sql(profile)}'"
+            del_filter += f" AND {_safe_filter('profile', profile)}"
 
         removed_vectors = 0
         try:
@@ -1552,15 +1632,15 @@ class LanceDBBackend(StorageBackend):
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
     ) -> List[str]:
-        filters = [f"collection = '{escape_sql(collection)}'"]
+        filters = [_safe_filter("collection", collection)]
         if user_id is not None:
-            filters.append(f"user_id = '{escape_sql(user_id)}'")
+            filters.append(_safe_filter("user_id", user_id))
         if session_id is not None:
-            filters.append(f"session_id = '{escape_sql(session_id)}'")
+            filters.append(_safe_filter("session_id", session_id))
         if project_id is not None:
-            filters.append(f"project_id = '{escape_sql(project_id)}'")
+            filters.append(_safe_filter("project_id", project_id))
         if profile is not None:
-            filters.append(f"profile = '{escape_sql(profile)}'")
+            filters.append(_safe_filter("profile", profile))
         return filters
 
     def _delete_path_entries(
@@ -1581,13 +1661,15 @@ class LanceDBBackend(StorageBackend):
             project_id=project_id,
             profile=profile,
         )
-        escaped_path = escape_sql(logical_path)
+        # Validate and escape the logical_path for LIKE patterns
+        validated_path = _validate_identifier(logical_path, "logical_path")
+        escaped_path = validated_path.replace("'", "''")
         if include_children:
             filters.append(f"(file_path = '{escaped_path}' OR file_path LIKE '{escaped_path}::%')")
         else:
             filters.append(f"file_path = '{escaped_path}'")
         if content_type is not None:
-            filters.append(f"content_type = '{escape_sql(content_type)}'")
+            filters.append(_safe_filter("content_type", content_type))
 
         filter_clause = " AND ".join(filters)
         removed_vectors = 0
@@ -1613,7 +1695,7 @@ class LanceDBBackend(StorageBackend):
         else:
             doc_filters.append(f"file_path = '{escaped_path}'")
         if content_type is not None:
-            doc_filters.append(f"content_type = '{escape_sql(content_type)}'")
+            doc_filters.append(_safe_filter("content_type", content_type))
 
         try:
             self._documents_table.update(
@@ -1728,6 +1810,7 @@ class LanceDBBackend(StorageBackend):
         exclude_globs: Optional[List[str]],
         embed_text_func,
         embed_image_func,
+        embed_video_func,
         model: str,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -1751,6 +1834,7 @@ class LanceDBBackend(StorageBackend):
             "indexed_videos": 0,
             "indexed_documents": 0,
             "indexed_document_sections": 0,
+            "indexed_video_embeddings": 0,
             "indexed_video_frames": 0,
             "indexed_video_transcripts": 0,
             "skipped": 0,
@@ -1811,6 +1895,7 @@ class LanceDBBackend(StorageBackend):
                         collection=collection,
                         embed_text_func=embed_text_func,
                         embed_image_func=embed_image_func,
+                        embed_video_func=embed_video_func,
                         model=model,
                         stored_path=item_path,
                         user_id=user_id,
@@ -1821,6 +1906,7 @@ class LanceDBBackend(StorageBackend):
                     summary["indexed_videos"] += 1
                     summary["indexed_images"] += video_summary["indexed_frames"]
                     summary["indexed_text"] += video_summary["indexed_transcripts"]
+                    summary["indexed_video_embeddings"] += video_summary.get("indexed_video_embeddings", 0)
                     summary["indexed_video_frames"] += video_summary["indexed_frames"]
                     summary["indexed_video_transcripts"] += video_summary["indexed_transcripts"]
                     mark(item_path, "video", "indexed")
@@ -2038,6 +2124,7 @@ class LanceDBBackend(StorageBackend):
         collection: str,
         embed_text_func,
         embed_image_func,
+        embed_video_func=None,
         model: str = "Qwen3-VL-Embedding-2B",
         stored_path: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -2047,9 +2134,11 @@ class LanceDBBackend(StorageBackend):
         frame_interval_seconds: float = 5.0,
         max_frames: int = 8,
     ) -> Dict[str, Any]:
-        """Index a video into frame embeddings and transcript chunks."""
+        """Index a video into a top-level video embedding plus derived assets."""
         actual_path = str(Path(path).expanduser().resolve())
         logical_path = stored_path or actual_path
+        resolved_title = os.path.splitext(os.path.basename(logical_path))[0]
+        video_embed = embed_video_func or embed_image_func
 
         artifact_root = Path(self._store_path or DEFAULT_INDEX_DIR) / "video_frames"
         digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
@@ -2072,6 +2161,70 @@ class LanceDBBackend(StorageBackend):
             frame_interval_seconds=frame_interval_seconds,
             max_frames=max_frames,
         )
+
+        try:
+            content_hash = hash_file_bytes(actual_path)
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            logger.error(f"index_video: failed to hash {path}: {e}")
+            raise
+
+        transcript_summary = "\n".join(
+            segment.text.strip()
+            for segment in artifacts.transcripts
+            if isinstance(segment.text, str) and segment.text.strip()
+        ).strip()
+        video_body = transcript_summary[:4000]
+
+        try:
+            modified_at = int(os.path.getmtime(actual_path) * 1000)
+            created_at = int(os.path.getctime(actual_path) * 1000)
+        except OSError as e:
+            logger.warning(f"index_video: failed to get file times for {path}: {e}")
+            modified_at = int(time.time() * 1000)
+            created_at = modified_at
+
+        indexed_video_embeddings = 0
+        try:
+            vector = video_embed(actual_path)
+            self.insert_content(content_hash, actual_path, content_type="video")
+            self.insert_document(
+                collection=collection,
+                file_path=logical_path,
+                title=resolved_title,
+                content_hash=content_hash,
+                content_type="video",
+                created_at=created_at,
+                modified_at=modified_at,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+            )
+            self.insert_embedding(
+                content_hash=content_hash,
+                seq=0,
+                pos=0,
+                vector=vector.tolist() if hasattr(vector, "tolist") else list(vector),
+                model=model,
+                collection=collection,
+                file_path=logical_path,
+                title=resolved_title,
+                text_body=video_body,
+                content_type="video",
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+            )
+            indexed_video_embeddings = 1
+        except Exception as e:
+            logger.warning(
+                "index_video: raw video embedding failed for %s; continuing with derived assets: %s",
+                actual_path,
+                e,
+            )
 
         indexed_frames = 0
         indexed_transcripts = 0
@@ -2109,6 +2262,8 @@ class LanceDBBackend(StorageBackend):
             "success": True,
             "path": logical_path,
             "collection": collection,
+            "hash": content_hash,
+            "indexed_video_embeddings": indexed_video_embeddings,
             "indexed_frames": indexed_frames,
             "indexed_transcripts": indexed_transcripts,
             "duration_seconds": artifacts.duration_seconds,

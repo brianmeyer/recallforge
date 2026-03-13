@@ -94,6 +94,32 @@ class ModelBackend(ABC):
             N x 2048 numpy array (float32)
         """
         pass
+
+    def embed_video(self, video_path: str) -> np.ndarray:
+        """
+        Embed a single video.
+
+        Backends that support native raw-video queries should override this.
+        """
+        return self.embed_videos([video_path])[0]
+
+    def embed_videos(self, video_paths: List[str]) -> np.ndarray:
+        """
+        Embed multiple videos in a batch.
+
+        Default implementation uses per-item fallback so older backends/mocks can
+        opt into `embed_video()` only.
+        """
+        if video_paths is None:
+            raise ValueError("Video batch is None; expected a list of video paths.")
+        if not isinstance(video_paths, list):
+            raise TypeError(
+                f"Video batch must be a list[str], got {type(video_paths).__name__}."
+            )
+        vectors = [self.embed_video(path) for path in video_paths]
+        if not vectors:
+            return np.empty((0, 0), dtype=np.float32)
+        return np.stack(vectors).astype(np.float32)
     
     @abstractmethod
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:

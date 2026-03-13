@@ -34,6 +34,7 @@ VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
 
 export UAT_VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
 export UAT_VIDEO_FFMPEG=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read())["ffmpeg_available"] else "0")' <<<"$VIDEO_META")
+export UAT_VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
 export UAT_VIDEO_IMAGE="${CORPUS_DIR}/images/whiteboard_architecture.png"
 
 python3 <<'PYEOF'
@@ -50,6 +51,7 @@ from recallforge.search import HybridSearcher
 STORE = os.environ["RECALLFORGE_STORE_PATH"]
 VIDEO_PATH = os.environ["UAT_VIDEO_PATH"]
 FFMPEG_AVAILABLE = os.environ["UAT_VIDEO_FFMPEG"] == "1"
+REAL_VIDEO_AVAILABLE = os.environ["UAT_VIDEO_REAL"] == "1"
 WHITEBOARD_IMAGE = os.environ["UAT_VIDEO_IMAGE"]
 USE_LIVE_BACKEND = os.environ["UAT_VIDEO_USE_LIVE"] == "1"
 
@@ -116,6 +118,9 @@ class ConceptBackend:
     def embed_image(self, path):
         return self._vec(os.path.basename(path))
 
+    def embed_video(self, path):
+        return self._vec(os.path.basename(path))
+
     def rerank(self, query, documents):
         query_tokens = set(re.findall(r"[a-z0-9]+", self._normalize_seed(query)))
         scores = []
@@ -157,6 +162,7 @@ video_summary = storage.index_video(
     collection="video_quality",
     embed_text_func=backend.embed_text,
     embed_image_func=backend.embed_image,
+    embed_video_func=getattr(backend, "embed_video", None),
     model="Qwen3-VL-Embedding-2B",
 )
 report(video_summary["indexed_transcripts"] >= 1, "video index created transcript sections")
@@ -169,6 +175,7 @@ print("\n\033[0;36m--- Retrieval Matrix ---\033[0m\n")
 
 expected_transcript = "sample_video.mp4::transcript:"
 expected_frame = "sample_video.mp4::frame:"
+expected_video = VIDEO_PATH
 query_text = "whiteboard architecture diagram from a meeting"
 
 for mode in ("embed", "hybrid", "full"):
@@ -189,6 +196,34 @@ for mode in ("embed", "hybrid", "full"):
     transcript_hit = any(expected_transcript in path for path in transcript_paths)
     report(transcript_hit, f"text→video transcript retrieval ({mode})")
 
+    if REAL_VIDEO_AVAILABLE:
+        video_searcher = HybridSearcher(
+            backend=backend_mode,
+            storage=storage,
+            limit=5,
+            collection="video_quality",
+            content_type="video",
+        )
+        video_results = video_searcher.search_video(VIDEO_PATH)
+        video_paths = [r.filepath for r in video_results[:5]]
+        video_hit = any(expected_video in path for path in video_paths)
+        report(video_hit, f"video→video retrieval ({mode})")
+
+        video_to_text_searcher = HybridSearcher(
+            backend=backend_mode,
+            storage=storage,
+            limit=5,
+            collection="video_quality",
+            content_type="text",
+        )
+        video_text_results = video_to_text_searcher.search_video(VIDEO_PATH)
+        video_text_paths = [r.filepath for r in video_text_results[:5]]
+        video_text_hit = any(expected_transcript in path for path in video_text_paths)
+        report(video_text_hit, f"video→text retrieval ({mode})")
+    else:
+        skip(f"video→video retrieval ({mode}; no real video fixture available)")
+        skip(f"video→text retrieval ({mode}; no real video fixture available)")
+
     if FFMPEG_AVAILABLE:
         image_searcher = HybridSearcher(
             backend=backend_mode,
@@ -206,7 +241,20 @@ for mode in ("embed", "hybrid", "full"):
         frame_image_paths = [r.filepath for r in frame_image_results[:5]]
         frame_image_hit = any(expected_frame in path for path in frame_image_paths)
         report(frame_image_hit, f"image→video frame retrieval ({mode})")
+
+        video_to_image_searcher = HybridSearcher(
+            backend=backend_mode,
+            storage=storage,
+            limit=5,
+            collection="video_quality",
+            content_type="image",
+        )
+        video_image_results = video_to_image_searcher.search_video(VIDEO_PATH)
+        video_image_paths = [r.filepath for r in video_image_results[:5]]
+        video_image_hit = any(expected_frame in path for path in video_image_paths)
+        report(video_image_hit, f"video→image retrieval ({mode})")
     else:
+        skip(f"video→image retrieval ({mode}; ffmpeg unavailable)")
         skip(f"frame retrieval checks ({mode}; ffmpeg unavailable)")
 
 print(f"\n\033[1m{'='*40}\033[0m")
