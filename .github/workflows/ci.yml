@@ -80,7 +80,7 @@ jobs:
             ${{ runner.os }}-pip-3.12-
 
       - name: Install core dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,torch]"
 
       - name: Run backend selection and import tests
         run: pytest -x -m "not live" --tb=short -k "backend_selection or test_storage or test_documents or test_search"
