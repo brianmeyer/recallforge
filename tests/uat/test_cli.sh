@@ -43,6 +43,12 @@ else
     info "README does not advertise --image query mode"
 fi
 
+if echo "$SEARCH_HELP" | grep -q -- "--video"; then
+    pass "CLI search help exposes --video"
+else
+    fail "CLI search help exposes --video"
+fi
+
 SELECTED_BACKEND="$(select_live_backend || true)"
 if [[ -z "${SELECTED_BACKEND}" ]]; then
     warn "No usable live backend on this host; skipping CLI index/search/serve coverage."
@@ -170,6 +176,37 @@ if [[ -f "$IMG_FILE" ]]; then
         fail "recallforge search --image (image→text)"
         echo "    Output: $(echo "$OUTPUT" | head -5)"
     fi
+fi
+
+# Raw video query search
+VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
+    "${UAT_STORE}/cli_sample_video.mp4" \
+    "${CORPUS_DIR}/images/food_pasta_dish.png" \
+    "${CORPUS_DIR}/images/forest_landscape.png" \
+    "${CORPUS_DIR}/images/whiteboard_architecture.png")
+VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
+VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
+
+if [[ "$VIDEO_REAL" == "1" ]]; then
+    recallforge index "$VIDEO_PATH" --collection cli_video_test --store-path "$UAT_STORE" >/dev/null 2>&1 || true
+    OUTPUT=$(recallforge search --video "$VIDEO_PATH" --content-type video --store-path "$UAT_STORE" --collection cli_video_test 2>&1)
+    if echo "$OUTPUT" | grep -q "Results for video"; then
+        pass "recallforge search --video (video→video)"
+    else
+        fail "recallforge search --video (video→video)"
+        echo "    Output: $(echo "$OUTPUT" | head -5)"
+    fi
+
+    OUTPUT=$(recallforge search --video "$VIDEO_PATH" --content-type text --store-path "$UAT_STORE" --collection cli_video_test 2>&1)
+    if echo "$OUTPUT" | grep -q "Results for video" && echo "$OUTPUT" | grep -q "cli_sample_video.mp4::transcript:"; then
+        pass "recallforge search --video (video→text)"
+    else
+        fail "recallforge search --video (video→text)"
+        echo "    Output: $(echo "$OUTPUT" | head -8)"
+    fi
+else
+    skip "recallforge search --video (no real video fixture available)"
+    skip "recallforge search --video (video→text; no real video fixture available)"
 fi
 
 # ──────────────────────────────────────────────

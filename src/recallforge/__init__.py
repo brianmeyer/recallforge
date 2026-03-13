@@ -131,4 +131,4 @@ def __getattr__(name: str):
 # Convenience imports
 from .backends import ModelBackend, TorchBackend, MLX_AVAILABLE
 from .storage import StorageBackend, LanceDBBackend
-from .search import HybridSearcher, hybrid_query, hybrid_query_image
+from .search import HybridSearcher, hybrid_query, hybrid_query_image, hybrid_query_video

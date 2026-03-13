@@ -1,6 +1,6 @@
 RecallForge UAT Results
 ======================
-Date: 2026-03-10 00:18:15 EDT
+Date: 2026-03-13 10:37:02 EDT
 Host: Mac (arm64)
 Python: Python 3.12.12
 
@@ -37,7 +37,7 @@ Python: Python 3.12.12
   [0;36mINFO[0m  Installing recallforge[mlx] ...
 [notice] To update, run: python3.12 -m pip install --upgrade pip
   [0;32mPASS[0m  MLX package installed
-  [0;32mPASS[0m  MLX_AVAILABLE is True
+  [0;32mPASS[0m  MLX runtime probe healthy
   [0;32mPASS[0m  recallforge CLI works with MLX install
 
 [0;36m--- CUDA Install ---[0m
@@ -123,11 +123,11 @@ Python: Python 3.12.12
     Indexed 600/1000
     Indexed 800/1000
     Indexed 1000/1000
-  Indexing 1000 docs took 193.2s (5 docs/sec)
-  [0;32mPASS[0m  Indexed 1000 docs in 193.2s
-  [0;32mPASS[0m  FTS on 1000 docs: 480ms (< 1s)
+  Indexing 1000 docs took 215.6s (5 docs/sec)
+  [0;32mPASS[0m  Indexed 1000 docs in 215.6s
+  [0;32mPASS[0m  FTS on 1000 docs: 65ms (< 1s)
   [0;32mPASS[0m  FTS returned 10 results from bulk corpus
-  [0;32mPASS[0m  Vector search on 1000 docs: 442ms (< 1s)
+  [0;32mPASS[0m  Vector search on 1000 docs: 42ms (< 1s)
   [0;32mPASS[0m  Vector search returned 10 results from bulk corpus
 
 [1m========================================[0m
@@ -146,433 +146,69 @@ Python: Python 3.12.12
 [1m[0;34m═══════════════════════════════════════[0m
 [1m[0;34m  RecallForge Backend Tests[0m
 [1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Torch Backend ---[0m
-  [0;36mINFO[0m  Testing Torch backend (embed_text, embed_image, rerank, expand_query)...
-Loading embedder...
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:01<18:41,  1.80s/it]Loading weights:  34%|███▍      | 213/625 [00:01<00:02, 156.10it/s]Loading weights:  53%|█████▎    | 333/625 [00:02<00:02, 131.91it/s]Loading weights:  65%|██████▍   | 404/625 [00:03<00:01, 163.37it/s]Loading weights:  74%|███████▍  | 465/625 [00:03<00:00, 196.36it/s]Loading weights:  84%|████████▎ | 522/625 [00:03<00:00, 224.36it/s]Loading weights:  92%|█████████▏| 573/625 [00:03<00:00, 255.01it/s]Loading weights: 100%|█████████▉| 622/625 [00:03<00:00, 227.98it/s]Loading weights: 100%|██████████| 625/625 [00:03<00:00, 163.83it/s]
-[TorchBackend] Loaded embedder on mps with torch.float16
-  Embedder loaded in 7.9s
-  PASS  Torch embed_text: 2048-dim float32 vector
-  PASS  Torch embed_texts batch: (3, 2048)
-  PASS  Torch embed_image: 2048-dim vector from food_pasta_dish.png
-Loading reranker...
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:03<34:37,  3.33s/it]Loading weights:  32%|███▏      | 201/625 [00:03<00:05, 79.01it/s]Loading weights:  41%|████▏     | 258/625 [00:04<00:05, 69.35it/s]Loading weights:  47%|████▋     | 291/625 [00:05<00:05, 60.14it/s]Loading weights:  50%|█████     | 313/625 [00:05<00:05, 62.19it/s]Loading weights:  53%|█████▎    | 330/625 [00:05<00:04, 64.30it/s]Loading weights:  56%|█████▋    | 352/625 [00:06<00:03, 74.88it/s]Loading weights:  59%|█████▉    | 368/625 [00:06<00:03, 77.09it/s]Loading weights:  62%|██████▏   | 388/625 [00:06<00:02, 86.94it/s]Loading weights:  66%|██████▌   | 412/625 [00:06<00:02, 105.95it/s]Loading weights:  69%|██████▊   | 429/625 [00:06<00:01, 110.79it/s]Loading weights:  72%|███████▏  | 450/625 [00:06<00:01, 126.41it/s]Loading weights:  76%|███████▌  | 472/625 [00:06<00:01, 140.91it/s]Loading weights:  79%|███████▉  | 496/625 [00:06<00:00, 155.36it/s]Loading weights:  83%|████████▎ | 520/625 [00:07<00:00, 170.77it/s]Loading weights:  87%|████████▋ | 544/625 [00:07<00:00, 177.15it/s]Loading weights:  91%|█████████ | 568/625 [00:07<00:00, 180.04it/s]Loading weights:  95%|█████████▍| 592/625 [00:07<00:00, 191.85it/s]Loading weights:  98%|█████████▊| 613/625 [00:07<00:00, 97.67it/s] Loading weights: 100%|██████████| 625/625 [00:08<00:00, 78.12it/s]
-`torch_dtype` is deprecated! Use `dtype` instead!
-The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
-[TorchBackend] Loaded reranker on mps with torch.float32
-  Reranker loaded in 37.5s
-  PASS  Torch rerank: 3 scores = ['0.875', '0.077', '0.784']
-  PASS  Reranker correctly ranks memory docs above cooking
-Loading expander...
-Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:07<39:38,  7.45s/it]Loading weights: 100%|██████████| 320/320 [00:07<00:00, 42.87it/s]
-[TorchBackend] Loaded expander (tobil/qmd-query-expansion-qwen3.5-2B) on mps with torch.float16
-  Expander loaded in 22.3s
-  PASS  Torch expand_query: lex='machine learning training algorithms...'
-  INFO  Torch backend RSS: 681 MB (all 3 models loaded)
-  PASS  Backend info: name=torch device=mps mem=12.0GB
-
-Torch backend: ALL PASSED
-  [0;32mPASS[0m  Torch backend all tests
+  [0;36mINFO[0m  Backend order: mlx torch
 
 [0;36m--- MLX Backend (4-bit Embed Coverage) ---[0m
-  [0;36mINFO[0m  Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image)...
+  [0;36mINFO[0m  Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image, embed_video)...
 Loading MLX embedder (4-bit)...
 [MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 22568.69it/s]
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 182972.99it/s]
+qwen-vl-utils using torchvision to read video.
+/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+smart_nframes: nframes[6.0] > total_frames[3]
+Qwen3VL requires frame timestamps to construct prompts, but the `fps` of the input video could not be inferred. Probably `video_metadata` was missing from inputs and you passed pre-sampled frames. Defaulting to `fps=24`. Please provide `video_metadata` for more accurate results.
 [MLXBackend] Loaded embedder (4bit)
-  Embedder loaded in 3.9s
+  Embedder loaded in 3.2s
   PASS  MLX 4-bit embed_text: 2048-dim float32 vector
   PASS  MLX 4-bit embed_texts batch: (3, 2048)
   PASS  MLX 4-bit embed_image: 2048-dim vector
+  PASS  MLX 4-bit embed_video: 2048-dim vector
 
 MLX 4-bit embed coverage: ALL PASSED
   [0;32mPASS[0m  MLX 4-bit embed coverage
 
-[0;36m--- MLX Backend ---[0m
-  [0;36mINFO[0m  Testing MLX backend...
+[0;36m--- MLX Backend (bf16 Compatibility) ---[0m
+  [0;36mINFO[0m  Testing MLX bf16 compatibility backend...
+  [0;36mINFO[0m  Expected behavior: embedder/reranker on MLX, expander via torch fallback.
 Loading MLX embedder (bf16)...
 [MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 67987.47it/s]
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 71369.05it/s]
 [MLXBackend] Loaded embedder (bf16)
-  Loaded in 4.2s
+  Loaded in 4.4s
   PASS  MLX bf16 embed_text: shape=(2048,)
 Loading MLX reranker (bf16)...
 [MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 81260.73it/s]
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 181149.34it/s]
 `torch_dtype` is deprecated! Use `dtype` instead!
 The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
 [MLXBackend] score_linear missing; using lm_head yes-no projection fallback
 [MLXBackend] Loaded reranker (bf16)
-  Loaded in 2.9s
+  Loaded in 3.2s
   PASS  MLX bf16 rerank: scores=['0.522', '0.516']
-Loading expander (torch fallback)...
+Loading expander (torch fallback, expected for bf16 coverage)...
 [MLXBackend] Loading expander via torch fallback on mps
-Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:07<40:39,  7.65s/it]Loading weights: 100%|██████████| 320/320 [00:07<00:00, 41.83it/s]
+Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:08<42:59,  8.09s/it]Loading weights: 100%|██████████| 320/320 [00:08<00:00, 39.52it/s]
 [MLXBackend] Loaded expander (torch fallback)
-  Loaded in 11.8s
+  Loaded in 12.9s
   PASS  MLX expander (torch fallback): keys=['lex', 'vec', 'hyde']
   PASS  MLX info: device=mps quant=bf16 mem=12.0GB
 
-MLX bf16 backend: ALL PASSED
-  [0;32mPASS[0m  MLX bf16 backend all tests
+MLX bf16 compatibility backend: ALL PASSED
+  [0;32mPASS[0m  MLX bf16 compatibility backend all tests
   [0;36mINFO[0m  Testing MLX 4-bit backend...
 Loading MLX embedder (4-bit)...
 [MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 56270.33it/s]
+Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 55809.57it/s]
 [MLXBackend] Loaded embedder (4bit)
-  Loaded in 3.7s
+  Loaded in 2.5s
   PASS  MLX 4-bit embed_text: shape=(2048,)
   PASS  MLX 4-bit info: quant=4bit mem=2.0GB
 
 MLX 4-bit backend: ALL PASSED
   [0;32mPASS[0m  MLX 4-bit backend all tests
 
-[0;36m--- Backend Auto-Detection ---[0m
-  PASS  Auto-detection chose 'mlx' (expected 'mlx') on Darwin/arm64
-  [0;32mPASS[0m  Backend auto-detection
-
-[1m═══════════════════════════════════════[0m
-[1m  Backend Tests Summary[0m
-[1m═══════════════════════════════════════[0m
-  [0;32mPASS: 5[0m
-  [0;31mFAIL: 0[0m
-  [0;33mSKIP: 0[0m
-  Total: 5
-
-  [0;32m[1mRESULT: PASSED[0m
-
-
-═══════════════════════════════════════
-  Tiered Modes
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Tiered Mode Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-  [0;36mINFO[0m  Backend order: mlx torch
-
-[0;36m--- Backend Attempt: mlx ---[0m
-
-[0;36m--- Indexing test corpus (backend=mlx) ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 72219.80it/s]
-[MLXBackend] Loaded embedder (4bit)
-  Indexed: ai_agents.md
-  Indexed: ai_embeddings.md
-  Indexed: ai_transformers.md
-  Indexed: architecture_blueprints.md
-  Indexed: architecture_gothic.md
-  Indexed: architecture_modern.md
-  Indexed: cooking_grilling.md
-  Indexed: cooking_pasta.md
-  Indexed: cooking_sourdough.md
-  Indexed: nature_forests.md
-  Indexed: nature_mountains.md
-  Indexed: nature_oceans.md
-  Indexed: sports_basketball.md
-  Indexed: sports_running.md
-  Indexed: sports_soccer.md
-  Indexed: code_editor_screenshot.png
-  Indexed: floor_plan_blueprint.png
-  Indexed: food_pasta_dish.png
-  PASS  Indexed 18 documents, 18 embeddings
-  [0;32mPASS[0m  Corpus indexed
-
-[0;36m--- Embed Mode ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 32650.27it/s]
-[MLXBackend] Loaded embedder (4bit)
-  [0;32mPASS[0m  Mode set to 'embed'
-  [0;32mPASS[0m  Reranker not needed in embed mode
-  [0;32mPASS[0m  Expander not needed in embed mode
-  [0;32mPASS[0m  Embedder loaded
-  [0;32mPASS[0m  Reranker NOT loaded
-  [0;32mPASS[0m  Expander NOT loaded
-  [0;32mPASS[0m  Embed mode search returned 5 results in 0.11s
-  [0;32mPASS[0m  Embed mode: all rerank scores are 0.5 (neutral)
-    [0.066] AI Agents and Memory Systems
-    [0.063] Transformer Architecture in Deep Learning
-    [0.062] Soccer Tactics and Formations
-    [0.061] Vector Embeddings and Semantic Search
-    [0.061] Reading Architectural Blueprints
-  [0;32mPASS[0m  Embed mode
-
-[0;36m--- Hybrid Mode ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 70997.33it/s]
-[MLXBackend] Loaded embedder (4bit)
-[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 36717.81it/s]
-[MLXBackend] score_linear missing; using lm_head yes-no projection fallback
-[MLXBackend] Loaded reranker (4bit)
-  [0;32mPASS[0m  Mode set to 'hybrid'
-  [0;32mPASS[0m  Reranker needed in hybrid mode
-  [0;32mPASS[0m  Expander not needed in hybrid mode
-  [0;32mPASS[0m  Embedder loaded
-  [0;32mPASS[0m  Reranker loaded
-  [0;32mPASS[0m  Expander NOT loaded
-[MLXBackend] Rerank error at doc 0: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 1: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 2: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 3: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 4: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 5: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 6: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 7: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 8: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 9: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-  [0;32mPASS[0m  Hybrid mode search returned 5 results in 0.14s
-  [0;31mFAIL[0m  Hybrid mode: reranker produces varied scores
-    [0.066] AI Agents and Memory Systems (rerank=0.500)
-    [0.063] Transformer Architecture in Deep Learning (rerank=0.500)
-    [0.062] Soccer Tactics and Formations (rerank=0.500)
-    [0.061] Vector Embeddings and Semantic Search (rerank=0.500)
-    [0.061] Reading Architectural Blueprints (rerank=0.500)
-  [0;31mFAIL[0m  Hybrid mode
-
-[0;36m--- Full Mode ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 68072.35it/s]
-[MLXBackend] Loaded embedder (4bit)
-[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 96335.60it/s]
-`torch_dtype` is deprecated! Use `dtype` instead!
-The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
-[MLXBackend] score_linear missing; using lm_head yes-no projection fallback
-[MLXBackend] Loaded reranker (4bit)
-[MLXBackend] Loading expander via torch fallback on mps
-Loading weights: 0it [00:00, ?it/s]Loading weights: 0it [00:00, ?it/s]
-This checkpoint seem corrupted. The tied weights mapping for this model specifies to tie model.embed_tokens.weight to lm_head.weight, but both are absent from the checkpoint, and we could not find another related tied weight for those keys
-[1mQwen3_5ForCausalLM LOAD REPORT[0m from: bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit
-Key                                                                        | Status     | 
----------------------------------------------------------------------------+------------+-
-language_model.model.layers.{0...22}.linear_attn.in_proj_b.biases          | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.down_proj.weight                  | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_a.biases          | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_a.weight          | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_proj.biases | UNEXPECTED | 
-language_model.model.layers.{0...23}.post_attention_layernorm.weight       | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.dt_bias                   | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.gate_proj.weight                  | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_qkv.scales        | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_b.weight          | UNEXPECTED | 
-language_model.model.layers.{0...23}.input_layernorm.weight                | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_z.weight          | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.up_proj.weight                    | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.out_proj.weight           | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.out_proj.scales           | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_z.scales          | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_a.scales          | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_norm.weight | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.gate_proj.biases                  | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.gate_proj.scales                  | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_proj.weight | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.v_proj.biases | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_proj.biases | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.norm.weight               | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_qkv.biases        | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_z.biases          | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_proj.scales | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.down_proj.scales                  | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.up_proj.biases                    | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.v_proj.scales | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.A_log                     | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.out_proj.biases           | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_b.scales          | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.down_proj.biases                  | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.up_proj.scales                    | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_qkv.weight        | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.o_proj.biases | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.v_proj.weight | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_norm.weight | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.conv1d.weight             | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_proj.weight | UNEXPECTED | 
-language_model.model.embed_tokens.biases                                   | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.o_proj.scales | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.o_proj.weight | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_proj.scales | UNEXPECTED | 
-language_model.model.embed_tokens.weight                                   | UNEXPECTED | 
-language_model.model.norm.weight                                           | UNEXPECTED | 
-language_model.model.embed_tokens.scales                                   | UNEXPECTED | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.v_proj.weight                | MISSING    | 
-model.layers.{0...23}.input_layernorm.weight                               | MISSING    | 
-model.layers.{0...23}.mlp.down_proj.weight                                 | MISSING    | 
-model.layers.{0...22}.linear_attn.conv1d.weight                            | MISSING    | 
-model.layers.{0...22}.linear_attn.in_proj_a.weight                         | MISSING    | 
-model.layers.{0...22}.linear_attn.A_log                                    | MISSING    | 
-model.layers.{0...22}.linear_attn.in_proj_z.weight                         | MISSING    | 
-model.layers.{0...23}.post_attention_layernorm.weight                      | MISSING    | 
-model.layers.{0...23}.mlp.gate_proj.weight                                 | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.o_proj.weight                | MISSING    | 
-model.layers.{0...22}.linear_attn.dt_bias                                  | MISSING    | 
-model.layers.{0...23}.mlp.up_proj.weight                                   | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_proj.weight                | MISSING    | 
-model.layers.{0...22}.linear_attn.out_proj.weight                          | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_proj.weight                | MISSING    | 
-model.layers.{0...22}.linear_attn.in_proj_b.weight                         | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_norm.weight                | MISSING    | 
-model.layers.{0...22}.linear_attn.in_proj_qkv.weight                       | MISSING    | 
-lm_head.weight                                                             | MISSING    | 
-model.layers.{0...22}.linear_attn.norm.weight                              | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_norm.weight                | MISSING    | 
-model.norm.weight                                                          | MISSING    | 
-model.embed_tokens.weight                                                  | MISSING    | 
-
-[3mNotes:
-- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.[0m
-[MLXBackend] Loaded expander (torch fallback)
-  [0;32mPASS[0m  Mode set to 'full'
-  [0;32mPASS[0m  Reranker needed in full mode
-  [0;32mPASS[0m  Expander needed in full mode
-  [0;32mPASS[0m  Embedder loaded
-  [0;32mPASS[0m  Reranker loaded
-  [0;32mPASS[0m  Expander loaded
-[MLXBackend] Rerank error at doc 0: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 1: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 2: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 3: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 4: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 5: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 6: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 7: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 8: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 9: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-  [0;32mPASS[0m  Full mode search returned 5 results in 0.21s
-    [0.066] AI Agents and Memory Systems (rerank=0.500)
-    [0.063] Transformer Architecture in Deep Learning (rerank=0.500)
-    [0.062] Soccer Tactics and Formations (rerank=0.500)
-    [0.061] Vector Embeddings and Semantic Search (rerank=0.500)
-    [0.061] Reading Architectural Blueprints (rerank=0.500)
-  [0;32mPASS[0m  Full mode
-
-[0;36m--- Mode Switching ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 160370.45it/s]
-[MLXBackend] Loaded embedder (4bit)
-  [0;32mPASS[0m  Start in embed mode
-  [0;32mPASS[0m  Switched to full mode
-  [0;32mPASS[0m  Reranker needed after switch
-  [0;32mPASS[0m  Expander needed after switch
-[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 74693.08it/s]
-`torch_dtype` is deprecated! Use `dtype` instead!
-The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
-[MLXBackend] score_linear missing; using lm_head yes-no projection fallback
-[MLXBackend] Loaded reranker (4bit)
-[MLXBackend] Loading expander via torch fallback on mps
-Loading weights: 0it [00:00, ?it/s]Loading weights: 0it [00:00, ?it/s]
-This checkpoint seem corrupted. The tied weights mapping for this model specifies to tie model.embed_tokens.weight to lm_head.weight, but both are absent from the checkpoint, and we could not find another related tied weight for those keys
-[1mQwen3_5ForCausalLM LOAD REPORT[0m from: bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit
-Key                                                                        | Status     | 
----------------------------------------------------------------------------+------------+-
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.o_proj.weight | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.up_proj.weight                    | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.gate_proj.scales                  | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.out_proj.weight           | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.up_proj.scales                    | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_b.scales          | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.conv1d.weight             | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_z.biases          | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.down_proj.scales                  | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_norm.weight | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.out_proj.biases           | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.out_proj.scales           | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_a.biases          | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.gate_proj.weight                  | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_proj.weight | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.dt_bias                   | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_proj.biases | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_z.weight          | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_a.scales          | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_qkv.weight        | UNEXPECTED | 
-language_model.model.layers.{0...23}.input_layernorm.weight                | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.o_proj.scales | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_b.biases          | UNEXPECTED | 
-language_model.model.layers.{0...23}.post_attention_layernorm.weight       | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.down_proj.weight                  | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.down_proj.biases                  | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.v_proj.weight | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_a.weight          | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.A_log                     | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.gate_proj.biases                  | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_qkv.scales        | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_proj.biases | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_qkv.biases        | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.norm.weight               | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.v_proj.scales | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_z.scales          | UNEXPECTED | 
-language_model.model.layers.{0...23}.mlp.up_proj.biases                    | UNEXPECTED | 
-language_model.model.layers.{0...22}.linear_attn.in_proj_b.weight          | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_proj.scales | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_norm.weight | UNEXPECTED | 
-language_model.model.norm.weight                                           | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.o_proj.biases | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_proj.scales | UNEXPECTED | 
-language_model.model.embed_tokens.scales                                   | UNEXPECTED | 
-language_model.model.embed_tokens.weight                                   | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.v_proj.biases | UNEXPECTED | 
-language_model.model.embed_tokens.biases                                   | UNEXPECTED | 
-language_model.model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_proj.weight | UNEXPECTED | 
-model.layers.{0...22}.linear_attn.conv1d.weight                            | MISSING    | 
-model.layers.{0...23}.post_attention_layernorm.weight                      | MISSING    | 
-model.layers.{0...22}.linear_attn.in_proj_b.weight                         | MISSING    | 
-model.layers.{0...23}.mlp.gate_proj.weight                                 | MISSING    | 
-model.layers.{0...23}.mlp.up_proj.weight                                   | MISSING    | 
-model.layers.{0...23}.mlp.down_proj.weight                                 | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_norm.weight                | MISSING    | 
-model.layers.{0...22}.linear_attn.in_proj_a.weight                         | MISSING    | 
-model.layers.{0...22}.linear_attn.norm.weight                              | MISSING    | 
-model.layers.{0...23}.input_layernorm.weight                               | MISSING    | 
-model.layers.{0...22}.linear_attn.A_log                                    | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.v_proj.weight                | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.o_proj.weight                | MISSING    | 
-model.layers.{0...22}.linear_attn.in_proj_z.weight                         | MISSING    | 
-model.layers.{0...22}.linear_attn.dt_bias                                  | MISSING    | 
-model.layers.{0...22}.linear_attn.in_proj_qkv.weight                       | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_proj.weight                | MISSING    | 
-model.layers.{0...22}.linear_attn.out_proj.weight                          | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.q_proj.weight                | MISSING    | 
-model.layers.{3, 7, 11, 15, 19, 23}.self_attn.k_norm.weight                | MISSING    | 
-model.embed_tokens.weight                                                  | MISSING    | 
-lm_head.weight                                                             | MISSING    | 
-model.norm.weight                                                          | MISSING    | 
-
-[3mNotes:
-- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
-- MISSING[3m	:those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.[0m
-[MLXBackend] Loaded expander (torch fallback)
-  [0;32mPASS[0m  All models loaded after switch
-[MLXBackend] Rerank error at doc 0: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 1: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 2: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 3: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 4: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 5: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 6: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 7: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 8: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-[MLXBackend] Rerank error at doc 9: [broadcast_shapes] Shapes (1,2048) and (256) cannot be broadcast.
-  [0;32mPASS[0m  Search works after mode switch (5 results)
-  [0;32mPASS[0m  Mode switching
-
-[0;36m--- Timing Comparison ---[0m
-  Embed mode:  0.11s
-  Hybrid mode: 0.14s
-  Full mode:   0.21s
-
-[1m═══════════════════════════════════════[0m
-[1m  Tiered Mode Tests (backend=mlx) Summary[0m
-[1m═══════════════════════════════════════[0m
-  [0;32mPASS: 4[0m
-  [0;31mFAIL: 1[0m
-  [0;33mSKIP: 0[0m
-  Total: 5
-
-  [0;31m[1mRESULT: FAILED[0m
-  [0;33mWARN[0m  Tiered mode tests failed with backend 'mlx'.
-
-[0;36m--- Backend Attempt: torch ---[0m
-
-[0;36m--- Indexing test corpus (backend=torch) ---[0m
+[0;36m--- Torch Backend ---[0m
+  [0;36mINFO[0m  Testing Torch backend (embed_text, embed_image, embed_video, rerank, expand_query)...
+Loading embedder...
+Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:01<19:11,  1.85s/it]Loading weights:  34%|███▍      | 212/625 [00:01<00:02, 147.41it/s]Loading weights:  48%|████▊     | 299/625 [00:02<00:02, 138.87it/s]Loading weights:  56%|█████▋    | 352/625 [00:02<00:01, 159.53it/s]Loading weights:  68%|██████▊   | 422/625 [00:02<00:00, 209.61it/s]Loading weights:  76%|███████▌  | 474/625 [00:03<00:00, 245.95it/s]Loading weights:  87%|████████▋ | 542/625 [00:03<00:00, 306.22it/s]Loading weights:  96%|█████████▌| 598/625 [00:03<00:00, 343.07it/s]Loading weights: 100%|██████████| 625/625 [00:03<00:00, 180.12it/s]

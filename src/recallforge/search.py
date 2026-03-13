@@ -170,6 +170,19 @@ class HybridSearcher:
     def search_image(self, image_path: str) -> List[HybridResult]:
         """Run image-query search through the vector path."""
         vector = self.backend.embed_image(image_path)
+        return self._search_vector(vector)
+
+    def search_video(self, video_path: str) -> List[HybridResult]:
+        """Run raw-video query search through the vector path."""
+        embed_video = getattr(self.backend, "embed_video", None)
+        if callable(embed_video):
+            vector = embed_video(video_path)
+        else:
+            vector = self.backend.embed_image(video_path)
+        return self._search_vector(vector)
+
+    def _search_vector(self, vector) -> List[HybridResult]:
+        """Run a direct vector search and convert to hybrid-style results."""
         results = self.storage.search_vec(
             vector.tolist() if hasattr(vector, 'tolist') else list(vector),
             limit=self.limit,
@@ -586,3 +599,37 @@ def hybrid_query_image(
         profile=profile,
     )
     return searcher.search_image(image_path)
+
+
+def hybrid_query_video(
+    video_path: str,
+    backend: Optional[ModelBackend] = None,
+    storage: Optional[StorageBackend] = None,
+    limit: int = 10,
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> List[HybridResult]:
+    """Convenience function for raw-video vector search."""
+    if backend is None:
+        from . import get_backend
+        backend = get_backend()
+    if storage is None:
+        from . import get_storage
+        storage = get_storage()
+
+    searcher = HybridSearcher(
+        backend=backend,
+        storage=storage,
+        limit=limit,
+        collection=collection,
+        content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+    )
+    return searcher.search_video(video_path)

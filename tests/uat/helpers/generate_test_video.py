@@ -10,6 +10,38 @@ import sys
 from pathlib import Path
 
 
+def _write_video_with_pyav(output_path: Path, images: list[Path]) -> bool:
+    """Create a tiny MP4 from still images using PyAV when ffmpeg CLI is absent."""
+    try:
+        import av
+        import numpy as np
+        from PIL import Image
+    except Exception:
+        return False
+
+    try:
+        with av.open(str(output_path), mode="w") as container:
+            stream = container.add_stream("mpeg4", rate=1)
+            stream.pix_fmt = "yuv420p"
+            stream.width = 960
+            stream.height = 540
+
+            for image_path in images:
+                with Image.open(image_path) as img:
+                    frame_image = img.convert("RGB").resize((stream.width, stream.height))
+                    frame = av.VideoFrame.from_ndarray(np.asarray(frame_image), format="rgb24")
+                    for packet in stream.encode(frame):
+                        container.mux(packet)
+
+            for packet in stream.encode():
+                container.mux(packet)
+        return True
+    except Exception:
+        if output_path.exists():
+            output_path.unlink(missing_ok=True)
+        return False
+
+
 def main() -> int:
     if len(sys.argv) != 5:
         print(
@@ -44,12 +76,16 @@ def main() -> int:
     )
 
     ffmpeg_path = shutil.which("ffmpeg")
+    real_video_available = False
     if ffmpeg_path is None:
-        output_path.write_bytes(b"placeholder-video")
+        real_video_available = _write_video_with_pyav(output_path, images)
+        if not real_video_available:
+            output_path.write_bytes(b"placeholder-video")
         print(json.dumps({
             "video_path": str(output_path),
             "transcript_path": str(transcript_path),
             "ffmpeg_available": False,
+            "real_video_available": real_video_available,
         }))
         return 0
 
@@ -96,6 +132,7 @@ def main() -> int:
         "video_path": str(output_path),
         "transcript_path": str(transcript_path),
         "ffmpeg_available": True,
+        "real_video_available": True,
     }))
     return 0
 

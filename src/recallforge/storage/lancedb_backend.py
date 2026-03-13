@@ -1728,6 +1728,7 @@ class LanceDBBackend(StorageBackend):
         exclude_globs: Optional[List[str]],
         embed_text_func,
         embed_image_func,
+        embed_video_func,
         model: str,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -1751,6 +1752,7 @@ class LanceDBBackend(StorageBackend):
             "indexed_videos": 0,
             "indexed_documents": 0,
             "indexed_document_sections": 0,
+            "indexed_video_embeddings": 0,
             "indexed_video_frames": 0,
             "indexed_video_transcripts": 0,
             "skipped": 0,
@@ -1811,6 +1813,7 @@ class LanceDBBackend(StorageBackend):
                         collection=collection,
                         embed_text_func=embed_text_func,
                         embed_image_func=embed_image_func,
+                        embed_video_func=embed_video_func,
                         model=model,
                         stored_path=item_path,
                         user_id=user_id,
@@ -1821,6 +1824,7 @@ class LanceDBBackend(StorageBackend):
                     summary["indexed_videos"] += 1
                     summary["indexed_images"] += video_summary["indexed_frames"]
                     summary["indexed_text"] += video_summary["indexed_transcripts"]
+                    summary["indexed_video_embeddings"] += video_summary.get("indexed_video_embeddings", 0)
                     summary["indexed_video_frames"] += video_summary["indexed_frames"]
                     summary["indexed_video_transcripts"] += video_summary["indexed_transcripts"]
                     mark(item_path, "video", "indexed")
@@ -2038,6 +2042,7 @@ class LanceDBBackend(StorageBackend):
         collection: str,
         embed_text_func,
         embed_image_func,
+        embed_video_func=None,
         model: str = "Qwen3-VL-Embedding-2B",
         stored_path: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -2047,9 +2052,11 @@ class LanceDBBackend(StorageBackend):
         frame_interval_seconds: float = 5.0,
         max_frames: int = 8,
     ) -> Dict[str, Any]:
-        """Index a video into frame embeddings and transcript chunks."""
+        """Index a video into a top-level video embedding plus derived assets."""
         actual_path = str(Path(path).expanduser().resolve())
         logical_path = stored_path or actual_path
+        resolved_title = os.path.splitext(os.path.basename(logical_path))[0]
+        video_embed = embed_video_func or embed_image_func
 
         artifact_root = Path(self._store_path or DEFAULT_INDEX_DIR) / "video_frames"
         digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
@@ -2072,6 +2079,70 @@ class LanceDBBackend(StorageBackend):
             frame_interval_seconds=frame_interval_seconds,
             max_frames=max_frames,
         )
+
+        try:
+            content_hash = hash_file_bytes(actual_path)
+        except FileNotFoundError:
+            raise
+        except Exception as e:
+            logger.error(f"index_video: failed to hash {path}: {e}")
+            raise
+
+        transcript_summary = "\n".join(
+            segment.text.strip()
+            for segment in artifacts.transcripts
+            if isinstance(segment.text, str) and segment.text.strip()
+        ).strip()
+        video_body = transcript_summary[:4000]
+
+        try:
+            modified_at = int(os.path.getmtime(actual_path) * 1000)
+            created_at = int(os.path.getctime(actual_path) * 1000)
+        except OSError as e:
+            logger.warning(f"index_video: failed to get file times for {path}: {e}")
+            modified_at = int(time.time() * 1000)
+            created_at = modified_at
+
+        indexed_video_embeddings = 0
+        try:
+            vector = video_embed(actual_path)
+            self.insert_content(content_hash, actual_path, content_type="video")
+            self.insert_document(
+                collection=collection,
+                file_path=logical_path,
+                title=resolved_title,
+                content_hash=content_hash,
+                content_type="video",
+                created_at=created_at,
+                modified_at=modified_at,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+            )
+            self.insert_embedding(
+                content_hash=content_hash,
+                seq=0,
+                pos=0,
+                vector=vector.tolist() if hasattr(vector, "tolist") else list(vector),
+                model=model,
+                collection=collection,
+                file_path=logical_path,
+                title=resolved_title,
+                text_body=video_body,
+                content_type="video",
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+            )
+            indexed_video_embeddings = 1
+        except Exception as e:
+            logger.warning(
+                "index_video: raw video embedding failed for %s; continuing with derived assets: %s",
+                actual_path,
+                e,
+            )
 
         indexed_frames = 0
         indexed_transcripts = 0
@@ -2109,6 +2180,8 @@ class LanceDBBackend(StorageBackend):
             "success": True,
             "path": logical_path,
             "collection": collection,
+            "hash": content_hash,
+            "indexed_video_embeddings": indexed_video_embeddings,
             "indexed_frames": indexed_frames,
             "indexed_transcripts": indexed_transcripts,
             "duration_seconds": artifacts.duration_seconds,

@@ -50,6 +50,7 @@ VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
 
 VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
 FFMPEG_AVAILABLE=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read())["ffmpeg_available"] else "0")' <<<"$VIDEO_META")
+VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
 
 if [[ -f "$VIDEO_PATH" ]]; then
     pass "synthetic video fixture created"
@@ -123,13 +124,36 @@ print(sum(1 for r in rows if "::frame:" in r.get("file_path", "")))
 PYEOF
 )
 
+VIDEO_COUNT=$(python3 - <<PYEOF
+import os
+import sys
+sys.path.insert(0, "src")
+from recallforge import get_storage
+store = get_storage("${UAT_STORE}")
+target = os.path.abspath("${VIDEO_PATH}")
+rows = store._embeddings_table.search().where("collection = 'video_cli_test'").to_list()
+print(sum(1 for r in rows if r.get("file_path") == target and r.get("content_type") == "video"))
+PYEOF
+)
+
 if [[ "$TRANSCRIPT_COUNT" -ge 1 ]]; then
     pass "video ingest created transcript embeddings ($TRANSCRIPT_COUNT)"
 else
     fail "video ingest created transcript embeddings"
 fi
 
+if [[ "$VIDEO_REAL" == "1" ]]; then
+    if [[ "$VIDEO_COUNT" -ge 1 ]]; then
+        pass "video ingest created top-level raw video embedding ($VIDEO_COUNT)"
+    else
+        fail "video ingest created top-level raw video embedding"
+    fi
+else
+    skip "video ingest top-level raw video embedding (no real video fixture available)"
+fi
+
 if [[ "$FFMPEG_AVAILABLE" == "1" ]]; then
+
     if [[ "$FRAME_COUNT" -ge 1 ]]; then
         pass "video ingest created frame embeddings ($FRAME_COUNT)"
     else

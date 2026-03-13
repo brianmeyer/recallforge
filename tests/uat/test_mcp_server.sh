@@ -104,6 +104,15 @@ class MockBackend:
         name = os.path.basename(path)
         return self._vec(name)
 
+    def embed_video(self, path):
+        import os
+        name = os.path.basename(path)
+        if "sample_video" in name:
+            return self._vec(
+                "pasta dish white plate forest landscape whiteboard architecture diagram meeting"
+            )
+        return self._vec(name)
+
     def needs_expander(self):
         return False
 
@@ -601,6 +610,11 @@ async def test_server():
     video_data = _as_json_payload(result)
     report(video_data.get("indexed_videos", 0) == 1, "ingest video indexes one logical video item")
     report(video_data.get("indexed_video_transcripts", 0) >= 1, "ingest video indexes transcript segments")
+    if video_meta.get("real_video_available"):
+        report(video_data.get("indexed_video_embeddings", 0) == 1, "ingest video indexes a top-level raw video embedding")
+    else:
+        report(video_data.get("indexed_video_embeddings", 0) == 0, "ingest video skips raw video embedding without a real video fixture")
+
     if video_meta.get("ffmpeg_available"):
         report(video_data.get("indexed_video_frames", 0) >= 1, "ingest video extracts frame embeddings with ffmpeg")
     else:
@@ -617,6 +631,32 @@ async def test_server():
         any("sample_video.mp4::transcript:" in r.get("filepath", "") for r in video_search.get("results", [])),
         "video transcript assets are searchable after ingest",
     )
+
+    if video_meta.get("real_video_available"):
+        result = await _call_tool(server, "search", {
+            "video_path": video_path,
+            "limit": 10,
+            "collection": "mcp_test",
+            "content_type": "video",
+        })
+        raw_video_search = json.loads(result[0].text)
+        report(
+            any("sample_video.mp4" in r.get("filepath", "") for r in raw_video_search.get("results", [])),
+            "search accepts video_path queries",
+        )
+
+        result = await _call_tool(server, "search_vec", {
+            "video_path": video_path,
+            "limit": 10,
+            "collection": "mcp_test",
+            "content_type": "text",
+        })
+        raw_video_vec = json.loads(result[0].text)
+        report(
+            any("sample_video.mp4::transcript:" in r.get("filepath", "") for r in raw_video_vec.get("results", [])),
+            "search_vec accepts video_path queries",
+        )
+
     if video_meta.get("ffmpeg_available"):
         result = await _call_tool(server, "search_vec", {
             "image_path": os.path.join(CORPUS_IMAGES, "whiteboard_architecture.png"),

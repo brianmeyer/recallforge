@@ -261,6 +261,7 @@ class WatchFolderDaemon:
                 collection=config.collection,
                 embed_text_func=self.backend.embed_text,
                 embed_image_func=self.backend.embed_image,
+                embed_video_func=getattr(self.backend, "embed_video", None),
                 model="Qwen3-VL-Embedding-2B",
                 stored_path=rel_path,
             )

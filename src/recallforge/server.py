@@ -69,16 +69,18 @@ async def _run_blocking(func: Callable[..., _T], *args, **kwargs) -> _T:
         return await asyncio.to_thread(func, *args, **kwargs)
 
 
-def _resolve_query_inputs(arguments: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """Validate mutually exclusive text/image query inputs."""
+def _resolve_query_inputs(arguments: dict) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Validate mutually exclusive text/image/video query inputs."""
     query = arguments.get("query")
     image_path = arguments.get("image_path")
+    video_path = arguments.get("video_path")
     query_text = query.strip() if isinstance(query, str) else ""
     image_text = image_path.strip() if isinstance(image_path, str) else ""
+    video_text = video_path.strip() if isinstance(video_path, str) else ""
 
-    if bool(query_text) == bool(image_text):
-        return None, None, "Provide exactly one of: query or image_path"
-    return (query_text or None), (image_text or None), None
+    if sum((bool(query_text), bool(image_text), bool(video_text))) != 1:
+        return None, None, None, "Provide exactly one of: query, image_path, or video_path"
+    return (query_text or None), (image_text or None), (video_text or None), None
 
 
 def _signal_handler(signum, frame):
@@ -126,9 +128,10 @@ async def create_server(
                     "properties": {
                         "query": {"type": "string", "description": "Search query"},
                         "image_path": {"type": "string", "description": "Optional image query path (mutually exclusive with query)"},
+                        "video_path": {"type": "string", "description": "Optional video query path (mutually exclusive with query/image_path)"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
                         "collection": {"type": "string", "description": "Optional collection filter"},
-                        "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
                         "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
@@ -145,7 +148,7 @@ async def create_server(
                         "query": {"type": "string", "description": "Search query"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
                         "collection": {"type": "string", "description": "Optional collection filter"},
-                        "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
                         "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
@@ -161,9 +164,10 @@ async def create_server(
                     "properties": {
                         "query": {"type": "string", "description": "Search query"},
                         "image_path": {"type": "string", "description": "Optional image query path (mutually exclusive with query)"},
+                        "video_path": {"type": "string", "description": "Optional video query path (mutually exclusive with query/image_path)"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
                         "collection": {"type": "string", "description": "Optional collection filter"},
-                        "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
                         "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
@@ -354,7 +358,7 @@ async def create_server(
 
 async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]:
     """Handle hybrid search."""
-    query, image_path, input_error = _resolve_query_inputs(arguments)
+    query, image_path, video_path, input_error = _resolve_query_inputs(arguments)
     limit = arguments.get("limit", 10)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
@@ -363,7 +367,7 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
 
-    trace_log("search_start", query=(query or image_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
+    trace_log("search_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if input_error:
@@ -383,14 +387,17 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
 
     if image_path:
         results = await _run_blocking(searcher.search_image, image_path)
+    elif video_path:
+        results = await _run_blocking(searcher.search_video, video_path)
     else:
         results = await _run_blocking(searcher.search, query)
 
-    trace_log("search_done", query=(query or image_path or "")[:50], count=len(results))
+    trace_log("search_done", query=(query or image_path or video_path or "")[:50], count=len(results))
 
     output = {
         "query": query,
         "image_path": image_path,
+        "video_path": video_path,
         "mode": backend.get_mode(),
         "count": len(results),
         "results": [
@@ -468,7 +475,7 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
 
 async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextContent]:
     """Handle vector search."""
-    query, image_path, input_error = _resolve_query_inputs(arguments)
+    query, image_path, video_path, input_error = _resolve_query_inputs(arguments)
     limit = arguments.get("limit", 20)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
@@ -477,7 +484,7 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
 
-    trace_log("search_vec_start", query=(query or image_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
+    trace_log("search_vec_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if input_error:
@@ -485,6 +492,11 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
 
     if image_path:
         vector = await _run_blocking(backend.embed_image, image_path)
+    elif video_path:
+        embed_video = getattr(backend, "embed_video", None)
+        if not callable(embed_video):
+            return [TextContent(type="text", text=json.dumps({"error": "Backend does not support raw video queries"}))]
+        vector = await _run_blocking(embed_video, video_path)
     else:
         vector = await _run_blocking(backend.embed_text, query)
 
@@ -500,11 +512,12 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
         profile=profile,
     )
 
-    trace_log("search_vec_done", query=(query or image_path or "")[:50], count=len(results))
+    trace_log("search_vec_done", query=(query or image_path or video_path or "")[:50], count=len(results))
 
     output = {
         "query": query,
         "image_path": image_path,
+        "video_path": video_path,
         "count": len(results),
         "results": [
             {
@@ -556,6 +569,7 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
         exclude_globs=exclude_globs,
         embed_text_func=backend.embed_text,
         embed_image_func=backend.embed_image,
+        embed_video_func=getattr(backend, "embed_video", None),
         model="Qwen3-VL-Embedding-2B",
         user_id=user_id,
         session_id=session_id,

@@ -1,0 +1,31 @@
+{
+  "timestamp": "2026-03-12 23:03:48",
+  "dataset_requested": "coco",
+  "dataset_used": "coco",
+  "dataset_source": "phiyodr/coco2017",
+  "split": "validation",
+  "limit": 10,
+  "num_images": 10,
+  "num_captions": 50,
+  "backend_requested": "auto",
+  "backend_used": "mlx",
+  "device": "mps",
+  "dtype": "4bit",
+  "mode": "embed",
+  "embedding_cache_hit": false,
+  "embedding_cache_path": "/var/folders/1h/7_dwqybn1c77mm0wdpr18jvc0000gn/T/recallforge-uat-93686/bench-cache/embeddings/coco_validation_10_36119357ee9fc768_mlx_4bit_mps.npz",
+  "cache_root": "/var/folders/1h/7_dwqybn1c77mm0wdpr18jvc0000gn/T/recallforge-uat-93686/bench-cache",
+  "metrics": {
+    "text_to_image": {
+      "recall@1": 0.26,
+      "recall@5": 0.72,
+      "recall@10": 1.0
+    },
+    "image_to_text": {
+      "recall@1": 0.5,
+      "recall@5": 1.0,
+      "recall@10": 1.0
+    }
+  },
+  "elapsed_seconds": 16.79903268814087
+}
