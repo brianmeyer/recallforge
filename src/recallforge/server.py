@@ -83,6 +83,26 @@ def _resolve_query_inputs(arguments: dict) -> tuple[Optional[str], Optional[str]
     return (query_text or None), (image_text or None), (video_text or None), None
 
 
+def _error_response(code: str, message: str, details: dict = None) -> list:
+    """Return a structured MCP error response as a list[TextContent].
+
+    Args:
+        code:    One of INVALID_INPUT | NOT_FOUND | BACKEND_ERROR | INTERNAL_ERROR
+        message: Human-readable description.
+        details: Optional extra context dict (defaults to empty dict).
+
+    Returns:
+        ``[TextContent(type="text", text=<json>)]`` so callers can return it directly.
+    """
+    payload = {
+        "error": True,
+        "code": code,
+        "message": message,
+        "details": details if details is not None else {},
+    }
+    return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+
 def _signal_handler(signum, frame):
     """Handle shutdown signals gracefully."""
     global _shutdown_requested
@@ -351,7 +371,7 @@ async def create_server(
             else:
                 raise ValueError(f"Unknown tool: {name}")
         except Exception as e:
-            return [TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
+            return _error_response("INTERNAL_ERROR", str(e), {"exception_type": type(e).__name__})
     
     return server
 
@@ -371,7 +391,7 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if input_error:
-        return [TextContent(type="text", text=json.dumps({"error": input_error}))]
+        return _error_response("INVALID_INPUT", input_error)
 
     searcher = HybridSearcher(
         backend=backend,
@@ -436,7 +456,7 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if not query:
-        return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
+        return _error_response("INVALID_INPUT", "Query is required")
 
     results = await _run_blocking(
         storage.search_fts,
@@ -488,14 +508,14 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if input_error:
-        return [TextContent(type="text", text=json.dumps({"error": input_error}))]
+        return _error_response("INVALID_INPUT", input_error)
 
     if image_path:
         vector = await _run_blocking(backend.embed_image, image_path)
     elif video_path:
         embed_video = getattr(backend, "embed_video", None)
         if not callable(embed_video):
-            return [TextContent(type="text", text=json.dumps({"error": "Backend does not support raw video queries"}))]
+            return _error_response("NOT_FOUND", "Backend does not support raw video queries")
         vector = await _run_blocking(embed_video, video_path)
     else:
         vector = await _run_blocking(backend.embed_text, query)
@@ -590,7 +610,7 @@ async def _handle_index_document(arguments: dict, backend, storage) -> list[Text
     trace_log("index_document_start", path=path, collection=collection)
     
     if not path or not text:
-        return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
+        return _error_response("INVALID_INPUT", "path and text are required")
     
     content_hash = await _run_blocking(
         storage.index_document,
@@ -621,10 +641,10 @@ async def _handle_index_image(arguments: dict, backend, storage) -> list[TextCon
     trace_log("index_image_start", path=path, collection=collection)
     
     if not path:
-        return [TextContent(type="text", text=json.dumps({"error": "path is required"}))]
-    
+        return _error_response("INVALID_INPUT", "path is required")
+
     if not os.path.exists(path):
-        return [TextContent(type="text", text=json.dumps({"error": f"File not found: {path}"}))]
+        return _error_response("NOT_FOUND", f"File not found: {path}", {"path": path})
     
     content_hash = await _run_blocking(
         storage.index_image,
@@ -663,7 +683,7 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
               importance=importance, ttl_seconds=ttl_seconds, tags=tags)
 
     if not path or not text:
-        return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
+        return _error_response("INVALID_INPUT", "path and text are required")
 
     content_hash = await _run_blocking(
         storage.upsert_memory,
@@ -718,7 +738,7 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
               importance=importance, ttl_seconds=ttl_seconds, tags=tags)
 
     if not path or not text:
-        return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
+        return _error_response("INVALID_INPUT", "path and text are required")
 
     content_hash = await _run_blocking(
         storage.upsert_memory,
@@ -768,7 +788,7 @@ async def _handle_memory_delete(arguments: dict, storage) -> list[TextContent]:
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if not path:
-        return [TextContent(type="text", text=json.dumps({"error": "path is required"}))]
+        return _error_response("INVALID_INPUT", "path is required")
 
     output = await _run_blocking(
         storage.delete_memory,
@@ -801,7 +821,7 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if not folder_path:
-        return [TextContent(type="text", text=json.dumps({"error": "folder_path is required"}))]
+        return _error_response("INVALID_INPUT", "folder_path is required")
 
     output = await _run_blocking(
         storage.index_folder,
@@ -862,10 +882,9 @@ async def _handle_rebuild_fts(storage) -> list[TextContent]:
     try:
         await _run_blocking(storage.rebuild_fts_index)
         output = {"success": True, "message": "FTS index rebuilt"}
+        return [TextContent(type="text", text=json.dumps(output, indent=2))]
     except Exception as e:
-        output = {"success": False, "error": str(e)}
-    
-    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+        return _error_response("BACKEND_ERROR", str(e), {"exception_type": type(e).__name__})
 
 
 async def main() -> None:
