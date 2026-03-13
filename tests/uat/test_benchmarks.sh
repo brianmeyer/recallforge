@@ -47,9 +47,10 @@ from pathlib import Path
 
 payload = json.loads(Path("benchmarks/cross_modal_results.json").read_text())
 assert payload.get("dataset_requested") == "coco"
-assert payload.get("limit_requested") == 10
-assert "text_to_image" in payload
-assert "image_to_text" in payload
+assert payload.get("limit") == 10
+metrics = payload.get("metrics", {})
+assert "text_to_image" in metrics
+assert "image_to_text" in metrics
 print("ok")
 PYEOF
 then

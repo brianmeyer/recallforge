@@ -10,10 +10,26 @@ section "RecallForge Backend Tests"
 cd "$REPO_ROOT"
 trap cleanup_store EXIT
 
+MLX_HEALTHY=0
 TORCH_HEALTHY=0
+
+if is_apple_silicon && backend_runtime_healthy mlx; then
+    MLX_HEALTHY=1
+fi
 
 if backend_runtime_healthy torch; then
     TORCH_HEALTHY=1
+fi
+
+BACKEND_ORDER=()
+if [[ "${MLX_HEALTHY}" -eq 1 ]]; then
+    BACKEND_ORDER+=("mlx")
+fi
+if [[ "${TORCH_HEALTHY}" -eq 1 ]]; then
+    BACKEND_ORDER+=("torch")
+fi
+if [[ ${#BACKEND_ORDER[@]} -gt 0 ]]; then
+    info "Backend order: ${BACKEND_ORDER[*]}"
 fi
 
 # Helper: flush GPU memory between backend tests
@@ -31,6 +47,181 @@ except: pass
     # Give Metal/MPS time to release unified memory
     sleep 3
 }
+
+# ──────────────────────────────────────────────
+subsection "MLX Backend (4-bit Embed Coverage)"
+# ──────────────────────────────────────────────
+
+if [[ "${MLX_HEALTHY}" -eq 1 ]]; then
+    info "Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image)..."
+    ensure_test_images
+
+    python3 << 'PYEOF'
+import os, sys, time
+sys.path.insert(0, "src")
+
+os.environ["RECALLFORGE_BACKEND"] = "mlx"
+os.environ["RECALLFORGE_MLX_QUANTIZE"] = "4bit"
+os.environ["RECALLFORGE_MODE"] = "embed"
+
+from recallforge import get_backend
+
+backend = get_backend()
+
+print("Loading MLX embedder (4-bit)...")
+t0 = time.time()
+backend._load_embedder()
+print(f"  Embedder loaded in {time.time()-t0:.1f}s")
+
+vec = backend.embed_text("test text")
+assert vec.shape == (2048,), f"FAIL: embed_text shape {vec.shape} != (2048,)"
+assert vec.dtype.name == "float32", f"FAIL: embed_text dtype {vec.dtype}"
+norm = (vec**2).sum()**0.5
+assert 0.9 < norm < 1.1, f"FAIL: embed_text norm {norm}"
+print("  PASS  MLX 4-bit embed_text: 2048-dim float32 vector")
+
+texts = ["Hello world", "Goodbye world", "Test embedding"]
+vecs = backend.embed_texts(texts)
+assert vecs.shape == (len(texts), 2048), f"FAIL: embed_texts shape {vecs.shape}"
+print(f"  PASS  MLX 4-bit embed_texts batch: {vecs.shape}")
+
+img_path = os.path.join("tests", "uat", "corpus", "images", "whiteboard_architecture.png")
+assert os.path.exists(img_path), f"FAIL: missing test image {img_path}"
+vec_img = backend.embed_image(img_path)
+assert vec_img.shape == (2048,), f"FAIL: embed_image shape {vec_img.shape}"
+print("  PASS  MLX 4-bit embed_image: 2048-dim vector")
+
+print("\nMLX 4-bit embed coverage: ALL PASSED")
+PYEOF
+    MLX_EMBED_RC=$?
+
+    if [[ $MLX_EMBED_RC -eq 0 ]]; then
+        pass "MLX 4-bit embed coverage"
+    elif ! backend_runtime_healthy mlx; then
+        skip "MLX 4-bit embed coverage (runtime became unavailable)"
+    else
+        fail "MLX 4-bit embed coverage had failures"
+    fi
+else
+    skip "MLX 4-bit embed coverage (runtime unavailable)"
+fi
+
+# ──────────────────────────────────────────────
+subsection "MLX Backend (bf16 Compatibility)"
+# ──────────────────────────────────────────────
+
+if [[ "${MLX_HEALTHY}" -eq 1 ]]; then
+    info "Testing MLX bf16 compatibility backend..."
+    info "Expected behavior: embedder/reranker on MLX, expander via torch fallback."
+
+    python3 << 'PYEOF'
+import os, sys, time
+sys.path.insert(0, "src")
+
+os.environ["RECALLFORGE_BACKEND"] = "mlx"
+os.environ["RECALLFORGE_MODE"] = "full"
+os.environ["RECALLFORGE_MLX_QUANTIZE"] = "bf16"
+
+from recallforge import get_backend
+
+backend = get_backend()
+
+# Embedder
+print("Loading MLX embedder (bf16)...")
+t0 = time.time()
+backend._load_embedder()
+print(f"  Loaded in {time.time()-t0:.1f}s")
+
+vec = backend.embed_text("Test embedding with MLX.")
+assert vec.shape == (2048,), f"FAIL: shape {vec.shape}"
+print(f"  PASS  MLX bf16 embed_text: shape={vec.shape}")
+
+# Reranker
+print("Loading MLX reranker (bf16)...")
+t0 = time.time()
+backend._load_reranker()
+print(f"  Loaded in {time.time()-t0:.1f}s")
+
+docs = [{"text": "Test doc one"}, {"text": "Test doc two"}]
+scores = backend.rerank("test", docs)
+assert len(scores) == 2
+print(f"  PASS  MLX bf16 rerank: scores={[f'{s:.3f}' for s in scores]}")
+
+# Expander (torch fallback)
+print("Loading expander (torch fallback, expected for bf16 coverage)...")
+t0 = time.time()
+backend._load_expander()
+print(f"  Loaded in {time.time()-t0:.1f}s")
+
+exp = backend.expand_query("search optimization")
+assert "lex" in exp and "vec" in exp and "hyde" in exp
+print(f"  PASS  MLX expander (torch fallback): keys={list(exp.keys())}")
+
+info = backend.get_info()
+print(f"  PASS  MLX info: device={info.device} quant={info.quantization} mem={info.memory_allocated_gb:.1f}GB")
+
+print("\nMLX bf16 compatibility backend: ALL PASSED")
+PYEOF
+    MLX_RC=$?
+
+    if [[ $MLX_RC -eq 0 ]]; then
+        pass "MLX bf16 compatibility backend all tests"
+    elif ! backend_runtime_healthy mlx; then
+        skip "MLX bf16 compatibility backend (runtime became unavailable)"
+    else
+        fail "MLX bf16 compatibility backend tests had failures"
+    fi
+
+    _cleanup_gpu
+
+    # MLX 4-bit
+    if backend_runtime_healthy mlx; then
+        info "Testing MLX 4-bit backend..."
+
+        python3 << 'PYEOF'
+import os, sys, time
+sys.path.insert(0, "src")
+
+os.environ["RECALLFORGE_BACKEND"] = "mlx"
+os.environ["RECALLFORGE_MODE"] = "embed"
+os.environ["RECALLFORGE_MLX_QUANTIZE"] = "4bit"
+
+from recallforge import get_backend
+
+backend = get_backend()
+
+print("Loading MLX embedder (4-bit)...")
+t0 = time.time()
+backend._load_embedder()
+print(f"  Loaded in {time.time()-t0:.1f}s")
+
+vec = backend.embed_text("Test 4-bit embedding.")
+assert vec.shape == (2048,), f"FAIL: shape {vec.shape}"
+print(f"  PASS  MLX 4-bit embed_text: shape={vec.shape}")
+
+info = backend.get_info()
+assert info.quantization == "4bit"
+print(f"  PASS  MLX 4-bit info: quant={info.quantization} mem={info.memory_allocated_gb:.1f}GB")
+
+print("\nMLX 4-bit backend: ALL PASSED")
+PYEOF
+        MLX4_RC=$?
+        if [[ $MLX4_RC -eq 0 ]]; then
+            pass "MLX 4-bit backend all tests"
+        elif ! backend_runtime_healthy mlx; then
+            skip "MLX 4-bit backend (runtime became unavailable)"
+        else
+            fail "MLX 4-bit backend tests had failures"
+        fi
+    else
+        skip "MLX 4-bit backend (runtime unavailable)"
+    fi
+else
+    skip "MLX backend (runtime unavailable)"
+    skip "MLX 4-bit backend (runtime unavailable)"
+fi
+
+_cleanup_gpu
 
 # ──────────────────────────────────────────────
 subsection "Torch Backend"
@@ -149,180 +340,6 @@ PYEOF
     fi
 else
     skip "Torch backend (runtime/model assets unavailable)"
-fi
-
-_cleanup_gpu
-
-# ──────────────────────────────────────────────
-subsection "MLX Backend (4-bit Embed Coverage)"
-# ──────────────────────────────────────────────
-
-if is_apple_silicon && backend_runtime_healthy mlx; then
-    info "Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image)..."
-    ensure_test_images
-
-    python3 << 'PYEOF'
-import os, sys, time
-sys.path.insert(0, "src")
-
-os.environ["RECALLFORGE_BACKEND"] = "mlx"
-os.environ["RECALLFORGE_MLX_QUANTIZE"] = "4bit"
-os.environ["RECALLFORGE_MODE"] = "embed"
-
-from recallforge import get_backend
-
-backend = get_backend()
-
-print("Loading MLX embedder (4-bit)...")
-t0 = time.time()
-backend._load_embedder()
-print(f"  Embedder loaded in {time.time()-t0:.1f}s")
-
-vec = backend.embed_text("test text")
-assert vec.shape == (2048,), f"FAIL: embed_text shape {vec.shape} != (2048,)"
-assert vec.dtype.name == "float32", f"FAIL: embed_text dtype {vec.dtype}"
-norm = (vec**2).sum()**0.5
-assert 0.9 < norm < 1.1, f"FAIL: embed_text norm {norm}"
-print("  PASS  MLX 4-bit embed_text: 2048-dim float32 vector")
-
-texts = ["Hello world", "Goodbye world", "Test embedding"]
-vecs = backend.embed_texts(texts)
-assert vecs.shape == (len(texts), 2048), f"FAIL: embed_texts shape {vecs.shape}"
-print(f"  PASS  MLX 4-bit embed_texts batch: {vecs.shape}")
-
-img_path = os.path.join("tests", "uat", "corpus", "images", "whiteboard_architecture.png")
-assert os.path.exists(img_path), f"FAIL: missing test image {img_path}"
-vec_img = backend.embed_image(img_path)
-assert vec_img.shape == (2048,), f"FAIL: embed_image shape {vec_img.shape}"
-print("  PASS  MLX 4-bit embed_image: 2048-dim vector")
-
-print("\nMLX 4-bit embed coverage: ALL PASSED")
-PYEOF
-    MLX_EMBED_RC=$?
-
-    if [[ $MLX_EMBED_RC -eq 0 ]]; then
-        pass "MLX 4-bit embed coverage"
-    elif ! backend_runtime_healthy mlx; then
-        skip "MLX 4-bit embed coverage (runtime became unavailable)"
-    else
-        fail "MLX 4-bit embed coverage had failures"
-    fi
-else
-    skip "MLX 4-bit embed coverage (runtime unavailable)"
-fi
-
-# ──────────────────────────────────────────────
-subsection "MLX Backend"
-# ──────────────────────────────────────────────
-
-if is_apple_silicon && backend_runtime_healthy mlx; then
-    info "Testing MLX backend..."
-
-    python3 << 'PYEOF'
-import os, sys, time
-sys.path.insert(0, "src")
-
-os.environ["RECALLFORGE_BACKEND"] = "mlx"
-os.environ["RECALLFORGE_MODE"] = "full"
-os.environ["RECALLFORGE_MLX_QUANTIZE"] = "bf16"
-
-from recallforge import get_backend
-
-backend = get_backend()
-
-# Embedder
-print("Loading MLX embedder (bf16)...")
-t0 = time.time()
-backend._load_embedder()
-print(f"  Loaded in {time.time()-t0:.1f}s")
-
-vec = backend.embed_text("Test embedding with MLX.")
-assert vec.shape == (2048,), f"FAIL: shape {vec.shape}"
-print(f"  PASS  MLX bf16 embed_text: shape={vec.shape}")
-
-# Reranker
-print("Loading MLX reranker (bf16)...")
-t0 = time.time()
-backend._load_reranker()
-print(f"  Loaded in {time.time()-t0:.1f}s")
-
-docs = [{"text": "Test doc one"}, {"text": "Test doc two"}]
-scores = backend.rerank("test", docs)
-assert len(scores) == 2
-print(f"  PASS  MLX bf16 rerank: scores={[f'{s:.3f}' for s in scores]}")
-
-# Expander (torch fallback)
-print("Loading expander (torch fallback)...")
-t0 = time.time()
-backend._load_expander()
-print(f"  Loaded in {time.time()-t0:.1f}s")
-
-exp = backend.expand_query("search optimization")
-assert "lex" in exp and "vec" in exp and "hyde" in exp
-print(f"  PASS  MLX expander (torch fallback): keys={list(exp.keys())}")
-
-info = backend.get_info()
-print(f"  PASS  MLX info: device={info.device} quant={info.quantization} mem={info.memory_allocated_gb:.1f}GB")
-
-print("\nMLX bf16 backend: ALL PASSED")
-PYEOF
-    MLX_RC=$?
-
-    if [[ $MLX_RC -eq 0 ]]; then
-        pass "MLX bf16 backend all tests"
-    elif ! backend_runtime_healthy mlx; then
-        skip "MLX bf16 backend (runtime became unavailable)"
-    else
-        fail "MLX bf16 backend tests had failures"
-    fi
-
-    _cleanup_gpu
-
-    # MLX 4-bit
-    if backend_runtime_healthy mlx; then
-        info "Testing MLX 4-bit backend..."
-
-        python3 << 'PYEOF'
-import os, sys, time
-sys.path.insert(0, "src")
-
-os.environ["RECALLFORGE_BACKEND"] = "mlx"
-os.environ["RECALLFORGE_MODE"] = "embed"
-os.environ["RECALLFORGE_MLX_QUANTIZE"] = "4bit"
-
-from recallforge import get_backend
-
-backend = get_backend()
-
-print("Loading MLX embedder (4-bit)...")
-t0 = time.time()
-backend._load_embedder()
-print(f"  Loaded in {time.time()-t0:.1f}s")
-
-vec = backend.embed_text("Test 4-bit embedding.")
-assert vec.shape == (2048,), f"FAIL: shape {vec.shape}"
-print(f"  PASS  MLX 4-bit embed_text: shape={vec.shape}")
-
-info = backend.get_info()
-assert info.quantization == "4bit"
-print(f"  PASS  MLX 4-bit info: quant={info.quantization} mem={info.memory_allocated_gb:.1f}GB")
-
-print("\nMLX 4-bit backend: ALL PASSED")
-PYEOF
-        MLX4_RC=$?
-        if [[ $MLX4_RC -eq 0 ]]; then
-            pass "MLX 4-bit backend all tests"
-        elif ! backend_runtime_healthy mlx; then
-            skip "MLX 4-bit backend (runtime became unavailable)"
-        else
-            fail "MLX 4-bit backend tests had failures"
-        fi
-    else
-        skip "MLX 4-bit backend (runtime unavailable)"
-    fi
-else
-    skip "MLX backend (runtime unavailable)"
-    skip "MLX 4-bit backend (runtime unavailable)"
 fi
 
 _cleanup_gpu
