@@ -28,6 +28,7 @@ sys.path.insert(0, "src")
 STORE = "${UAT_STORE}"
 CORPUS_TEXT = "${CORPUS_DIR}/text"
 CORPUS_IMAGES = "${CORPUS_DIR}/images"
+CORPUS_VIDEOS = "${CORPUS_DIR}/videos"
 HELPERS_DIR = "${HELPERS_DIR}"
 
 import platform
@@ -591,16 +592,10 @@ async def test_server():
            "search with no query returns error or empty results")
 
     # Video ingest should index transcript segments everywhere and frames when ffmpeg is available.
-    helper_script = os.path.join(HELPERS_DIR, "generate_test_video.py")
-    video_path = os.path.join(STORE, "sample_video.mp4")
-    video_meta = json.loads(subprocess.check_output([
-        sys.executable,
-        helper_script,
-        video_path,
-        os.path.join(CORPUS_IMAGES, "food_pasta_dish.png"),
-        os.path.join(CORPUS_IMAGES, "forest_landscape.png"),
-        os.path.join(CORPUS_IMAGES, "whiteboard_architecture.png"),
-    ], text=True))
+    video_path = os.path.join(CORPUS_VIDEOS, "whiteboard_session.mp4")
+    ffmpeg_available = subprocess.run(
+        ["ffmpeg", "-version"], capture_output=True
+    ).returncode == 0
 
     result = await _call_tool(server, "ingest", {
         "file_path": video_path,
@@ -610,12 +605,10 @@ async def test_server():
     video_data = _as_json_payload(result)
     report(video_data.get("indexed_videos", 0) == 1, "ingest video indexes one logical video item")
     report(video_data.get("indexed_video_transcripts", 0) >= 1, "ingest video indexes transcript segments")
-    if video_meta.get("real_video_available"):
-        report(video_data.get("indexed_video_embeddings", 0) == 1, "ingest video indexes a top-level raw video embedding")
-    else:
-        report(video_data.get("indexed_video_embeddings", 0) == 0, "ingest video skips raw video embedding without a real video fixture")
+    # Corpus videos are real MP4 files; raw video embedding is always expected
+    report(video_data.get("indexed_video_embeddings", 0) == 1, "ingest video indexes a top-level raw video embedding")
 
-    if video_meta.get("ffmpeg_available"):
+    if ffmpeg_available:
         report(video_data.get("indexed_video_frames", 0) >= 1, "ingest video extracts frame embeddings with ffmpeg")
     else:
         report(video_data.get("indexed_video_frames", 0) == 0, "ingest video falls back to transcript-only without ffmpeg")
@@ -628,34 +621,34 @@ async def test_server():
     })
     video_search = json.loads(result[0].text)
     report(
-        any("sample_video.mp4::transcript:" in r.get("filepath", "") for r in video_search.get("results", [])),
+        any("whiteboard_session.mp4::transcript:" in r.get("filepath", "") for r in video_search.get("results", [])),
         "video transcript assets are searchable after ingest",
     )
 
-    if video_meta.get("real_video_available"):
-        result = await _call_tool(server, "search", {
-            "video_path": video_path,
-            "limit": 10,
-            "collection": "mcp_test",
-            "content_type": "video",
-        })
-        raw_video_search = json.loads(result[0].text)
-        report(
-            any("sample_video.mp4" in r.get("filepath", "") for r in raw_video_search.get("results", [])),
-            "search accepts video_path queries",
-        )
+    # Corpus videos are real MP4s — always test raw video search paths
+    result = await _call_tool(server, "search", {
+        "video_path": video_path,
+        "limit": 10,
+        "collection": "mcp_test",
+        "content_type": "video",
+    })
+    raw_video_search = json.loads(result[0].text)
+    report(
+        any("whiteboard_session.mp4" in r.get("filepath", "") for r in raw_video_search.get("results", [])),
+        "search accepts video_path queries",
+    )
 
-        result = await _call_tool(server, "search_vec", {
-            "video_path": video_path,
-            "limit": 10,
-            "collection": "mcp_test",
-            "content_type": "text",
-        })
-        raw_video_vec = json.loads(result[0].text)
-        report(
-            any("sample_video.mp4::transcript:" in r.get("filepath", "") for r in raw_video_vec.get("results", [])),
-            "search_vec accepts video_path queries",
-        )
+    result = await _call_tool(server, "search_vec", {
+        "video_path": video_path,
+        "limit": 10,
+        "collection": "mcp_test",
+        "content_type": "text",
+    })
+    raw_video_vec = json.loads(result[0].text)
+    report(
+        any("whiteboard_session.mp4::transcript:" in r.get("filepath", "") for r in raw_video_vec.get("results", [])),
+        "search_vec accepts video_path queries",
+    )
 
     if video_meta.get("ffmpeg_available"):
         result = await _call_tool(server, "search_vec", {

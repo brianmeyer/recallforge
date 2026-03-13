@@ -11,14 +11,13 @@ cd "$REPO_ROOT"
 trap cleanup_store EXIT
 
 ensure_test_images
-VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
-    "${UAT_STORE}/backend_sample_video.mp4" \
-    "${CORPUS_DIR}/images/food_pasta_dish.png" \
-    "${CORPUS_DIR}/images/forest_landscape.png" \
-    "${CORPUS_DIR}/images/whiteboard_architecture.png")
-export UAT_BACKEND_VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
-export UAT_BACKEND_VIDEO_FFMPEG=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read())["ffmpeg_available"] else "0")' <<<"$VIDEO_META")
-export UAT_BACKEND_VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
+export UAT_BACKEND_VIDEO_PATH="${CORPUS_DIR}/videos/whiteboard_session.mp4"
+export UAT_BACKEND_VIDEO_FFMPEG=0
+if command -v ffmpeg >/dev/null 2>&1; then
+    export UAT_BACKEND_VIDEO_FFMPEG=1
+fi
+# Corpus videos are committed real MP4s
+export UAT_BACKEND_VIDEO_REAL=1
 
 MLX_HEALTHY=0
 TORCH_HEALTHY=0

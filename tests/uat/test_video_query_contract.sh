@@ -12,29 +12,18 @@ trap cleanup_store EXIT
 
 ensure_test_images
 
-subsection "Generate Synthetic Video"
+subsection "Corpus Video Fixture"
 
-VIDEO_META=$(python3 "${HELPERS_DIR}/generate_test_video.py" \
-    "${UAT_STORE}/sample_video.mp4" \
-    "${CORPUS_DIR}/images/food_pasta_dish.png" \
-    "${CORPUS_DIR}/images/forest_landscape.png" \
-    "${CORPUS_DIR}/images/whiteboard_architecture.png")
-
-VIDEO_PATH=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["video_path"])' <<<"$VIDEO_META")
-VIDEO_REAL=$(python3 -c 'import json,sys; print("1" if json.loads(sys.stdin.read()).get("real_video_available") else "0")' <<<"$VIDEO_META")
+VIDEO_PATH="${CORPUS_DIR}/videos/whiteboard_session.mp4"
+# Corpus videos are committed real MP4s
+VIDEO_REAL=1
 
 if [[ -f "$VIDEO_PATH" ]]; then
-    pass "synthetic video fixture created"
+    pass "corpus video fixture present"
 else
-    fail "synthetic video fixture created"
+    fail "corpus video fixture present"
     print_summary "Raw Video Query Contract"
     exit 1
-fi
-
-if [[ "$VIDEO_REAL" != "1" ]]; then
-    skip "raw video query smoke requires a real video fixture"
-    print_summary "Raw Video Query Contract"
-    exit 0
 fi
 
 subsection "Interface Detection"
@@ -97,7 +86,7 @@ else
 fi
 
 OUTPUT=$(recallforge search --video "$VIDEO_PATH" --collection video_query_contract --content-type video --store-path "$UAT_STORE" 2>&1 || true)
-if echo "$OUTPUT" | grep -qE "sample_video\\.mp4(\\b|')"; then
+if echo "$OUTPUT" | grep -qE "whiteboard_session\\.mp4(\\b|')"; then
     pass "recallforge search --video returns video-linked results"
 else
     fail "recallforge search --video returns video-linked results"
@@ -124,7 +113,7 @@ searcher = HybridSearcher(
 )
 results = searcher.search_video("${VIDEO_PATH}")
 paths = [r.filepath for r in results]
-if any("sample_video.mp4::transcript:" in path for path in paths):
+if any("whiteboard_session.mp4::transcript:" in path for path in paths):
     print("  \033[0;32mPASS\033[0m  HybridSearcher.search_video returns transcript-linked results")
 else:
     print("  \033[0;31mFAIL\033[0m  HybridSearcher.search_video returns transcript-linked results")
