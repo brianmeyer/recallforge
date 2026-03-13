@@ -1,413 +1,0 @@
-RecallForge UAT Results
-======================
-Date: 2026-03-13 10:37:02 EDT
-Host: Mac (arm64)
-Python: Python 3.12.12
-
-
-═══════════════════════════════════════
-  Install
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Install Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Base Install (PyTorch) ---[0m
-  [0;36mINFO[0m  Installing recallforge (base) from /Users/brianmeyer/recallforge ...
-[notice] To update, run: python3.12 -m pip install --upgrade pip
-  [0;32mPASS[0m  recallforge --help works
-  [0;32mPASS[0m  recallforge --version prints version (RecallForge 0.1.0)
-  [0;32mPASS[0m  import recallforge works
-  [0;32mPASS[0m  Dependency present: lancedb
-  [0;32mPASS[0m  Dependency present: pyarrow
-  [0;32mPASS[0m  Dependency present: PIL
-  [0;32mPASS[0m  Dependency present: numpy
-  [0;32mPASS[0m  Dependency present: mcp
-  [0;32mPASS[0m  Dependency present: transformers
-  [0;32mPASS[0m  Dependency present: torch
-  [0;32mPASS[0m  Dependency present: scipy
-  [0;32mPASS[0m  Import: recallforge.backends
-  [0;32mPASS[0m  Import: recallforge.storage
-  [0;32mPASS[0m  Import: recallforge.search
-  [0;32mPASS[0m  Import: recallforge.server
-  [0;32mPASS[0m  Import: recallforge.cli
-
-[0;36m--- MLX Install (Apple Silicon) ---[0m
-  [0;36mINFO[0m  Installing recallforge[mlx] ...
-[notice] To update, run: python3.12 -m pip install --upgrade pip
-  [0;32mPASS[0m  MLX package installed
-  [0;32mPASS[0m  MLX runtime probe healthy
-  [0;32mPASS[0m  recallforge CLI works with MLX install
-
-[0;36m--- CUDA Install ---[0m
-  [0;33mSKIP[0m  CUDA install (no CUDA GPU)
-
-[1m═══════════════════════════════════════[0m
-[1m  Install Tests Summary[0m
-[1m═══════════════════════════════════════[0m
-  [0;32mPASS: 19[0m
-  [0;31mFAIL: 0[0m
-  [0;33mSKIP: 1[0m
-  Total: 20
-
-  [0;32m[1mRESULT: PASSED[0m
-
-
-═══════════════════════════════════════
-  Storage
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Storage Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Create DB & Insert ---[0m
-
-  [0;32mPASS[0m  Fresh DB has 0 documents
-  [0;32mPASS[0m  Fresh DB has 0 embeddings
-  [0;32mPASS[0m  Fresh DB has no vectors
-  [0;32mPASS[0m  Indexed doc1.md, hash=efeea805...
-  [0;32mPASS[0m  Indexed doc2.md, hash=91022181...
-  [0;32mPASS[0m  Indexed doc3.md, hash=b109b44e...
-  [0;32mPASS[0m  Indexed doc4.md, hash=3d90bce4...
-  [0;32mPASS[0m  Indexed doc5.md, hash=c6491de9...
-  [0;32mPASS[0m  Document count is 5 (expected 5)
-  [0;32mPASS[0m  Embedding count is 5 (>= 5)
-  [0;32mPASS[0m  DB now has vectors
-
-[0;36m--- Content Storage ---[0m
-
-  [0;32mPASS[0m  Content for doc1.md matches original
-  [0;32mPASS[0m  Content for doc2.md matches original
-  [0;32mPASS[0m  Content for doc3.md matches original
-  [0;32mPASS[0m  Content for doc4.md matches original
-  [0;32mPASS[0m  Content for doc5.md matches original
-  [0;32mPASS[0m  Nonexistent hash returns None
-
-[0;36m--- FTS Search ---[0m
-
-  [0;32mPASS[0m  FTS 'AI machine learning' returns 1 results
-  [0;32mPASS[0m  Top FTS result is AI doc: storage_test/doc1.md
-  [0;32mPASS[0m  FTS 'graph databases' returns 1 results
-  [0;32mPASS[0m  FTS 'pasta flour' returns 1 results
-  [0;32mPASS[0m  FTS with wrong collection returns 0 results
-
-[0;36m--- Vector Search ---[0m
-
-  [0;32mPASS[0m  Vector search returns 5 results
-  [0;32mPASS[0m  Vector search with wrong collection returns 0
-
-[0;36m--- Document Operations ---[0m
-
-  [0;32mPASS[0m  find_document returns doc1: title='doc1'
-  [0;32mPASS[0m  find_document for nonexistent returns None
-  [0;32mPASS[0m  Deactivated doc not found by find_document
-
-[0;36m--- Cache Operations ---[0m
-
-  [0;32mPASS[0m  Cache miss returns None
-  [0;32mPASS[0m  Cache set/get roundtrip works
-  [0;32mPASS[0m  Cache update/overwrite works
-
-[0;36m--- Rebuild FTS Index ---[0m
-
-  [0;32mPASS[0m  rebuild_fts_index completed without error
-  [0;32mPASS[0m  FTS works after rebuild: 1 results
-
-[0;36m--- Large Corpus Performance ---[0m
-
-  Indexing 1000 documents...
-    Indexed 200/1000
-    Indexed 400/1000
-    Indexed 600/1000
-    Indexed 800/1000
-    Indexed 1000/1000
-  Indexing 1000 docs took 215.6s (5 docs/sec)
-  [0;32mPASS[0m  Indexed 1000 docs in 215.6s
-  [0;32mPASS[0m  FTS on 1000 docs: 65ms (< 1s)
-  [0;32mPASS[0m  FTS returned 10 results from bulk corpus
-  [0;32mPASS[0m  Vector search on 1000 docs: 42ms (< 1s)
-  [0;32mPASS[0m  Vector search returned 10 results from bulk corpus
-
-[1m========================================[0m
-[1m  Storage Summary[0m
-[1m========================================[0m
-  [0;32mPASS: 37[0m
-  [0;31mFAIL: 0[0m
-
-  [0;32m[1mRESULT: PASSED[0m
-
-
-═══════════════════════════════════════
-  Backends
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Backend Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-  [0;36mINFO[0m  Backend order: mlx torch
-
-[0;36m--- MLX Backend (4-bit Embed Coverage) ---[0m
-  [0;36mINFO[0m  Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image, embed_video)...
-Loading MLX embedder (4-bit)...
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 182972.99it/s]
-qwen-vl-utils using torchvision to read video.
-/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
-  warnings.warn(
-smart_nframes: nframes[6.0] > total_frames[3]
-Qwen3VL requires frame timestamps to construct prompts, but the `fps` of the input video could not be inferred. Probably `video_metadata` was missing from inputs and you passed pre-sampled frames. Defaulting to `fps=24`. Please provide `video_metadata` for more accurate results.
-[MLXBackend] Loaded embedder (4bit)
-  Embedder loaded in 3.2s
-  PASS  MLX 4-bit embed_text: 2048-dim float32 vector
-  PASS  MLX 4-bit embed_texts batch: (3, 2048)
-  PASS  MLX 4-bit embed_image: 2048-dim vector
-  PASS  MLX 4-bit embed_video: 2048-dim vector
-
-MLX 4-bit embed coverage: ALL PASSED
-  [0;32mPASS[0m  MLX 4-bit embed coverage
-
-[0;36m--- MLX Backend (bf16 Compatibility) ---[0m
-  [0;36mINFO[0m  Testing MLX bf16 compatibility backend...
-  [0;36mINFO[0m  Expected behavior: embedder/reranker on MLX, expander via torch fallback.
-Loading MLX embedder (bf16)...
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 71369.05it/s]
-[MLXBackend] Loaded embedder (bf16)
-  Loaded in 4.4s
-  PASS  MLX bf16 embed_text: shape=(2048,)
-Loading MLX reranker (bf16)...
-[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 181149.34it/s]
-`torch_dtype` is deprecated! Use `dtype` instead!
-The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
-[MLXBackend] score_linear missing; using lm_head yes-no projection fallback
-[MLXBackend] Loaded reranker (bf16)
-  Loaded in 3.2s
-  PASS  MLX bf16 rerank: scores=['0.522', '0.516']
-Loading expander (torch fallback, expected for bf16 coverage)...
-[MLXBackend] Loading expander via torch fallback on mps
-Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:08<42:59,  8.09s/it]Loading weights: 100%|██████████| 320/320 [00:08<00:00, 39.52it/s]
-[MLXBackend] Loaded expander (torch fallback)
-  Loaded in 12.9s
-  PASS  MLX expander (torch fallback): keys=['lex', 'vec', 'hyde']
-  PASS  MLX info: device=mps quant=bf16 mem=12.0GB
-
-MLX bf16 compatibility backend: ALL PASSED
-  [0;32mPASS[0m  MLX bf16 compatibility backend all tests
-  [0;36mINFO[0m  Testing MLX 4-bit backend...
-Loading MLX embedder (4-bit)...
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 55809.57it/s]
-[MLXBackend] Loaded embedder (4bit)
-  Loaded in 2.5s
-  PASS  MLX 4-bit embed_text: shape=(2048,)
-  PASS  MLX 4-bit info: quant=4bit mem=2.0GB
-
-MLX 4-bit backend: ALL PASSED
-  [0;32mPASS[0m  MLX 4-bit backend all tests
-
-[0;36m--- Torch Backend ---[0m
-  [0;36mINFO[0m  Testing Torch backend (embed_text, embed_image, embed_video, rerank, expand_query)...
-Loading embedder...
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:01<19:11,  1.85s/it]Loading weights:  34%|███▍      | 212/625 [00:01<00:02, 147.41it/s]Loading weights:  48%|████▊     | 299/625 [00:02<00:02, 138.87it/s]Loading weights:  56%|█████▋    | 352/625 [00:02<00:01, 159.53it/s]Loading weights:  68%|██████▊   | 422/625 [00:02<00:00, 209.61it/s]Loading weights:  76%|███████▌  | 474/625 [00:03<00:00, 245.95it/s]Loading weights:  87%|████████▋ | 542/625 [00:03<00:00, 306.22it/s]Loading weights:  96%|█████████▌| 598/625 [00:03<00:00, 343.07it/s]Loading weights: 100%|██████████| 625/625 [00:03<00:00, 180.12it/s]
-qwen-vl-utils using torchvision to read video.
-/Users/brianmeyer/recallforge/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
-  warnings.warn(
-[TorchBackend] Loaded embedder on mps with torch.float16
-  Embedder loaded in 7.4s
-  PASS  Torch embed_text: 2048-dim float32 vector
-  PASS  Torch embed_texts batch: (3, 2048)
-  PASS  Torch embed_image: 2048-dim vector from food_pasta_dish.png
-  PASS  Torch embed_video: 2048-dim vector
-Loading reranker...
-Loading weights:   0%|          | 0/625 [00:00<?, ?it/s]Loading weights:   0%|          | 1/625 [00:03<33:18,  3.20s/it]Loading weights:  32%|███▏      | 201/625 [00:03<00:05, 80.07it/s]Loading weights:  39%|███▉      | 246/625 [00:04<00:05, 71.12it/s]Loading weights:  44%|████▎     | 273/625 [00:04<00:05, 66.80it/s]Loading weights:  47%|████▋     | 292/625 [00:05<00:05, 57.69it/s]Loading weights:  49%|████▉     | 305/625 [00:05<00:05, 55.00it/s]Loading weights:  52%|█████▏    | 323/625 [00:05<00:04, 63.74it/s]Loading weights:  55%|█████▍    | 342/625 [00:05<00:03, 71.93it/s]Loading weights:  58%|█████▊    | 364/625 [00:06<00:03, 86.19it/s]Loading weights:  61%|██████    | 379/625 [00:06<00:02, 91.58it/s]Loading weights:  64%|██████▍   | 400/625 [00:06<00:02, 108.81it/s]Loading weights:  68%|██████▊   | 426/625 [00:06<00:01, 133.49it/s]Loading weights:  72%|███████▏  | 448/625 [00:06<00:01, 144.68it/s]Loading weights:  75%|███████▌  | 470/625 [00:06<00:00, 157.23it/s]Loading weights:  78%|███████▊  | 489/625 [00:06<00:00, 156.98it/s]Loading weights:  81%|████████▏ | 508/625 [00:06<00:00, 158.89it/s]Loading weights:  85%|████████▌ | 532/625 [00:07<00:00, 176.87it/s]Loading weights:  89%|████████▉ | 556/625 [00:07<00:00, 182.85it/s]Loading weights:  93%|█████████▎| 580/625 [00:07<00:00, 176.48it/s]Loading weights:  96%|█████████▌| 600/625 [00:07<00:00, 76.87it/s] Loading weights: 100%|██████████| 625/625 [00:07<00:00, 78.51it/s]
-`torch_dtype` is deprecated! Use `dtype` instead!
-The fast path is not available because one of the required library is not installed. Falling back to torch implementation. To install follow https://github.com/fla-org/flash-linear-attention#installation and https://github.com/Dao-AILab/causal-conv1d
-[TorchBackend] Loaded reranker on mps with torch.float32
-  Reranker loaded in 47.5s
-  PASS  Torch rerank: 3 scores = ['0.875', '0.077', '0.784']
-  PASS  Reranker correctly ranks memory docs above cooking
-Loading expander...
-Loading weights:   0%|          | 0/320 [00:00<?, ?it/s]Loading weights:   0%|          | 1/320 [00:08<43:30,  8.18s/it]Loading weights: 100%|██████████| 320/320 [00:08<00:00, 39.06it/s]
-[TorchBackend] Loaded expander (tobil/qmd-query-expansion-qwen3.5-2B) on mps with torch.float16
-  Expander loaded in 21.9s
-  PASS  Torch expand_query: lex='machine learning training tutorials...'
-  INFO  Torch backend RSS: 420 MB (all 3 models loaded)
-  PASS  Backend info: name=torch device=mps mem=12.0GB
-
-Torch backend: ALL PASSED
-  [0;32mPASS[0m  Torch backend all tests
-
-[0;36m--- Backend Auto-Detection ---[0m
-  INFO  MLX probe reason: ok
-  PASS  Auto-detection chose 'mlx' (expected 'mlx') on Darwin/arm64
-  [0;32mPASS[0m  Backend auto-detection
-
-[1m═══════════════════════════════════════[0m
-[1m  Backend Tests Summary[0m
-[1m═══════════════════════════════════════[0m
-  [0;32mPASS: 5[0m
-  [0;31mFAIL: 0[0m
-  [0;33mSKIP: 0[0m
-  Total: 5
-
-  [0;32m[1mRESULT: PASSED[0m
-
-
-═══════════════════════════════════════
-  Tiered Modes
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Tiered Mode Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-  [0;36mINFO[0m  Backend order: mlx torch
-
-[0;36m--- Backend Attempt: mlx ---[0m
-
-[0;36m--- Indexing test corpus (backend=mlx) ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 125059.52it/s]
-[MLXBackend] Loaded embedder (4bit)
-  Indexed: ai_agents.md
-  Indexed: ai_embeddings.md
-  Indexed: ai_transformers.md
-  Indexed: architecture_blueprints.md
-  Indexed: architecture_gothic.md
-  Indexed: architecture_modern.md
-  Indexed: cooking_grilling.md
-  Indexed: cooking_pasta.md
-  Indexed: cooking_sourdough.md
-  Indexed: nature_forests.md
-  Indexed: nature_mountains.md
-  Indexed: nature_oceans.md
-  Indexed: sports_basketball.md
-  Indexed: sports_running.md
-  Indexed: sports_soccer.md
-  Indexed: code_editor_screenshot.png
-  Indexed: floor_plan_blueprint.png
-  Indexed: food_pasta_dish.png
-  PASS  Indexed 18 documents, 18 embeddings
-  [0;32mPASS[0m  Corpus indexed
-
-[0;36m--- Embed Mode ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 179953.64it/s]
-[MLXBackend] Loaded embedder (4bit)
-  [0;32mPASS[0m  Mode set to 'embed'
-  [0;32mPASS[0m  Reranker not needed in embed mode
-  [0;32mPASS[0m  Expander not needed in embed mode
-  [0;32mPASS[0m  Embedder loaded
-  [0;32mPASS[0m  Reranker NOT loaded
-  [0;32mPASS[0m  Expander NOT loaded
-  [0;32mPASS[0m  Embed mode search returned 5 results in 0.08s
-  [0;32mPASS[0m  Embed mode: all rerank scores are 0.5 (neutral)
-    [1.000] AI Agents and Memory Systems
-    [0.923] Transformer Architecture in Deep Learning
-    [0.913] Soccer Tactics and Formations
-    [0.892] Vector Embeddings and Semantic Search
-    [0.877] Reading Architectural Blueprints
-  [0;32mPASS[0m  Embed mode
-
-[0;36m--- Hybrid Mode ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 68759.08it/s]
-[MLXBackend] Loaded embedder (4bit)
-[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 86003.08it/s]
-[MLXBackend] score_linear missing; using lm_head yes-no projection fallback
-[MLXBackend] Loaded reranker (4bit)
-  [0;32mPASS[0m  Mode set to 'hybrid'
-  [0;32mPASS[0m  Reranker needed in hybrid mode
-  [0;32mPASS[0m  Expander not needed in hybrid mode
-  [0;32mPASS[0m  Embedder loaded
-  [0;32mPASS[0m  Reranker loaded
-  [0;32mPASS[0m  Expander NOT loaded
-  [0;32mPASS[0m  Hybrid mode search returned 5 results in 4.53s
-  [0;32mPASS[0m  Hybrid mode: reranker produces varied scores
-    [1.000] AI Agents and Memory Systems (rerank=0.450)
-    [0.707] Transformer Architecture in Deep Learning (rerank=0.041)
-    [0.695] Soccer Tactics and Formations (rerank=0.035)
-    [0.567] Vector Embeddings and Semantic Search (rerank=0.051)
-    [0.552] Reading Architectural Blueprints (rerank=0.044)
-  [0;32mPASS[0m  Hybrid mode
-
-[0;36m--- Full Mode ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 220752.84it/s]
-[MLXBackend] Loaded embedder (4bit)
-[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 131387.84it/s]
-[MLXBackend] score_linear missing; using lm_head yes-no projection fallback
-[MLXBackend] Loaded reranker (4bit)
-[MLXBackend] Loading expander: bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit
-Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 49636.73it/s]
-[MLXBackend] Loaded expander (MLX 4-bit)
-  [0;32mPASS[0m  Mode set to 'full'
-  [0;32mPASS[0m  Reranker needed in full mode
-  [0;32mPASS[0m  Expander needed in full mode
-  [0;32mPASS[0m  Embedder loaded
-  [0;32mPASS[0m  Reranker loaded
-  [0;32mPASS[0m  Expander loaded
-  [0;32mPASS[0m  Full mode search returned 5 results in 4.49s
-    [1.000] AI Agents and Memory Systems (rerank=0.450)
-    [0.707] Transformer Architecture in Deep Learning (rerank=0.041)
-    [0.695] Soccer Tactics and Formations (rerank=0.035)
-    [0.567] Vector Embeddings and Semantic Search (rerank=0.051)
-    [0.552] Reading Architectural Blueprints (rerank=0.044)
-  [0;32mPASS[0m  Full mode
-
-[0;36m--- Mode Switching ---[0m
-[MLXBackend] Loading embedder: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 26585.06it/s]
-[MLXBackend] Loaded embedder (4bit)
-  [0;32mPASS[0m  Start in embed mode
-  [0;32mPASS[0m  Switched to full mode
-  [0;32mPASS[0m  Reranker needed after switch
-  [0;32mPASS[0m  Expander needed after switch
-[MLXBackend] Loading reranker: arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]Fetching 13 files: 100%|██████████| 13/13 [00:00<00:00, 62244.24it/s]
-[MLXBackend] score_linear missing; using lm_head yes-no projection fallback
-[MLXBackend] Loaded reranker (4bit)
-[MLXBackend] Loading expander: bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit
-Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 28308.01it/s]
-[MLXBackend] Loaded expander (MLX 4-bit)
-  [0;32mPASS[0m  All models loaded after switch
-  [0;32mPASS[0m  Search works after mode switch (5 results)
-  [0;32mPASS[0m  Mode switching
-
-[0;36m--- Timing Comparison ---[0m
-  Embed mode:  0.08s
-  Hybrid mode: 4.53s
-  Full mode:   4.49s
-
-[1m═══════════════════════════════════════[0m
-[1m  Tiered Mode Tests (backend=mlx) Summary[0m
-[1m═══════════════════════════════════════[0m
-  [0;32mPASS: 5[0m
-  [0;31mFAIL: 0[0m
-  [0;33mSKIP: 0[0m
-  Total: 5
-
-  [0;32m[1mRESULT: PASSED[0m
-  [0;36mINFO[0m  Tiered mode tests passed with backend 'mlx'.
-
-
-═══════════════════════════════════════
-  Document Ingest
-═══════════════════════════════════════
-
-[1m[0;34m═══════════════════════════════════════[0m
-[1m[0;34m  RecallForge Document Ingest Tests[0m
-[1m[0;34m═══════════════════════════════════════[0m
-
-[0;36m--- Generate Document Fixtures ---[0m
-  [0;32mPASS[0m  fixture created: planning_notes.docx
-  [0;32mPASS[0m  fixture created: deployment_review.pptx
-  [0;32mPASS[0m  fixture created: mcp_overview.pdf
-
-[0;36m--- CLI Document Index ---[0m
-  [0;32mPASS[0m  recallforge index <planning_notes.docx>
-  [0;32mPASS[0m  recallforge index <deployment_review.pptx>

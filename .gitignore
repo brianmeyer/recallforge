@@ -36,6 +36,9 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
+tests/uat/uat_results.log
+benchmarks/CROSS_MODAL.md
+benchmarks/cross_modal_results.json
 
 # LanceDB data
 *.lance/
