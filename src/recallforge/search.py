@@ -252,7 +252,7 @@ class HybridSearcher:
             vec = vectors_by_query[query]
             search_tasks.append((
                 'original_vec',
-                lambda v: self.storage.search_vec(
+                lambda v=vec: self.storage.search_vec(
                     v.tolist() if hasattr(v, 'tolist') else list(v),
                     limit=self.fts_probe_limit,
                     collection=self.collection,
@@ -262,7 +262,7 @@ class HybridSearcher:
                     project_id=self.project_id,
                     profile=self.profile,
                 ),
-                (vec,)
+                ()
             ))
 
         # Lexical expansions - BM25 only
@@ -276,7 +276,7 @@ class HybridSearcher:
                 vec = vectors_by_query[vec_q]
                 search_tasks.append((
                     f'vec_{i}',
-                    lambda v: self.storage.search_vec(
+                    lambda v=vec: self.storage.search_vec(
                         v.tolist() if hasattr(v, 'tolist') else list(v),
                         limit=self.fts_probe_limit,
                         collection=self.collection,
@@ -286,7 +286,7 @@ class HybridSearcher:
                         project_id=self.project_id,
                         profile=self.profile,
                     ),
-                    (vec,)
+                    ()
                 ))
 
         # Hyde expansions
@@ -295,7 +295,7 @@ class HybridSearcher:
                 vec = vectors_by_query[hyde_q]
                 search_tasks.append((
                     f'hyde_{i}',
-                    lambda v: self.storage.search_vec(
+                    lambda v=vec: self.storage.search_vec(
                         v.tolist() if hasattr(v, 'tolist') else list(v),
                         limit=self.fts_probe_limit,
                         collection=self.collection,
@@ -305,7 +305,7 @@ class HybridSearcher:
                         project_id=self.project_id,
                         profile=self.profile,
                     ),
-                    (vec,)
+                    ()
                 ))
         
         # Execute all searches in parallel
