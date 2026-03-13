@@ -1,0 +1,19 @@
+{
+  "video": "nature_timelapse.mp4",
+  "description": "Nature timelapse panning over forest and mountain landscapes.",
+  "duration_seconds": 4,
+  "resolution": "320x240",
+  "fps": 15,
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 2.0,
+      "text": "Dense forest landscape with green canopy."
+    },
+    {
+      "start": 2.0,
+      "end": 4.0,
+      "text": "Mountain range with peaks and valleys."
+    }
+  ]
+}

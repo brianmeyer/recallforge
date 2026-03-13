@@ -1,0 +1,19 @@
+{
+  "video": "cooking_tutorial.mp4",
+  "description": "Cooking tutorial zooming into a pasta dish with recipe text overlay.",
+  "duration_seconds": 3,
+  "resolution": "320x240",
+  "fps": 15,
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 1.5,
+      "text": "Fresh pasta dish plated on a white plate."
+    },
+    {
+      "start": 1.5,
+      "end": 3.0,
+      "text": "Close-up of the pasta with sauce and garnish."
+    }
+  ]
+}
