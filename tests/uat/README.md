@@ -1,14 +1,19 @@
 # RecallForge UAT (User Acceptance Testing)
 
-Manual end-to-end test suite for RecallForge v0.1.0.
+Manual end-to-end test suite for RecallForge. Validates correctness gates, benchmark reporting, and cross-modal search across all tiers.
 
 ## Prerequisites
 
-- Python 3.12+
-- RecallForge installed: `pip install -e .` (from repo root)
-- ~8GB RAM minimum (embed mode), ~16GB for full mode
-- ~20GB disk for model downloads (first run only)
-- Pillow installed (for test image generation)
+- **Python 3.12+**
+- **RecallForge installed:** `pip install -e .` (from repo root)
+- **ffmpeg** (for video frame extraction and synthetic video generation)
+- **Backends:** torch (CPU/CUDA) and/or MLX (macOS ARM64)
+- **Memory requirements:**
+  - MLX 4-bit embed mode: ~1.7GB
+  - MLX 4-bit full mode: ~4.4GB
+  - torch CPU: varies by model size
+- **Disk:** ~20GB for model downloads (first run only, then cached)
+- **Pillow** (for test image generation)
 
 ## Quick Start
 
@@ -23,57 +28,64 @@ cd ~/recallforge
 ./tests/uat/run_all.sh --quick
 ```
 
-## Individual Tests
+## Test Scripts
 
-Each test is self-contained and can be run independently:
+All tests live in `tests/uat/`. Each is self-contained and can be run independently.
+
+### Core Correctness Gates (must pass)
+
+| Script | Description |
+|--------|-------------|
+| `test_install.sh` | Installation and dependency checks |
+| `test_storage.sh` | Storage backend CRUD, FTS, vector, 1000-doc performance |
+| `test_backends.sh` | Model backends (torch, MLX, auto-detection) |
+| `test_tiered_modes.sh` | Tiered modes (embed/hybrid/full) loading and behavior |
+| `test_document_ingest.sh` | Document ingest (PDF/DOCX/PPTX extraction via CLI) |
+| `test_video_ingest.sh` | Video ingest (transcript fallback + ffmpeg frame extraction) |
+| `test_video_quality.sh` | Video retrieval quality (text/image/video query coverage) |
+| `test_video_query_contract.sh` | Raw video query smoke test |
+| `test_cross_modal.sh` | ★ CROSS-MODAL SEARCH (key differentiator) |
+| `test_search_quality.sh` | Search quality (recall@5, MRR, edge cases, dedup) |
+| `test_cli.sh` | CLI commands (index, search, watch, status, serve + contract checks) |
+
+### MCP Tests
+
+| Script | Description |
+|--------|-------------|
+| `test_mcp_server.sh` | In-process MCP server instantiation (defaults to contract mode) |
+| `test_mcp_contract.sh` | MCP contract mode tests (mocked/stubbed, no live backend) |
+| `test_mcp_live.sh` | MCP live mode tests (real backend, requires running service) |
+
+**Contract vs Live:**
+- **Contract mode** (`test_mcp_contract.sh`): Tests the MCP interface contract with mocked responses. Fast, deterministic, no external dependencies. Used for CI and offline validation.
+- **Live mode** (`test_mcp_live.sh`): Tests against a running RecallForge backend. Validates real integration, network I/O, and end-to-end behavior. Requires `recallforge serve` running.
+
+### Benchmark / Reporting Tests (informational)
+
+| Script | Description |
+|--------|-------------|
+| `test_benchmarks.sh` | COCO benchmark smoke test (skip when datasets/network unavailable) |
+| `test_latency.sh` | Performance (cold start, p50/p95, throughput, memory) |
+
+Benchmark tests are **informational** — they report metrics but don't block correctness. They may skip cleanly on machines without network access or when datasets are unavailable.
+
+## Running Individual Tests
 
 ```bash
-# Installation and dependency checks
+# Any test can be run directly
 ./tests/uat/test_install.sh
-
-# Storage backend (CRUD, FTS, vector, 1000-doc performance)
-./tests/uat/test_storage.sh
-
-# Model backends (torch, MLX, auto-detection)
-./tests/uat/test_backends.sh
-
-# Tiered modes (embed/hybrid/full model loading and behavior)
-./tests/uat/test_tiered_modes.sh
-
-# Document ingest (PDF/DOCX/PPTX extraction through CLI)
-./tests/uat/test_document_ingest.sh
-
-# Video ingest (transcript fallback + ffmpeg frame extraction when available)
-./tests/uat/test_video_ingest.sh
-
-# Video retrieval quality (text/image/video query coverage across modes)
-./tests/uat/test_video_quality.sh
-
-# Raw video query smoke test
-./tests/uat/test_video_query_contract.sh
-
-# ★ CROSS-MODAL SEARCH (the key differentiator) ★
 ./tests/uat/test_cross_modal.sh
-
-# Search quality (recall@5, MRR, edge cases, dedup)
-./tests/uat/test_search_quality.sh
-
-# Backward-compatible MCP entrypoint (defaults to contract mode)
-./tests/uat/test_mcp_server.sh
-
-# CLI commands (index, search, watch, status, serve + README contract checks)
-./tests/uat/test_cli.sh
-
-# COCO benchmark smoke test (skip when datasets/network unavailable)
-./tests/uat/test_benchmarks.sh
-
-# Performance (cold start, p50/p95, throughput, memory)
+./tests/uat/test_mcp_contract.sh
+./tests/uat/test_mcp_live.sh
 ./tests/uat/test_latency.sh
 ```
 
 ## Test Corpus
 
-Tests use a built-in corpus in `tests/uat/corpus/`:
+Tests use a committed video corpus and built-in text/image fixtures in `tests/uat/corpus/`:
+
+### Video Corpus
+A committed set of test videos with known transcripts and ground-truth frames. Used by `test_video_ingest.sh`, `test_video_quality.sh`, and `test_video_query_contract.sh` to validate cross-modal retrieval on temporal media.
 
 ### Text Documents (15 files)
 | Topic | Files |
@@ -85,7 +97,7 @@ Tests use a built-in corpus in `tests/uat/corpus/`:
 | Sports | `sports_basketball.md`, `sports_running.md`, `sports_soccer.md` |
 
 ### Images (10 files, auto-generated)
-Synthetic images generated by `helpers/generate_test_images.py`:
+Synthetic images generated by `helpers/generate_test_images.py` on first run:
 - `whiteboard_architecture.png` - System architecture diagram
 - `whiteboard_brainstorm.png` - Mind map brainstorming session
 - `handwritten_notes.png` - Meeting notes (simulated handwriting)
@@ -96,8 +108,6 @@ Synthetic images generated by `helpers/generate_test_images.py`:
 - `mountain_landscape.png` - Mountain landscape
 - `neural_network_diagram.png` - Neural network architecture diagram
 - `code_editor_screenshot.png` - Code editor screenshot
-
-Images are generated on first run if not present.
 
 ## What to Look For
 
@@ -157,24 +167,28 @@ Each test script exits 0 on success, 1 on any failure.
 
 `run_all.sh` writes a combined log to `tests/uat/uat_results.log`.
 
-## Known Limitations
+## Known Caveats & Limitations
 
-1. **Synthetic test images**: Generated images are simple drawings, not real photos. Cross-modal accuracy will be lower than with real-world images. This is expected.
+1. **Torch video crash on Qwen3-VL (REC-44):** Known issue where torch backend crashes during video frame processing with Qwen3-VL models. Workaround: use MLX backend on Apple Silicon or skip video tests when using Qwen3-VL with torch.
 
-2. **First run is slow**: Models download on first use (~4GB per model). Subsequent runs use cached models.
+2. **Synthetic test images:** Generated images are simple drawings, not real photos. Cross-modal accuracy will be lower than with real-world images. This is expected.
 
-3. **MLX tests skip when runtime probe fails**: MLX backend tests only run when `recallforge.backends.MLX_AVAILABLE` is true (macOS ARM64 + healthy MLX runtime probe).
+3. **First run is slow:** Models download on first use (~4GB per model). Subsequent runs use cached models.
 
-4. **CUDA tests skip without GPU**: CUDA backend tests only run when `torch.cuda.is_available()` is True.
+4. **MLX tests skip when runtime probe fails:** MLX backend tests only run when `recallforge.backends.MLX_AVAILABLE` is true (macOS ARM64 + healthy MLX runtime probe).
 
-5. **MCP server test is in-process**: The MCP server test creates the server object directly rather than testing stdio transport. The CLI serve test in `test_cli.sh` covers the process lifecycle.
+5. **CUDA tests skip without GPU:** CUDA backend tests only run when `torch.cuda.is_available()` is True.
 
-6. **Full mode is memory-hungry**: Loading all 3 models requires ~12GB. If your machine has less, expect OOM or swap thrashing in full mode tests.
+6. **MCP live tests require running service:** `test_mcp_live.sh` requires `recallforge serve` running on the expected port. `test_mcp_contract.sh` and `test_mcp_server.sh` work offline.
 
-7. **Video ingest depends on host capabilities**: Transcript sidecars (`.srt`, `.vtt`, `.txt`) are always supported. Frame extraction runs when `ffmpeg` and `ffprobe` are installed; otherwise video UAT validates transcript-only fallback.
+7. **Full mode is memory-hungry:** Loading all 3 models requires ~4.4GB on MLX 4-bit, more on torch. If your machine has less, expect OOM or swap thrashing in full mode tests.
 
-8. **Raw video query requires a real video fixture**: `test_video_query_contract.sh` and the raw-video portions of CLI/MCP/video-quality UAT require `ffmpeg` so the suite can generate a valid synthetic video. Without it, those checks skip cleanly.
+8. **Video ingest depends on host capabilities:** Transcript sidecars (`.srt`, `.vtt`, `.txt`) are always supported. Frame extraction runs when `ffmpeg` and `ffprobe` are installed; otherwise video UAT validates transcript-only fallback.
 
-9. **Document ingest is local-first**: DOCX and PPTX fixtures are extracted through built-in OOXML parsing. PDF ingestion uses a lightweight fallback extractor by default and gets richer parsing when optional PDF tooling is installed.
+9. **Raw video query requires ffmpeg:** `test_video_query_contract.sh` and raw-video portions of CLI/MCP/video-quality UAT require `ffmpeg` to generate valid synthetic video fixtures. Without it, those checks skip cleanly.
 
-10. **Benchmark smoke is capability-aware**: `test_benchmarks.sh` runs a small COCO benchmark when the `datasets` package and HuggingFace dataset access are available. It skips cleanly otherwise.
+10. **Document ingest is local-first:** DOCX and PPTX fixtures are extracted through built-in OOXML parsing. PDF ingestion uses a lightweight fallback extractor by default and gets richer parsing when optional PDF tooling is installed.
+
+11. **Benchmark smoke is capability-aware:** `test_benchmarks.sh` runs a small COCO benchmark when the `datasets` package and HuggingFace dataset access are available. It skips cleanly otherwise.
+
+12. **Latency test is optional:** `test_latency.sh` is skipped in `--quick` mode. It's a benchmark/reporting test, not a correctness gate.
