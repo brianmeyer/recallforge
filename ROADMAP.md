@@ -28,6 +28,7 @@ This roadmap is honest about where RecallForge is, where it's going, and what's 
 ### Distribution
 - **Homebrew formula** — `brew install recallforge` for macOS users.
 - **PyPI package polish** — Better metadata, type stubs, and documented API surface.
+- **Claude plugin marketplace** — List RecallForge as an MCP plugin once HTTP transport is stable.
 
 ---
 
@@ -87,7 +88,7 @@ This roadmap is honest about where RecallForge is, where it's going, and what's 
 - **Distributed/clustered mode** — Billions of vectors is a non-goal. If you need that scale, use a cloud-native vector DB. RecallForge targets thousands to low-millions of documents.
 
 ### Specific Integrations
-- **Claude plugin marketplace** — Requires cloud infrastructure we won't build. MCP transport is our integration story.
+
 - **Native Windows support** — macOS and Linux only. Windows users should use WSL.
 
 ### Feature Creep
