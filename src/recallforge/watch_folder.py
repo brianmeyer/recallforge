@@ -201,27 +201,55 @@ class WatchFolderDaemon:
         evt = self.running[watch_id]
         config = WatchConfig.from_dict(self.watches[watch_id]["config"])
 
+        # path-keyed dedup dict: keeps the latest event per path, no timer churn
         pending: Dict[str, Dict[str, Any]] = {}
-        last_flush = time.time()
+        last_flush = time.monotonic()
 
         while evt.is_set():
+            # Drain the entire queue in one pass — dedup by path, keeping latest event.
+            # This handles the polling model where the scanner may emit repeated
+            # modified events for the same path across multiple scan cycles.
             try:
-                item = queue.get(timeout=0.2)
-                pending[item["path"]] = item
+                while True:
+                    item = queue.get_nowait()
+                    pending[item["path"]] = item
             except Empty:
                 pass
 
-            now = time.time()
-            if pending and (now - last_flush >= max(0.05, config.debounce_seconds)):
-                self._process_batch(watch_id, pending, config)
-                pending.clear()
+            now = time.monotonic()
+            should_flush = len(pending) >= config.batch_size or (
+                pending and now - last_flush >= max(0.05, config.debounce_seconds)
+            )
+
+            if should_flush:
+                # Take exactly batch_size items (oldest-first), remove only those
+                # from pending so the remainder stays for the next flush cycle.
+                batch = sorted(pending.values(), key=lambda x: x["timestamp"])[: max(1, config.batch_size)]
+                for item in batch:
+                    pending.pop(item["path"])
+                self._process_batch(watch_id, batch, config)
                 last_flush = now
+            else:
+                # Nothing ready yet; yield CPU rather than busy-spin.
+                time.sleep(0.05)
 
-        if pending:
-            self._process_batch(watch_id, pending, config)
+        # Shutdown path: drain anything still in the queue into pending, then
+        # flush ALL remaining items so no work is dropped on stop.
+        try:
+            while True:
+                item = queue.get_nowait()
+                pending[item["path"]] = item
+        except Empty:
+            pass
 
-    def _process_batch(self, watch_id: str, pending: Dict[str, Dict[str, Any]], config: WatchConfig) -> None:
-        items = sorted(pending.values(), key=lambda x: x["timestamp"])[: max(1, config.batch_size)]
+        while pending:
+            batch = sorted(pending.values(), key=lambda x: x["timestamp"])[: max(1, config.batch_size)]
+            for item in batch:
+                pending.pop(item["path"])
+            self._process_batch(watch_id, batch, config)
+
+    def _process_batch(self, watch_id: str, items: List[Dict[str, Any]], config: WatchConfig) -> None:
+        """Process a pre-selected list of file-change items and update bookkeeping."""
         for item in items:
             self._process_file_change(item, config)
 
