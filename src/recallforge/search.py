@@ -12,12 +12,17 @@ Uses true concurrency with ThreadPoolExecutor for parallel searches.
 
 import concurrent.futures
 import json
+import logging
 import os
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import List, Dict, Any, Optional
 
 from .backends.base import ModelBackend
+from .cache import EmbeddingCache
 from .storage.base import StorageBackend, SearchResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,6 +72,7 @@ class HybridSearcher:
         max_workers: int = 8,
         overfetch_factor: int = 10,
         max_candidates: int = 200,
+        cache: Optional[EmbeddingCache] = None,
     ):
         """
         Initialize hybrid searcher.
@@ -86,6 +92,7 @@ class HybridSearcher:
             max_workers: ThreadPoolExecutor workers for parallel searches
             overfetch_factor: Candidate overfetch multiplier before final trim
             max_candidates: Hard cap on candidate pool size
+            cache: Optional EmbeddingCache; created with default maxsize if None
         """
         self.backend = backend
         self.storage = storage
@@ -104,6 +111,7 @@ class HybridSearcher:
         self.overfetch_factor = max(2, env_overfetch)
         self.max_candidates = max(self.limit, env_max_candidates)
         self.candidate_limit = min(self.max_candidates, self.limit * self.overfetch_factor)
+        self.cache: EmbeddingCache = cache if cache is not None else EmbeddingCache()
 
     def _vector_results_to_hybrid(self, results: List[SearchResult]) -> List[HybridResult]:
         """Convert raw vector results into HybridResult objects."""
@@ -155,7 +163,13 @@ class HybridSearcher:
 
     def _vector_search(self, query: str) -> List[SearchResult]:
         """Run vector search."""
-        vector = self.backend.embed_text(query)
+        cache_key = self.cache.make_key("text", query)
+        vector = self.cache.get(cache_key)
+        if vector is not None:
+            logger.debug("Embedding cache hit for text query (key=%s…)", cache_key[:8])
+        else:
+            vector = self.backend.embed_text(query)
+            self.cache.put(cache_key, vector)
         return self.storage.search_vec(
             vector.tolist() if hasattr(vector, 'tolist') else list(vector),
             limit=self.fts_probe_limit,
@@ -169,7 +183,19 @@ class HybridSearcher:
 
     def search_image(self, image_path: str) -> List[HybridResult]:
         """Run image-query search through the vector path."""
-        vector = self.backend.embed_image(image_path)
+        # Key by file content hash so cache survives path renames but busts on edits.
+        try:
+            with open(image_path, "rb") as fh:
+                file_hash = sha256(fh.read()).hexdigest()
+        except OSError:
+            file_hash = image_path  # fall back to path string if unreadable
+        cache_key = self.cache.make_key("image", file_hash)
+        vector = self.cache.get(cache_key)
+        if vector is not None:
+            logger.debug("Embedding cache hit for image (key=%s…)", cache_key[:8])
+        else:
+            vector = self.backend.embed_image(image_path)
+            self.cache.put(cache_key, vector)
         return self._search_vector(vector)
 
     def search_video(self, video_path: str) -> List[HybridResult]:
