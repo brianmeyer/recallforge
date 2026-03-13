@@ -53,17 +53,28 @@ Configure in Claude Desktop:
 - **Shared embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
 - **3-stage pipeline:** Embedding → Reranking → Query expansion (all multimodal)
 - **Runs anywhere:** MLX 4-bit on Apple Silicon (~1.7GB RAM), PyTorch on CUDA/MPS/CPU
-- **Fast:** Cold start 3.8s, warm search 161ms (MLX 4-bit)
+- **Fast:** Cold start 7.6s, warm search 53ms p50 (MLX 4-bit, Mac mini M4)
 - **Tiered modes:** embed (~1.7GB), hybrid (~3.4GB), full (~4.4GB) — pick your tradeoff
 - **100% local:** Your data never leaves your machine
 
 ## Performance
 
+Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
+
 | Metric | MLX 4-bit | PyTorch fp16 |
 |--------|-----------|--------------|
-| Warm search | 161ms | 414ms |
-| Cold start | 3.8s | ~36s |
-| Memory (embed) | ~1.7GB | ~4GB |
+| Warm search p50 | 53ms | 599ms |
+| Warm search p95 | 55ms | — |
+| Cold start | 7.6s | ~20s |
+| Peak RSS (embed) | 329MB | ~4GB |
+| Text indexing | 5.0 docs/sec | — |
+
+**COCO Retrieval (50 images, embed mode, MLX 4-bit):**
+
+| Direction | R@1 | R@5 | R@10 |
+|-----------|-----|-----|------|
+| Text → Image | 23.6% | 36.8% | 46.4% |
+| Image → Text | 30.0% | 42.0% | 54.0% |
 
 ## Installation
 
