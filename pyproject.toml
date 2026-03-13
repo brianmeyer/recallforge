@@ -16,16 +16,11 @@ classifiers = [
 ]
 
 dependencies = [
-    "lancedb>=0.20",
-    "pyarrow>=18.0",
-    "pillow>=10.0",
-    "numpy>=2.0",
-    "mcp>=1.0",
-    "qwen-vl-utils>=0.0.14",
-    "transformers>=4.40",
-    "torch>=2.0",
-    "torchvision>=0.15",
-    "scipy>=1.10",
+    "lancedb>=0.20,<1.0",
+    "pyarrow>=18.0,<20.0",
+    "pillow>=10.0,<12.0",
+    "numpy>=2.0,<3.0",
+    "mcp>=1.0,<2.0",
 ]
 
 [project.urls]
@@ -34,20 +29,25 @@ Repository = "https://github.com/brianmeyer/recallforge"
 Issues = "https://github.com/brianmeyer/recallforge/issues"
 
 [project.optional-dependencies]
+torch = [
+    "torch>=2.0,<3.0",
+    "torchvision>=0.15,<1.0",
+    "transformers>=4.40,<5.0",
+    "scipy>=1.10,<2.0",
+    "qwen-vl-utils>=0.0.14,<1.0",
+]
 mlx = [
-    "mlx>=0.20",
-    "mlx-vlm>=0.1",
+    "mlx>=0.20,<1.0",
+    "mlx-vlm>=0.1,<1.0",
+    "qwen-vl-utils>=0.0.14,<1.0",
 ]
-docs = [
-    "pypdf>=5.0",
-]
-cuda = [
-    "torch>=2.0",
-]
+docs = ["pypdf>=5.0,<6.0"]
+cuda = ["torch>=2.0,<3.0"]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
+    "pytest>=8.0,<9.0",
+    "pytest-asyncio>=0.24,<1.0",
 ]
+all = ["recallforge[torch,mlx,docs]"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
