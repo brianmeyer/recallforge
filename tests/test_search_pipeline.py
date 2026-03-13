@@ -269,6 +269,46 @@ class TestBlendScores(unittest.TestCase):
         self.assertLessEqual(len(blended), 3)
 
 
+class TestParallelSearchTaskCapture(unittest.TestCase):
+    def test_parallel_search_lanes_keep_distinct_vectors(self):
+        backend = StubBackend(mode="full")
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=5)
+
+        captured_vectors = []
+
+        def mock_search_vec(vector, limit: int = 20, **kwargs):
+            captured_vectors.append(tuple(vector.tolist() if hasattr(vector, "tolist") else list(vector)))
+            return []
+
+        storage.search_vec = mock_search_vec
+
+        query = "base query"
+        expansions = [
+            {"type": "vec", "text": "vec expansion one"},
+            {"type": "vec", "text": "vec expansion two"},
+            {"type": "hyde", "text": "hyde expansion one"},
+            {"type": "hyde", "text": "hyde expansion two"},
+        ]
+
+        searcher._run_parallel_searches(query, expansions)
+
+        expected_queries = [
+            query,
+            "vec expansion one",
+            "vec expansion two",
+            "hyde expansion one",
+            "hyde expansion two",
+        ]
+        expected_vectors = {
+            tuple(backend.embed_text(text).tolist())
+            for text in expected_queries
+        }
+
+        self.assertEqual(len(captured_vectors), len(expected_queries))
+        self.assertEqual(set(captured_vectors), expected_vectors)
+
+
 class TestFullSearchPipeline(unittest.TestCase):
     """End-to-end search pipeline with mocked storage."""
 
