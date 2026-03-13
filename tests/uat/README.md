@@ -6,8 +6,9 @@ Manual end-to-end test suite for RecallForge v0.1.0.
 
 - Python 3.12+
 - RecallForge installed: `pip install -e .` (from repo root)
-- ~8GB RAM minimum (embed mode), ~16GB for full mode
-- ~20GB disk for model downloads (first run only)
+- **Memory (MLX 4-bit, recommended)**: ~1.7GB minimum (embed mode), ~4.4GB for full mode
+- **Memory (PyTorch fp16)**: ~4GB minimum (embed mode), ~12GB+ for full mode
+- ~5GB disk for MLX 4-bit model downloads (first run only)
 - Pillow installed (for test image generation)
 
 ## Quick Start
@@ -134,7 +135,7 @@ The cross-modal test prints a matrix like:
 - **Warm search p50**: < 5s per query
 - **Warm search p95**: < 10s per query
 - **Text indexing**: report docs/sec (varies by hardware)
-- **Peak RSS**: < 16GB in embed mode
+- **Peak RSS**: < 4GB for PyTorch fp16, < 1GB for MLX 4-bit (embed mode)
 
 ### Tiered Modes (test_tiered_modes.sh)
 
@@ -169,7 +170,7 @@ Each test script exits 0 on success, 1 on any failure.
 
 5. **MCP server test is in-process**: The MCP server test creates the server object directly rather than testing stdio transport. The CLI serve test in `test_cli.sh` covers the process lifecycle.
 
-6. **Full mode is memory-hungry**: Loading all 3 models requires ~12GB. If your machine has less, expect OOM or swap thrashing in full mode tests.
+6. **Full mode memory requirements**: MLX 4-bit full mode uses ~4.4GB model memory. PyTorch fp16 full mode requires ~12GB+. If your machine has less, use MLX 4-bit or hybrid/embed mode.
 
 7. **Video ingest depends on host capabilities**: Transcript sidecars (`.srt`, `.vtt`, `.txt`) are always supported. Frame extraction runs when `ffmpeg` and `ffprobe` are installed; otherwise video UAT validates transcript-only fallback.
 

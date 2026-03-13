@@ -62,11 +62,13 @@ class MyBackend(ModelBackend):
 
 #### Tiered Modes
 
-| Mode | Models Loaded | Memory | Quality |
-|------|---------------|--------|---------|
-| `embed` | Embedder only | ~4 GB | Baseline |
-| `hybrid` | Embedder + Reranker | ~8 GB | Better |
-| `full` | Embedder + Reranker + Expander | ~12 GB | Best |
+| Mode | Models Loaded | Memory (MLX 4-bit) | Quality |
+|------|---------------|-------------------|---------|
+| `embed` | Embedder only | ~1.7 GB | Baseline |
+| `hybrid` | Embedder + Reranker | ~3.4 GB | Better |
+| `full` | Embedder + Reranker + Expander | ~4.4 GB | Best |
+
+> **Note:** Memory values are model download sizes for MLX 4-bit on Apple Silicon. Runtime process memory (RSS) is lower: ~329MB peak for embed mode. PyTorch fp16 uses significantly more memory (~4GB for embedder alone).
 
 #### Concrete Backends
 
