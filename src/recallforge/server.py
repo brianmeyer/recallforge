@@ -215,6 +215,7 @@ async def create_server(
                         },
                         "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
                         "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"},
+                        "max_file_size_mb": {"type": "integer", "description": "Maximum file size in MB (files exceeding this will be skipped)", "default": 100},
                         "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace"},
                         "project_id": {"type": "string", "description": "Optional project namespace"},
@@ -314,6 +315,7 @@ async def create_server(
                         "recursive": {"type": "boolean", "description": "Recursively index subfolders", "default": True},
                         "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
                         "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"},
+                        "max_file_size_mb": {"type": "integer", "description": "Maximum file size in MB (files exceeding this will be skipped)", "default": 100},
                         "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace"},
                         "project_id": {"type": "string", "description": "Optional project namespace"},
@@ -595,6 +597,7 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
     content_types = arguments.get("content_types", ["text", "image", "video", "document"])
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
+    max_file_size_mb = arguments.get("max_file_size_mb", 100)
     user_id = arguments.get("user_id")
     session_id = arguments.get("session_id")
     project_id = arguments.get("project_id")
@@ -622,6 +625,7 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        max_file_size_mb=max_file_size_mb,
     )
 
     trace_log("ingest_done", collection=collection, indexed_text=output.get("indexed_text", 0), indexed_images=output.get("indexed_images", 0))
@@ -839,6 +843,7 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
     recursive = arguments.get("recursive", True)
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
+    max_file_size_mb = arguments.get("max_file_size_mb", 100)
     user_id = arguments.get("user_id")
     session_id = arguments.get("session_id")
     project_id = arguments.get("project_id")
@@ -863,6 +868,7 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        max_file_size_mb=max_file_size_mb,
     )
 
     trace_log("index_folder_done", folder_path=folder_path, indexed=output.get("indexed", 0))
