@@ -38,6 +38,9 @@ mlx = [
     "mlx>=0.20",
     "mlx-vlm>=0.1",
 ]
+docs = [
+    "pypdf>=5.0",
+]
 cuda = [
     "torch>=2.0",
 ]

@@ -267,6 +267,20 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
+    def delete_path(
+        self,
+        path: str,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        include_children: bool = False,
+    ) -> Dict[str, Any]:
+        """Delete a logical path and optionally all derived child assets."""
+        pass
+
+    @abstractmethod
     def index_folder(
         self,
         folder_path: str,
@@ -282,6 +296,22 @@ class StorageBackend(ABC):
         profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Index text files from a folder and return summary counts."""
+        pass
+
+    @abstractmethod
+    def index_document_file(
+        self,
+        path: str,
+        collection: str,
+        embed_func: Callable[[str], List[float]],
+        model: str,
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Extract and index a document file into structured text assets."""
         pass
 
     @abstractmethod

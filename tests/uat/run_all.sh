@@ -32,10 +32,14 @@ TESTS=(
     "test_storage.sh:Storage"
     "test_backends.sh:Backends"
     "test_tiered_modes.sh:Tiered Modes"
+    "test_document_ingest.sh:Document Ingest"
+    "test_video_ingest.sh:Video Ingest"
+    "test_video_quality.sh:Video Quality"
     "test_cross_modal.sh:Cross-Modal ★"
     "test_search_quality.sh:Search Quality"
     "test_mcp_server.sh:MCP Server"
     "test_cli.sh:CLI"
+    "test_benchmarks.sh:Benchmark Smoke"
 )
 
 if [[ "$QUICK_MODE" != "true" ]]; then

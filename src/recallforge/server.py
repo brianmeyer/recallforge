@@ -14,7 +14,7 @@ import logging
 import os
 import signal
 import sys
-from typing import Optional
+from typing import Optional, Callable, TypeVar
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -40,6 +40,45 @@ def trace_log(operation: str, **kwargs) -> None:
 # Global server state
 _server: Optional[Server] = None
 _shutdown_requested = False
+_tool_semaphore: Optional[asyncio.Semaphore] = None
+
+_MAX_TOOL_CONCURRENCY = max(
+    1,
+    int(os.environ.get("RECALLFORGE_MCP_MAX_CONCURRENCY", "2")),
+)
+
+_T = TypeVar("_T")
+
+
+def _get_tool_semaphore() -> asyncio.Semaphore:
+    """Lazily create a shared semaphore for blocking tool work."""
+    global _tool_semaphore
+    if _tool_semaphore is None:
+        _tool_semaphore = asyncio.Semaphore(_MAX_TOOL_CONCURRENCY)
+    return _tool_semaphore
+
+
+async def _run_blocking(func: Callable[..., _T], *args, **kwargs) -> _T:
+    """
+    Run blocking backend/storage work in a bounded thread pool lane.
+
+    Prevents event-loop stalls while also capping parallel pressure on
+    local model/runtime resources.
+    """
+    async with _get_tool_semaphore():
+        return await asyncio.to_thread(func, *args, **kwargs)
+
+
+def _resolve_query_inputs(arguments: dict) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Validate mutually exclusive text/image query inputs."""
+    query = arguments.get("query")
+    image_path = arguments.get("image_path")
+    query_text = query.strip() if isinstance(query, str) else ""
+    image_text = image_path.strip() if isinstance(image_path, str) else ""
+
+    if bool(query_text) == bool(image_text):
+        return None, None, "Provide exactly one of: query or image_path"
+    return (query_text or None), (image_text or None), None
 
 
 def _signal_handler(signum, frame):
@@ -86,6 +125,7 @@ async def create_server(
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Search query"},
+                        "image_path": {"type": "string", "description": "Optional image query path (mutually exclusive with query)"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
                         "collection": {"type": "string", "description": "Optional collection filter"},
                         "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
@@ -94,7 +134,6 @@ async def create_server(
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
                         "profile": {"type": "string", "description": "Optional profile namespace filter"},
                     },
-                    "required": ["query"],
                 },
             ),
             Tool(
@@ -112,7 +151,6 @@ async def create_server(
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
                         "profile": {"type": "string", "description": "Optional profile namespace filter"},
                     },
-                    "required": ["query"],
                 },
             ),
             Tool(
@@ -122,6 +160,7 @@ async def create_server(
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Search query"},
+                        "image_path": {"type": "string", "description": "Optional image query path (mutually exclusive with query)"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
                         "collection": {"type": "string", "description": "Optional collection filter"},
                         "content_type": {"type": "string", "enum": ["text", "image"], "description": "Optional content type filter"},
@@ -130,26 +169,25 @@ async def create_server(
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
                         "profile": {"type": "string", "description": "Optional profile namespace filter"},
                     },
-                    "required": ["query"],
                 },
             ),
             Tool(
                 name="ingest",
-                description="Unified ingest for text, image, file, or folder. Auto-detects modality and routes accordingly.",
+                description="Unified ingest for text, image, video, document, file, or folder. Auto-detects modality and routes accordingly.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "text": {"type": "string", "description": "Raw text content to ingest"},
                         "path": {"type": "string", "description": "Optional memory path for raw text ingest"},
-                        "file_path": {"type": "string", "description": "Path to a single file (text or image)"},
+                        "file_path": {"type": "string", "description": "Path to a single file (text, image, video, or office document)"},
                         "folder_path": {"type": "string", "description": "Path to a folder to ingest"},
                         "recursive": {"type": "boolean", "description": "Recursively ingest subfolders", "default": True},
                         "collection": {"type": "string", "description": "Collection name", "default": "default"},
                         "content_types": {
                             "type": "array",
-                            "items": {"type": "string", "enum": ["text", "image"]},
+                            "items": {"type": "string", "enum": ["text", "image", "video", "document"]},
                             "description": "Allowed content types to ingest",
-                            "default": ["text", "image"]
+                            "default": ["text", "image", "video", "document"]
                         },
                         "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
                         "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"},
@@ -316,7 +354,7 @@ async def create_server(
 
 async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]:
     """Handle hybrid search."""
-    query = arguments.get("query", "")
+    query, image_path, input_error = _resolve_query_inputs(arguments)
     limit = arguments.get("limit", 10)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
@@ -325,11 +363,11 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
 
-    trace_log("search_start", query=query[:50], limit=limit, collection=collection, content_type=content_type,
+    trace_log("search_start", query=(query or image_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
-    if not query:
-        return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
+    if input_error:
+        return [TextContent(type="text", text=json.dumps({"error": input_error}))]
 
     searcher = HybridSearcher(
         backend=backend,
@@ -343,12 +381,16 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
         profile=profile,
     )
 
-    results = searcher.search(query)
+    if image_path:
+        results = await _run_blocking(searcher.search_image, image_path)
+    else:
+        results = await _run_blocking(searcher.search, query)
 
-    trace_log("search_done", query=query[:50], count=len(results))
+    trace_log("search_done", query=(query or image_path or "")[:50], count=len(results))
 
     output = {
         "query": query,
+        "image_path": image_path,
         "mode": backend.get_mode(),
         "count": len(results),
         "results": [
@@ -389,7 +431,8 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
     if not query:
         return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
 
-    results = storage.search_fts(
+    results = await _run_blocking(
+        storage.search_fts,
         query=query,
         limit=limit,
         collection=collection,
@@ -425,7 +468,7 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
 
 async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextContent]:
     """Handle vector search."""
-    query = arguments.get("query", "")
+    query, image_path, input_error = _resolve_query_inputs(arguments)
     limit = arguments.get("limit", 20)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
@@ -434,16 +477,19 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
 
-    trace_log("search_vec_start", query=query[:50], limit=limit, collection=collection, content_type=content_type,
+    trace_log("search_vec_start", query=(query or image_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
-    if not query:
-        return [TextContent(type="text", text=json.dumps({"error": "Query is required"}))]
+    if input_error:
+        return [TextContent(type="text", text=json.dumps({"error": input_error}))]
 
-    # Embed query
-    vector = backend.embed_text(query)
+    if image_path:
+        vector = await _run_blocking(backend.embed_image, image_path)
+    else:
+        vector = await _run_blocking(backend.embed_text, query)
 
-    results = storage.search_vec(
+    results = await _run_blocking(
+        storage.search_vec,
         vector=vector.tolist() if hasattr(vector, 'tolist') else list(vector),
         limit=limit,
         collection=collection,
@@ -454,10 +500,11 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
         profile=profile,
     )
 
-    trace_log("search_vec_done", query=query[:50], count=len(results))
+    trace_log("search_vec_done", query=(query or image_path or "")[:50], count=len(results))
 
     output = {
         "query": query,
+        "image_path": image_path,
         "count": len(results),
         "results": [
             {
@@ -485,7 +532,7 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
     folder_path = arguments.get("folder_path")
     recursive = arguments.get("recursive", True)
     collection = arguments.get("collection", "default")
-    content_types = arguments.get("content_types", ["text", "image"])
+    content_types = arguments.get("content_types", ["text", "image", "video", "document"])
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
     user_id = arguments.get("user_id")
@@ -496,7 +543,8 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
     trace_log("ingest_start", collection=collection, text=bool(text), file_path=file_path, folder_path=folder_path,
               user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
-    output = storage.ingest(
+    output = await _run_blocking(
+        storage.ingest,
         collection=collection,
         text=text,
         path=path,
@@ -530,7 +578,8 @@ async def _handle_index_document(arguments: dict, backend, storage) -> list[Text
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
     
-    content_hash = storage.index_document(
+    content_hash = await _run_blocking(
+        storage.index_document,
         path=path,
         text=text,
         collection=collection,
@@ -563,7 +612,8 @@ async def _handle_index_image(arguments: dict, backend, storage) -> list[TextCon
     if not os.path.exists(path):
         return [TextContent(type="text", text=json.dumps({"error": f"File not found: {path}"}))]
     
-    content_hash = storage.index_image(
+    content_hash = await _run_blocking(
+        storage.index_image,
         path=path,
         collection=collection,
         embed_func=backend.embed_image,
@@ -601,7 +651,8 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
 
-    content_hash = storage.upsert_memory(
+    content_hash = await _run_blocking(
+        storage.upsert_memory,
         path=path,
         text=text,
         collection=collection,
@@ -655,7 +706,8 @@ async def _handle_memory_update(arguments: dict, backend, storage) -> list[TextC
     if not path or not text:
         return [TextContent(type="text", text=json.dumps({"error": "path and text are required"}))]
 
-    content_hash = storage.upsert_memory(
+    content_hash = await _run_blocking(
+        storage.upsert_memory,
         path=path,
         text=text,
         collection=collection,
@@ -704,7 +756,8 @@ async def _handle_memory_delete(arguments: dict, storage) -> list[TextContent]:
     if not path:
         return [TextContent(type="text", text=json.dumps({"error": "path is required"}))]
 
-    output = storage.delete_memory(
+    output = await _run_blocking(
+        storage.delete_memory,
         path=path,
         collection=collection,
         user_id=user_id,
@@ -736,7 +789,8 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
     if not folder_path:
         return [TextContent(type="text", text=json.dumps({"error": "folder_path is required"}))]
 
-    output = storage.index_folder(
+    output = await _run_blocking(
+        storage.index_folder,
         folder_path=folder_path,
         collection=collection,
         recursive=recursive,
@@ -758,12 +812,16 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
 async def _handle_status(backend, storage) -> list[TextContent]:
     """Handle status request."""
     # Get model status
-    info = backend.get_info()
+    info = await _run_blocking(backend.get_info)
     
     # Get storage info
+    embeddings_count, documents_count = await asyncio.gather(
+        _run_blocking(storage.count_embeddings),
+        _run_blocking(storage.count_documents),
+    )
     db_info = {
-        "embeddings_count": storage.count_embeddings(),
-        "documents_count": storage.count_documents(),
+        "embeddings_count": embeddings_count,
+        "documents_count": documents_count,
     }
     
     output = {
@@ -788,7 +846,7 @@ async def _handle_status(backend, storage) -> list[TextContent]:
 async def _handle_rebuild_fts(storage) -> list[TextContent]:
     """Handle FTS rebuild."""
     try:
-        storage.rebuild_fts_index()
+        await _run_blocking(storage.rebuild_fts_index)
         output = {"success": True, "message": "FTS index rebuilt"}
     except Exception as e:
         output = {"success": False, "error": str(e)}
@@ -804,31 +862,40 @@ async def main() -> None:
     mode = os.environ.get("RECALLFORGE_MODE", "full")
     store_path = os.environ.get("RECALLFORGE_STORE_PATH")
     
-    # Initialize backend and storage
-    backend = get_backend()
-    storage = get_storage(store_path)
-    
-    # Warm up models
-    print(f"RecallForge v{__version__}", file=sys.stderr)
-    print(f"Warming up models (mode={mode})...", file=sys.stderr)
+    backend = None
+    storage = None
     try:
-        backend.warm_up()
-        print("All models warmed up and resident.", file=sys.stderr)
-    except Exception as e:
-        print(f"Warning: Model warm-up failed: {e}", file=sys.stderr)
-        print("Models will load on first use (slower first query).", file=sys.stderr)
-    
-    # Create server
-    server = await create_server(backend=backend, storage=storage, mode=mode)
-    _server = server
-    
-    # Run server
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+        # Initialize backend and storage
+        backend = get_backend()
+        storage = get_storage(store_path)
+
+        # Warm up models
+        print(f"RecallForge v{__version__}", file=sys.stderr)
+        print(f"Warming up models (mode={mode})...", file=sys.stderr)
+        try:
+            backend.warm_up()
+            print("All models warmed up and resident.", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Model warm-up failed: {e}", file=sys.stderr)
+            print("Models will load on first use (slower first query).", file=sys.stderr)
+
+        # Create server
+        server = await create_server(backend=backend, storage=storage, mode=mode)
+        _server = server
+
+        # Run server
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+    finally:
+        if storage is not None:
+            try:
+                await _run_blocking(storage.close)
+            except Exception as e:
+                print(f"Warning: storage.close() failed during shutdown: {e}", file=sys.stderr)
 
 
 def run_server() -> None:

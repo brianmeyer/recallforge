@@ -22,6 +22,7 @@ Tiered Search Modes:
 """
 
 import os
+import warnings
 from typing import Optional
 
 __version__ = "0.1.0"
@@ -45,20 +46,28 @@ def get_backend():
     Returns:
         ModelBackend instance
     """
-    from .backends import TorchBackend, MLXBackend, MLX_AVAILABLE
-    
-    backend_type = RECALLFORGE_BACKEND.lower()
-    mode = RECALLFORGE_MODE.lower()
+    from .backends import (
+        TorchBackend,
+        MLX_AVAILABLE,
+        get_mlx_backend_class,
+        get_mlx_probe_reason,
+    )
+
+    backend_type = os.environ.get("RECALLFORGE_BACKEND", RECALLFORGE_BACKEND).lower()
+    mode = os.environ.get("RECALLFORGE_MODE", RECALLFORGE_MODE).lower()
+    quantization = os.environ.get("RECALLFORGE_MLX_QUANTIZE", RECALLFORGE_MLX_QUANTIZE)
     
     if backend_type == "mlx":
         if not MLX_AVAILABLE:
             raise ImportError(
                 "MLX backend requested but not available. "
-                "Install with: pip install mlx mlx-vlm"
+                f"Reason: {get_mlx_probe_reason()}. "
+                "Use RECALLFORGE_BACKEND=torch to force torch fallback."
             )
+        MLXBackend = get_mlx_backend_class()
         return MLXBackend(
             mode=mode,
-            quantization=RECALLFORGE_MLX_QUANTIZE,
+            quantization=quantization,
         )
     
     elif backend_type == "torch":
@@ -69,10 +78,17 @@ def get_backend():
         import platform
         if platform.system() == "Darwin" and platform.machine() == "arm64":
             if MLX_AVAILABLE:
-                return MLXBackend(
-                    mode=mode,
-                    quantization=RECALLFORGE_MLX_QUANTIZE,
-                )
+                try:
+                    MLXBackend = get_mlx_backend_class()
+                    return MLXBackend(
+                        mode=mode,
+                        quantization=quantization,
+                    )
+                except Exception as exc:
+                    warnings.warn(
+                        f"MLX auto-selection failed ({exc}); falling back to torch.",
+                        RuntimeWarning,
+                    )
         return TorchBackend(mode=mode)
     
     else:
@@ -93,7 +109,7 @@ def get_storage(store_path: Optional[str] = None):
     """
     from .storage import LanceDBBackend
     
-    storage_type = RECALLFORGE_STORAGE.lower()
+    storage_type = os.environ.get("RECALLFORGE_STORAGE", RECALLFORGE_STORAGE).lower()
     
     if storage_type == "lancedb":
         backend = LanceDBBackend(store_path)
@@ -104,7 +120,15 @@ def get_storage(store_path: Optional[str] = None):
         raise ValueError(f"Unknown storage backend: {storage_type}. Use 'lancedb'")
 
 
+def __getattr__(name: str):
+    """Lazy-exports MLXBackend so importing recallforge stays crash-safe."""
+    if name == "MLXBackend":
+        from .backends import get_mlx_backend_class
+        return get_mlx_backend_class()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 # Convenience imports
-from .backends import ModelBackend, TorchBackend, MLXBackend, MLX_AVAILABLE
+from .backends import ModelBackend, TorchBackend, MLX_AVAILABLE
 from .storage import StorageBackend, LanceDBBackend
-from .search import HybridSearcher, hybrid_query
+from .search import HybridSearcher, hybrid_query, hybrid_query_image

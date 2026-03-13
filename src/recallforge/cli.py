@@ -14,6 +14,8 @@ import os
 import sys
 
 from . import __version__, RECALLFORGE_BACKEND, RECALLFORGE_MODE, RECALLFORGE_STORAGE
+from .documents import is_document_file
+from .video import is_video_file
 
 
 def main():
@@ -78,7 +80,14 @@ def main():
     search_parser = subparsers.add_parser("search", help="Search indexed content")
     search_parser.add_argument(
         "query",
+        nargs="?",
         help="Search query",
+    )
+    search_parser.add_argument(
+        "--image",
+        dest="image_path",
+        default=None,
+        help="Image query path (mutually exclusive with text query)",
     )
     search_parser.add_argument(
         "--limit", "-l",
@@ -133,10 +142,10 @@ def main():
         help="Collection name (default: default)",
     )
     watch_start_parser.add_argument(
-        "--recursive", "-r",
-        action="store_true",
+        "--recursive",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Watch recursively (default: true)",
+        help="Watch recursively (default: true). Use --no-recursive to disable.",
     )
     watch_start_parser.add_argument(
         "--include",
@@ -242,10 +251,7 @@ def cmd_index(args):
     store_path = args.store_path or os.environ.get("RECALLFORGE_STORE_PATH")
     storage = get_storage(store_path)
     backend = get_backend()
-    
-    # Warm up embedder only
-    backend._load_embedder()
-    
+
     indexed = 0
     for path in args.paths:
         if os.path.isfile(path):
@@ -255,6 +261,22 @@ def cmd_index(args):
                     path=path,
                     collection=args.collection,
                     embed_func=backend.embed_image,
+                )
+            elif _is_video_file(path):
+                print(f"Indexing video: {path}")
+                storage.index_video(
+                    path=path,
+                    collection=args.collection,
+                    embed_text_func=backend.embed_text,
+                    embed_image_func=backend.embed_image,
+                )
+            elif _is_document_file(path):
+                print(f"Indexing document: {path}")
+                storage.index_document_file(
+                    path=path,
+                    collection=args.collection,
+                    embed_func=backend.embed_text,
+                    model="Qwen3-VL-Embedding-2B",
                 )
             else:
                 print(f"Indexing file: {path}")
@@ -270,6 +292,11 @@ def cmd_index(args):
             indexed += 1
         elif os.path.isdir(path):
             for root, dirs, files in os.walk(path):
+                dirs[:] = [
+                    dirname for dirname in sorted(dirs)
+                    if dirname not in {".git", "node_modules", "__pycache__", ".venv", "venv"}
+                    and not dirname.startswith(".")
+                ]
                 for f in files:
                     if f.startswith('.') or f.startswith('_'):
                         continue
@@ -281,6 +308,22 @@ def cmd_index(args):
                                 path=fp,
                                 collection=args.collection,
                                 embed_func=backend.embed_image,
+                            )
+                        elif _is_video_file(fp):
+                            print(f"Indexing video: {fp}")
+                            storage.index_video(
+                                path=fp,
+                                collection=args.collection,
+                                embed_text_func=backend.embed_text,
+                                embed_image_func=backend.embed_image,
+                            )
+                        elif _is_document_file(fp):
+                            print(f"Indexing document: {fp}")
+                            storage.index_document_file(
+                                path=fp,
+                                collection=args.collection,
+                                embed_func=backend.embed_text,
+                                model="Qwen3-VL-Embedding-2B",
                             )
                         else:
                             print(f"Indexing file: {fp}")
@@ -307,6 +350,16 @@ def _is_image_file(path: str) -> bool:
     return ext in {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
 
 
+def _is_video_file(path: str) -> bool:
+    """Check if file is a video."""
+    return is_video_file(path)
+
+
+def _is_document_file(path: str) -> bool:
+    """Check if file is a supported office document."""
+    return is_document_file(path)
+
+
 def cmd_search(args):
     """Run a search query."""
     from . import get_backend, get_storage
@@ -327,10 +380,20 @@ def cmd_search(args):
         collection=args.collection,
         content_type=args.content_type,
     )
-    
-    results = searcher.search(args.query)
-    
-    print(f"\nResults for: '{args.query}'\n")
+
+    query_text = args.query.strip() if isinstance(args.query, str) else ""
+    image_path = args.image_path.strip() if isinstance(args.image_path, str) else ""
+    if bool(query_text) == bool(image_path):
+        print("Provide exactly one of: query or --image", file=sys.stderr)
+        return 2
+
+    if image_path:
+        results = searcher.search_image(image_path)
+        print(f"\nResults for image: '{image_path}'\n")
+    else:
+        results = searcher.search(query_text)
+        print(f"\nResults for: '{query_text}'\n")
+
     for i, r in enumerate(results):
         print(f"{i+1}. [{r.score:.3f}] {r.title}")
         print(f"   {r.display_path}")
@@ -389,7 +452,11 @@ def cmd_watch(args):
     daemon = get_daemon(storage, backend, store_path)
 
     if args.watch_command == "start":
-        includes = args.include or ["**/*.md", "**/*.txt", "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.webp"]
+        includes = args.include or [
+            "**/*.md", "**/*.txt",
+            "**/*.png", "**/*.jpg", "**/*.jpeg", "**/*.webp",
+            "**/*.mp4", "**/*.mov", "**/*.m4v", "**/*.avi", "**/*.mkv", "**/*.webm",
+        ]
         excludes = args.exclude or ["**/.git/**", "**/node_modules/**"]
         config = WatchConfig(
             folder_path=args.folder,

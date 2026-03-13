@@ -2,22 +2,26 @@
 
 **Every modality, one search. Local first.**
 
-Images, text, and video frames live in the same semantic space. Search across all of them. Nothing leaves your machine.
+Images, text, office documents, and video-derived assets live in the same search surface. Search locally. Nothing leaves your machine.
 
 ![RecallForge Architecture](docs/architecture.png)
 
-Type a text query, find the relevant photo. Submit an image, find related documents. Search image-to-image for visual similarity. RecallForge puts every modality into a shared Qwen3-VL embedding space so cross-modal retrieval just works.
+Type a text query, find the relevant photo. Submit an image, find related notes. Index `pdf` / `docx` / `pptx` locally for agent memory. Search image-to-image for visual similarity. RecallForge puts text and images into a shared Qwen3-VL embedding space so cross-modal retrieval just works.
 
 ```bash
 pip install recallforge            # auto-detects: MLX on Apple Silicon, PyTorch elsewhere
 pip install recallforge[mlx]       # force MLX backend (Apple Silicon)
 pip install recallforge[cuda]      # force CUDA backend (NVIDIA GPU)
+pip install recallforge[docs]      # richer PDF extraction
 ```
 
 ```bash
 recallforge index ./photos ./docs  # index images and text together
+recallforge index ./documents/board-deck.pptx ./documents/notes.docx
+recallforge index ./clips/demo.mp4  # ingest video transcript + frames
 recallforge search "whiteboard diagram from last meeting"
-recallforge search --image photo.jpg  # find docs related to this image
+recallforge search "photo of pasta dish on a white plate"
+recallforge search --image ./photos/whiteboard.png
 ```
 
 ## What makes RecallForge different
@@ -29,6 +33,7 @@ recallforge search --image photo.jpg  # find docs related to this image
 - **Fast:** 161ms warm search (MLX), 414ms (PyTorch). Cold start 3.8s on MLX 4-bit.
 - **Pick your tradeoff:** embed mode (1 model, ~2GB), hybrid (+ reranker, ~4GB), full (+ query expansion, ~8GB)
 - **MCP server** for agent/tool integration
+- **Local-first document ingest:** built-in `docx` / `pptx`, optional richer `pdf` parsing
 - **100% local:** All models run on-device. Your data never leaves your machine.
 - **Swappable storage:** LanceDB default, ChromaDB and Qdrant coming
 
@@ -66,7 +71,11 @@ To force a specific backend, install the extra:
 ```bash
 pip install recallforge[mlx]       # force MLX (Apple Silicon only)
 pip install recallforge[cuda]      # force CUDA (NVIDIA only)
+pip install recallforge[docs]      # richer PDF extraction
 ```
+
+Video ingest extracts keyframes when `ffmpeg` and `ffprobe` are installed. Transcript sidecars (`.srt`, `.vtt`, `.txt`) are indexed even when those tools are absent.
+Document ingest extracts `docx` and `pptx` locally using built-in OOXML parsing. PDF ingest works with a lightweight fallback parser by default and improves when `recallforge[docs]` is installed.
 
 ### From Source
 
@@ -86,18 +95,19 @@ Keep it simple and local:
 # 1) Start MCP server in default quality mode
 recallforge serve --mode full
 
-# 2) Use a single ingest pathway for agents (text/image/file/folder)
+# 2) Use a single ingest pathway for agents (text/image/video/document/file/folder)
 #    via MCP tool: ingest
 
 # 3) Query from CLI (or via MCP client)
 recallforge search "what did I save about autonomous agents?"
+recallforge search --image ./images/whiteboard.png
 ```
 
 For local validation without optional live-model dependencies:
 
 ```bash
 pytest -m "not live"
-bash tests/uat/test_mcp_contract.sh
+bash tests/uat/test_mcp_server.sh
 bash tests/uat/test_cli.sh
 ```
 
@@ -106,9 +116,12 @@ bash tests/uat/test_cli.sh
 ```bash
 # Index files
 recallforge index ~/Documents --collection docs
+recallforge index ~/Movies/demo.mp4 --collection docs
+recallforge index ~/Documents/roadmap.pptx ~/Documents/notes.docx --collection docs
 
 # Search
 recallforge search "machine learning algorithms"
+recallforge search --image ~/Pictures/diagram.png --content-type image
 
 # Start MCP server
 recallforge serve --mode full
@@ -229,6 +242,13 @@ export RECALLFORGE_BACKEND=mlx           # explicit
 export RECALLFORGE_MLX_QUANTIZE=4bit     # default (or bf16 for higher precision)
 ```
 
+Runtime safety: RecallForge probes MLX in a subprocess before auto-selecting it. If the probe fails, it automatically falls back to PyTorch instead of crashing the process.
+
+```bash
+export RECALLFORGE_BACKEND=torch          # force torch fallback
+export RECALLFORGE_DISABLE_MLX=1          # disable MLX probing/selection
+```
+
 **Model IDs (4-bit — fully native MLX):**
 - Embedder: `arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`
 - Reranker: `arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit`
@@ -300,7 +320,7 @@ This enables multi-user, multi-project, and multi-session isolation within a sin
 
 ## MCP Tools
 
-When running as an MCP server, use `ingest` as the **primary** tool for agents. It handles text, image, single-file, and folder ingestion in one call.
+When running as an MCP server, use `ingest` as the **primary** tool for agents. It handles text, image, video, office-document, single-file, and folder ingestion in one call.
 
 The lower-level tools (`index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`) remain available for advanced or explicit workflows.
 
@@ -312,11 +332,11 @@ Unified ingest entry point.
 {
   "text": "optional raw text content",
   "path": "optional/path/for/raw-text.md",
-  "file_path": "/path/to/file-or-image",
+  "file_path": "/path/to/file-or-image-or-document",
   "folder_path": "/path/to/folder",
   "recursive": true,
   "collection": "default",
-  "content_types": ["text", "image"],
+  "content_types": ["text", "image", "video", "document"],
   "include_globs": ["**/*"],
   "exclude_globs": ["**/.git/**"],
   "user_id": "optional user namespace",
@@ -329,6 +349,11 @@ Unified ingest entry point.
 Returns a unified summary with:
 - `indexed_text`
 - `indexed_images`
+- `indexed_documents`
+- `indexed_document_sections`
+- `indexed_videos`
+- `indexed_video_frames`
+- `indexed_video_transcripts`
 - `skipped`
 - `errors`
 - `items[]` (`path`, `type`, `status`)
@@ -528,6 +553,7 @@ Rebuild the full-text search index.
 | `RECALLFORGE_BACKEND` | `auto` | Model backend: `auto`, `mlx`, `torch` |
 | `RECALLFORGE_MODE` | `full` | Search mode: `embed`, `hybrid`, `full` |
 | `RECALLFORGE_MLX_QUANTIZE` | `4bit` | MLX quantization: `4bit`, `bf16` |
+| `RECALLFORGE_DISABLE_MLX` | `0` | Set to `1` to skip MLX probing and force non-MLX backend selection |
 | `RECALLFORGE_STORAGE` | `lancedb` | Storage backend |
 | `RECALLFORGE_STORE_PATH` | `~/.recallforge` | Storage directory |
 
@@ -551,6 +577,7 @@ recallforge watch start /path/to/notes \
   --collection default \
   --include '**/*.md' \
   --include '**/*.txt' \
+  --include '**/*.mp4' \
   --exclude '**/.git/**' \
   --debounce 0.5
 
@@ -579,6 +606,8 @@ RecallForge
 │   │   └── lancedb_backend.py
 │   ├── search.py          # Hybrid search pipeline
 │   ├── server.py          # MCP server
+│   ├── documents.py       # PDF/DOCX/PPTX extraction
+│   ├── video.py           # Video frame/transcript extraction
 │   └── cli.py             # CLI interface
 └── tests/
     ├── test_live.py       # Live tests with real models

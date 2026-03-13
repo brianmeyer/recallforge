@@ -10,6 +10,12 @@ section "RecallForge Backend Tests"
 cd "$REPO_ROOT"
 trap cleanup_store EXIT
 
+TORCH_HEALTHY=0
+
+if backend_runtime_healthy torch; then
+    TORCH_HEALTHY=1
+fi
+
 # Helper: flush GPU memory between backend tests
 # Each backend test runs in its own subprocess, but MPS/Metal may hold onto
 # memory after the process exits. Give the OS a moment to reclaim.
@@ -30,9 +36,10 @@ except: pass
 subsection "Torch Backend"
 # ──────────────────────────────────────────────
 
-info "Testing Torch backend (embed_text, embed_image, rerank, expand_query)..."
+if [[ "${TORCH_HEALTHY}" -eq 1 ]]; then
+    info "Testing Torch backend (embed_text, embed_image, rerank, expand_query)..."
 
-python3 << 'PYEOF'
+    python3 << 'PYEOF'
 import os, sys, time
 sys.path.insert(0, "src")
 
@@ -131,12 +138,17 @@ print(f"  PASS  Backend info: name={info.name} device={info.device} mem={info.me
 
 print("\nTorch backend: ALL PASSED")
 PYEOF
-TORCH_RC=$?
+    TORCH_RC=$?
 
-if [[ $TORCH_RC -eq 0 ]]; then
-    pass "Torch backend all tests"
+    if [[ $TORCH_RC -eq 0 ]]; then
+        pass "Torch backend all tests"
+    elif ! backend_runtime_healthy torch; then
+        skip "Torch backend (runtime/model assets became unavailable)"
+    else
+        fail "Torch backend tests had failures"
+    fi
 else
-    fail "Torch backend tests had failures"
+    skip "Torch backend (runtime/model assets unavailable)"
 fi
 
 _cleanup_gpu
@@ -145,7 +157,7 @@ _cleanup_gpu
 subsection "MLX Backend (4-bit Embed Coverage)"
 # ──────────────────────────────────────────────
 
-if has_mlx && is_apple_silicon; then
+if is_apple_silicon && backend_runtime_healthy mlx; then
     info "Testing MLX 4-bit embed pipeline (embed_text, embed_texts, embed_image)..."
     ensure_test_images
 
@@ -190,18 +202,20 @@ PYEOF
 
     if [[ $MLX_EMBED_RC -eq 0 ]]; then
         pass "MLX 4-bit embed coverage"
+    elif ! backend_runtime_healthy mlx; then
+        skip "MLX 4-bit embed coverage (runtime became unavailable)"
     else
         fail "MLX 4-bit embed coverage had failures"
     fi
 else
-    skip "MLX 4-bit embed coverage (not available)"
+    skip "MLX 4-bit embed coverage (runtime unavailable)"
 fi
 
 # ──────────────────────────────────────────────
 subsection "MLX Backend"
 # ──────────────────────────────────────────────
 
-if has_mlx && is_apple_silicon; then
+if is_apple_silicon && backend_runtime_healthy mlx; then
     info "Testing MLX backend..."
 
     python3 << 'PYEOF'
@@ -256,6 +270,8 @@ PYEOF
 
     if [[ $MLX_RC -eq 0 ]]; then
         pass "MLX bf16 backend all tests"
+    elif ! backend_runtime_healthy mlx; then
+        skip "MLX bf16 backend (runtime became unavailable)"
     else
         fail "MLX bf16 backend tests had failures"
     fi
@@ -263,9 +279,10 @@ PYEOF
     _cleanup_gpu
 
     # MLX 4-bit
-    info "Testing MLX 4-bit backend..."
+    if backend_runtime_healthy mlx; then
+        info "Testing MLX 4-bit backend..."
 
-    python3 << 'PYEOF'
+        python3 << 'PYEOF'
 import os, sys, time
 sys.path.insert(0, "src")
 
@@ -292,15 +309,20 @@ print(f"  PASS  MLX 4-bit info: quant={info.quantization} mem={info.memory_alloc
 
 print("\nMLX 4-bit backend: ALL PASSED")
 PYEOF
-    MLX4_RC=$?
-    if [[ $MLX4_RC -eq 0 ]]; then
-        pass "MLX 4-bit backend all tests"
+        MLX4_RC=$?
+        if [[ $MLX4_RC -eq 0 ]]; then
+            pass "MLX 4-bit backend all tests"
+        elif ! backend_runtime_healthy mlx; then
+            skip "MLX 4-bit backend (runtime became unavailable)"
+        else
+            fail "MLX 4-bit backend tests had failures"
+        fi
     else
-        fail "MLX 4-bit backend tests had failures"
+        skip "MLX 4-bit backend (runtime unavailable)"
     fi
 else
-    skip "MLX backend (not available)"
-    skip "MLX 4-bit backend (not available)"
+    skip "MLX backend (runtime unavailable)"
+    skip "MLX 4-bit backend (runtime unavailable)"
 fi
 
 _cleanup_gpu
@@ -316,16 +338,21 @@ sys.path.insert(0, "src")
 os.environ["RECALLFORGE_BACKEND"] = "auto"
 
 from recallforge import get_backend
+from recallforge.backends import MLX_AVAILABLE, get_mlx_probe_reason
 
 backend = get_backend()
 info = backend.get_info()
 
-if platform.system() == "Darwin" and platform.machine() == "arm64":
+probe_reason = get_mlx_probe_reason()
+
+if platform.system() == "Darwin" and platform.machine() == "arm64" and MLX_AVAILABLE:
     expected = "mlx"
 else:
     expected = "torch"
 
 assert info.name == expected, f"FAIL: auto-detected '{info.name}' but expected '{expected}'"
+if probe_reason:
+    print(f"  INFO  MLX probe reason: {probe_reason}")
 print(f"  PASS  Auto-detection chose '{info.name}' (expected '{expected}') on {platform.system()}/{platform.machine()}")
 PYEOF
 

@@ -380,19 +380,17 @@ PYEOF
     print_summary "Tiered Mode Tests (backend=${backend_name})"
 }
 
-BACKEND_CANDIDATES=("torch")
-if is_apple_silicon; then
-    BACKEND_CANDIDATES=("mlx" "torch")
+mapfile -t BACKEND_CANDIDATES < <(live_backend_candidates || true)
+if [[ ${#BACKEND_CANDIDATES[@]} -eq 0 ]]; then
+    warn "No usable live backend on this host; skipping tiered-mode live coverage."
+    skip "Tiered modes live backend"
+    print_summary "Tiered Mode Tests"
+    exit 0
 fi
 info "Backend order: ${BACKEND_CANDIDATES[*]}"
 
 selected_backend=""
 for backend_name in "${BACKEND_CANDIDATES[@]}"; do
-    if [[ "${backend_name}" == "mlx" ]] && ! has_mlx; then
-        warn "MLX backend unavailable on this host; falling back to torch."
-        continue
-    fi
-
     subsection "Backend Attempt: ${backend_name}"
     if run_tiered_modes_for_backend "${backend_name}"; then
         selected_backend="${backend_name}"

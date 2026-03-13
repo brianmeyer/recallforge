@@ -24,6 +24,8 @@ import pyarrow as pa
 import lancedb
 
 from .base import StorageBackend, SearchResult, Document
+from ..documents import extract_document_artifacts, is_document_file
+from ..video import extract_video_artifacts, is_video_file
 
 
 # =============================================================================
@@ -321,6 +323,10 @@ class LanceDBBackend(StorageBackend):
         self._fts_last_rebuild = 0.0
         self._fts_needs_rebuild = False
         self._bulk_mode = False  # When True, defer all FTS rebuilds until bulk ends
+        self._bm25_fallback_max_rows = max(
+            100,
+            int(os.environ.get("RECALLFORGE_BM25_FALLBACK_MAX_ROWS", "5000")),
+        )
     
     def initialize(self, store_path: Optional[str] = None) -> None:
         """Initialize the LanceDB database."""
@@ -538,32 +544,50 @@ class LanceDBBackend(StorageBackend):
             pa.field("created_at", pa.int64(), nullable=False),
         ])
     
+    def _has_scalar_index(self, table, column: str) -> bool:
+        """Return True if a scalar index already exists for a column."""
+        try:
+            for idx in table.list_indices():
+                columns = getattr(idx, "columns", None) or []
+                if column in columns:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _create_scalar_index_safe(self, table, column: str, name: str, label: str) -> None:
+        """Create scalar index using current LanceDB API, if supported."""
+        if table is None or self._has_scalar_index(table, column):
+            return
+        create_scalar = getattr(table, "create_scalar_index", None)
+        if not callable(create_scalar):
+            logger.debug(f"_ensure_indices: create_scalar_index unavailable; skipping {label}.{column}")
+            return
+        create_scalar(column, name=name, replace=False)
+
     def _ensure_indices(self) -> None:
         """Create scalar indices for faster lookups."""
         try:
-            if self._documents_table:
-                doc_indices = self._documents_table.list_indices()
-                doc_names = {i.name for i in doc_indices}
-                if "file_path_scalar" not in doc_names:
-                    self._documents_table.create_index("file_path")
-                if "content_hash_scalar" not in doc_names:
-                    self._documents_table.create_index("content_hash")
+            self._create_scalar_index_safe(
+                self._documents_table, "file_path", "file_path_scalar", "documents"
+            )
+            self._create_scalar_index_safe(
+                self._documents_table, "content_hash", "content_hash_scalar", "documents"
+            )
         except Exception as e:
             logger.warning(f"_ensure_indices: failed to create document indices: {e}")
-        
+
         try:
-            if self._content_table:
-                content_indices = self._content_table.list_indices()
-                if not any(i.name == "hash_scalar" for i in content_indices):
-                    self._content_table.create_index("hash")
+            self._create_scalar_index_safe(
+                self._content_table, "hash", "hash_scalar", "content"
+            )
         except Exception as e:
             logger.warning(f"_ensure_indices: failed to create content index: {e}")
-        
+
         try:
-            if self._cache_table:
-                cache_indices = self._cache_table.list_indices()
-                if not any(i.name == "key_scalar" for i in cache_indices):
-                    self._cache_table.create_index("key")
+            self._create_scalar_index_safe(
+                self._cache_table, "key", "key_scalar", "cache"
+            )
         except Exception as e:
             logger.warning(f"_ensure_indices: failed to create cache index: {e}")
     
@@ -874,30 +898,37 @@ class LanceDBBackend(StorageBackend):
     ) -> List[SearchResult]:
         """In-memory BM25 fallback when FTS index fails."""
         try:
-            rows = self._embeddings_table.to_pandas()
+            filter_parts = [self._get_ttl_filter()]
+            if collection:
+                filter_parts.append(f"collection = '{escape_sql(collection)}'")
+            if content_type:
+                filter_parts.append(f"content_type = '{escape_sql(content_type)}'")
+            if user_id is not None:
+                filter_parts.append(f"user_id = '{escape_sql(user_id)}'")
+            if session_id is not None:
+                filter_parts.append(f"session_id = '{escape_sql(session_id)}'")
+            if project_id is not None:
+                filter_parts.append(f"project_id = '{escape_sql(project_id)}'")
+            if profile is not None:
+                filter_parts.append(f"profile = '{escape_sql(profile)}'")
+            filter_clause = " AND ".join(filter_parts)
+
+            # Keep fallback bounded to avoid OOM on large corpora.
+            row_limit = min(self._bm25_fallback_max_rows, max(limit * 50, 200))
+            builder = (
+                self._embeddings_table.search()
+                .where(filter_clause)
+                .select(["collection", "file_path", "content_hash", "content_type", "title",
+                         "text_body", "embedded_at", "modified_at", "user_id", "session_id",
+                         "project_id", "profile", "expires_at"])
+                .limit(row_limit)
+            )
+            rows = builder.to_pandas()
         except Exception:
             return []
 
         if rows.empty:
             return []
-
-        # Filter out expired entries based on TTL
-        now_ms = int(time.time() * 1000)
-        rows = rows[(rows["expires_at"].isna()) | (rows["expires_at"] > now_ms)]
-
-        if collection:
-            rows = rows[rows["collection"] == collection]
-        if content_type:
-            rows = rows[rows["content_type"] == content_type]
-        # Apply namespace filters
-        if user_id is not None:
-            rows = rows[(rows["user_id"] == user_id) | (rows["user_id"].isna() & (user_id is None))]
-        if session_id is not None:
-            rows = rows[(rows["session_id"] == session_id) | (rows["session_id"].isna() & (session_id is None))]
-        if project_id is not None:
-            rows = rows[(rows["project_id"] == project_id) | (rows["project_id"].isna() & (project_id is None))]
-        if profile is not None:
-            rows = rows[(rows["profile"] == profile) | (rows["profile"].isna() & (profile is None))]
 
         query_terms = re.findall(r'\w+', query.lower())
         if not query_terms:
@@ -1417,6 +1448,43 @@ class LanceDBBackend(StorageBackend):
             "profile": profile,
         }
 
+    def delete_path(
+        self,
+        path: str,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        include_children: bool = False,
+    ) -> Dict[str, Any]:
+        """Delete a logical path and optionally all derived child assets."""
+        normalized_path = path.strip()
+        if not normalized_path:
+            raise ValueError("path is required")
+
+        removed_vectors = self._delete_path_entries(
+            collection=collection,
+            logical_path=normalized_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            include_children=include_children,
+        )
+        self._schedule_fts_rebuild()
+        return {
+            "success": True,
+            "path": normalized_path,
+            "collection": collection,
+            "removed_vectors": removed_vectors,
+            "include_children": include_children,
+            "user_id": user_id,
+            "session_id": session_id,
+            "project_id": project_id,
+            "profile": profile,
+        }
+
     def _is_text_file(self, file_path: Path) -> bool:
         """Best-effort text file detection."""
         try:
@@ -1450,6 +1518,112 @@ class LanceDBBackend(StorageBackend):
         return file_path.suffix.lower() in {
             ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic"
         }
+
+    def _is_video_file(self, file_path: Path) -> bool:
+        """Best-effort video file detection by extension."""
+        return is_video_file(file_path)
+
+    def _is_document_file(self, file_path: Path) -> bool:
+        """Best-effort office-document detection by extension."""
+        return is_document_file(file_path)
+
+    def _iter_folder_files(self, root: Path, recursive: bool):
+        """Iterate files while pruning common heavyweight directories."""
+        if not recursive:
+            for child in sorted(root.iterdir()):
+                if child.is_file():
+                    yield child
+            return
+
+        pruned_dirnames = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [
+                dirname for dirname in sorted(dirnames)
+                if dirname not in pruned_dirnames and not dirname.startswith(".")
+            ]
+            for filename in sorted(filenames):
+                yield Path(dirpath) / filename
+
+    def _namespace_filters(
+        self,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> List[str]:
+        filters = [f"collection = '{escape_sql(collection)}'"]
+        if user_id is not None:
+            filters.append(f"user_id = '{escape_sql(user_id)}'")
+        if session_id is not None:
+            filters.append(f"session_id = '{escape_sql(session_id)}'")
+        if project_id is not None:
+            filters.append(f"project_id = '{escape_sql(project_id)}'")
+        if profile is not None:
+            filters.append(f"profile = '{escape_sql(profile)}'")
+        return filters
+
+    def _delete_path_entries(
+        self,
+        collection: str,
+        logical_path: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        content_type: Optional[str] = None,
+        include_children: bool = False,
+    ) -> int:
+        filters = self._namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+        escaped_path = escape_sql(logical_path)
+        if include_children:
+            filters.append(f"(file_path = '{escaped_path}' OR file_path LIKE '{escaped_path}::%')")
+        else:
+            filters.append(f"file_path = '{escaped_path}'")
+        if content_type is not None:
+            filters.append(f"content_type = '{escape_sql(content_type)}'")
+
+        filter_clause = " AND ".join(filters)
+        removed_vectors = 0
+        try:
+            removed_vectors = len(self._embeddings_table.search().where(filter_clause).to_list())
+        except Exception as e:
+            logger.debug(f"_delete_path_entries: failed to count rows for {logical_path}: {e}")
+
+        try:
+            self._embeddings_table.delete(filter_clause)
+        except Exception as e:
+            logger.debug(f"_delete_path_entries: failed to delete embeddings for {logical_path}: {e}")
+
+        doc_filters = self._namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+        if include_children:
+            doc_filters.append(f"(file_path = '{escaped_path}' OR file_path LIKE '{escaped_path}::%')")
+        else:
+            doc_filters.append(f"file_path = '{escaped_path}'")
+        if content_type is not None:
+            doc_filters.append(f"content_type = '{escape_sql(content_type)}'")
+
+        try:
+            self._documents_table.update(
+                where=" AND ".join(doc_filters),
+                values={"active": 0, "updated_at": int(time.time() * 1000)},
+            )
+        except Exception as e:
+            logger.debug(f"_delete_path_entries: failed to deactivate documents for {logical_path}: {e}")
+
+        return removed_vectors
 
     def _matches_globs(self, rel_path: str, include_globs: Optional[List[str]], exclude_globs: Optional[List[str]]) -> bool:
         include = include_globs or ["**/*"]
@@ -1491,11 +1665,7 @@ class LanceDBBackend(StorageBackend):
 
         # Use bulk mode to defer FTS rebuilds until the end
         with self.bulk_mode():
-            iterator = root.rglob("*") if recursive else root.glob("*")
-            for file_path in iterator:
-                if not file_path.is_file():
-                    continue
-
+            for file_path in self._iter_folder_files(root, recursive):
                 rel = file_path.relative_to(root).as_posix()
                 if include and not any(fnmatch.fnmatch(rel, pattern) for pattern in include):
                     skipped += 1
@@ -1565,10 +1735,10 @@ class LanceDBBackend(StorageBackend):
         profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text, file, or folder inputs."""
-        content_types = content_types or ["text", "image"]
+        content_types = content_types or ["text", "image", "video", "document"]
         allowed = set(content_types)
-        if not allowed.issubset({"text", "image"}):
-            raise ValueError("content_types must be subset of ['text', 'image']")
+        if not allowed.issubset({"text", "image", "video", "document"}):
+            raise ValueError("content_types must be subset of ['text', 'image', 'video', 'document']")
 
         trace_log("ingest_start", collection=collection, text=text is not None, file_path=file_path, folder_path=folder_path,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
@@ -1578,6 +1748,11 @@ class LanceDBBackend(StorageBackend):
             "collection": collection,
             "indexed_text": 0,
             "indexed_images": 0,
+            "indexed_videos": 0,
+            "indexed_documents": 0,
+            "indexed_document_sections": 0,
+            "indexed_video_frames": 0,
+            "indexed_video_transcripts": 0,
             "skipped": 0,
             "errors": 0,
             "items": [],
@@ -1602,6 +1777,8 @@ class LanceDBBackend(StorageBackend):
 
             item_path = rel_hint or str(candidate)
             is_image = self._is_image_file(candidate)
+            is_video = self._is_video_file(candidate)
+            is_document = self._is_document_file(candidate)
 
             try:
                 if is_image:
@@ -1609,9 +1786,66 @@ class LanceDBBackend(StorageBackend):
                         summary["skipped"] += 1
                         mark(item_path, "image", "skipped")
                         return
-                    self.index_image(path=str(candidate), collection=collection, embed_func=embed_image_func, model=model)
+                    self.index_image(
+                        path=str(candidate),
+                        collection=collection,
+                        embed_func=embed_image_func,
+                        model=model,
+                        stored_path=item_path,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                    )
                     summary["indexed_images"] += 1
                     mark(item_path, "image", "indexed")
+                    return
+
+                if is_video:
+                    if "video" not in allowed:
+                        summary["skipped"] += 1
+                        mark(item_path, "video", "skipped")
+                        return
+                    video_summary = self.index_video(
+                        path=str(candidate),
+                        collection=collection,
+                        embed_text_func=embed_text_func,
+                        embed_image_func=embed_image_func,
+                        model=model,
+                        stored_path=item_path,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                    )
+                    summary["indexed_videos"] += 1
+                    summary["indexed_images"] += video_summary["indexed_frames"]
+                    summary["indexed_text"] += video_summary["indexed_transcripts"]
+                    summary["indexed_video_frames"] += video_summary["indexed_frames"]
+                    summary["indexed_video_transcripts"] += video_summary["indexed_transcripts"]
+                    mark(item_path, "video", "indexed")
+                    return
+
+                if is_document:
+                    if "document" not in allowed:
+                        summary["skipped"] += 1
+                        mark(item_path, "document", "skipped")
+                        return
+                    document_summary = self.index_document_file(
+                        path=str(candidate),
+                        collection=collection,
+                        embed_func=embed_text_func,
+                        model=model,
+                        stored_path=item_path,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                    )
+                    summary["indexed_documents"] += 1
+                    summary["indexed_document_sections"] += document_summary["indexed_sections"]
+                    summary["indexed_text"] += document_summary["indexed_sections"]
+                    mark(item_path, "document", "indexed")
                     return
 
                 if "text" not in allowed:
@@ -1643,7 +1877,15 @@ class LanceDBBackend(StorageBackend):
             except Exception as e:
                 logger.error(f"ingest: failed to index {item_path}: {e}")
                 summary["errors"] += 1
-                mark(item_path, "image" if is_image else "text", "error", str(e))
+                if is_image:
+                    item_type = "image"
+                elif is_video:
+                    item_type = "video"
+                elif is_document:
+                    item_type = "document"
+                else:
+                    item_type = "text"
+                mark(item_path, item_type, "error", str(e))
 
         # Use bulk mode to defer FTS rebuilds until the end
         with self.bulk_mode():
@@ -1674,10 +1916,7 @@ class LanceDBBackend(StorageBackend):
                 root = Path(folder_path).expanduser().resolve()
                 if not root.exists() or not root.is_dir():
                     raise ValueError(f"Folder not found: {folder_path}")
-                iterator = root.rglob("*") if recursive else root.glob("*")
-                for candidate in iterator:
-                    if not candidate.is_file():
-                        continue
+                for candidate in self._iter_folder_files(root, recursive):
                     rel = candidate.relative_to(root).as_posix()
                     if not self._matches_globs(rel, include_globs, exclude_globs):
                         summary["skipped"] += 1
@@ -1689,7 +1928,7 @@ class LanceDBBackend(StorageBackend):
                 raise ValueError("Provide one of: text, file_path, or folder_path")
         # FTS rebuild happens once at context exit
 
-        summary["total_seen"] = summary["indexed_text"] + summary["indexed_images"] + summary["skipped"] + summary["errors"]
+        summary["total_seen"] = len(summary["items"])
         trace_log("ingest_done", collection=collection, indexed_text=summary["indexed_text"], indexed_images=summary["indexed_images"])
         return summary
 
@@ -1698,7 +1937,13 @@ class LanceDBBackend(StorageBackend):
         path: str,
         collection: str,
         embed_func,
-        model: str = "Qwen3-VL-Embedding-2B"
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        title: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
     ) -> str:
         """
         Index an image file.
@@ -1712,10 +1957,13 @@ class LanceDBBackend(StorageBackend):
         Returns:
             Content hash (hash of file bytes + mtime)
         """
+        actual_path = str(Path(path).expanduser().resolve())
+        logical_path = stored_path or actual_path
+
         # Use file bytes + mtime hash for correctness
         # This ensures re-indexing when file content changes
         try:
-            content_hash = hash_file_bytes(path)
+            content_hash = hash_file_bytes(actual_path)
         except FileNotFoundError:
             raise
         except Exception as e:
@@ -1724,56 +1972,202 @@ class LanceDBBackend(StorageBackend):
         
         trace_log("index_image_start", path=path, hash=content_hash[:8])
         
-        title = os.path.splitext(os.path.basename(path))[0]
+        resolved_title = title or os.path.splitext(os.path.basename(logical_path))[0]
         try:
-            modified_at = int(os.path.getmtime(path) * 1000)
-            created_at = int(os.path.getctime(path) * 1000)
+            modified_at = int(os.path.getmtime(actual_path) * 1000)
+            created_at = int(os.path.getctime(actual_path) * 1000)
         except OSError as e:
             logger.warning(f"index_image: failed to get file times for {path}: {e}")
             modified_at = int(time.time() * 1000)
             created_at = modified_at
-        
-        self.insert_content(content_hash, path, content_type="image")
+
+        # Remove previous image vectors for this logical document path.
+        # Deleting only by hash_seq misses changed-content reindex cases.
+        self._delete_path_entries(
+            collection=collection,
+            logical_path=logical_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            content_type="image",
+        )
+
+        self.insert_content(content_hash, actual_path, content_type="image")
         self.insert_document(
             collection=collection,
-            file_path=path,
-            title=title,
+            file_path=logical_path,
+            title=resolved_title,
             content_hash=content_hash,
             content_type="image",
             created_at=created_at,
             modified_at=modified_at,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
         )
-        
-        vector = embed_func(path)
-        
-        now = int(time.time() * 1000)
-        hash_seq = f"{content_hash}_0"
-        
-        try:
-            self._embeddings_table.delete(f"hash_seq = '{escape_sql(hash_seq)}'")
-        except Exception as e:
-            logger.debug(f"index_image: no existing embedding to delete for {hash_seq}: {e}")
-        
-        self._embeddings_table.add([{
-            "hash_seq": hash_seq,
-            "content_hash": content_hash,
-            "collection": collection,
-            "file_path": path,
-            "content_type": "image",
-            "title": title,
-            "text_body": "",
-            "seq": 0,
-            "pos": 0,
-            "model": model,
-            "embedded_at": now,
-            "vector": vector,
-        }])
-        
+
+        vector = embed_func(actual_path)
+        self.insert_embedding(
+            content_hash=content_hash,
+            seq=0,
+            pos=0,
+            vector=vector.tolist() if hasattr(vector, "tolist") else list(vector),
+            model=model,
+            collection=collection,
+            file_path=logical_path,
+            title=resolved_title,
+            text_body="",
+            content_type="image",
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+
         # Schedule debounced FTS rebuild
         self._schedule_fts_rebuild()
 
-        trace_log("index_image_done", path=path, hash=content_hash[:8])
+        trace_log("index_image_done", path=logical_path, hash=content_hash[:8])
         return content_hash
+
+    def index_video(
+        self,
+        path: str,
+        collection: str,
+        embed_text_func,
+        embed_image_func,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        frame_interval_seconds: float = 5.0,
+        max_frames: int = 8,
+    ) -> Dict[str, Any]:
+        """Index a video into frame embeddings and transcript chunks."""
+        actual_path = str(Path(path).expanduser().resolve())
+        logical_path = stored_path or actual_path
+
+        artifact_root = Path(self._store_path or DEFAULT_INDEX_DIR) / "video_frames"
+        digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
+        output_dir = artifact_root / digest
+
+        self._delete_path_entries(
+            collection=collection,
+            logical_path=logical_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            include_children=True,
+        )
+
+        artifacts = extract_video_artifacts(
+            video_path=actual_path,
+            output_dir=output_dir,
+            logical_path=logical_path,
+            frame_interval_seconds=frame_interval_seconds,
+            max_frames=max_frames,
+        )
+
+        indexed_frames = 0
+        indexed_transcripts = 0
+
+        for frame in artifacts.frames:
+            self.index_image(
+                path=frame.image_path,
+                collection=collection,
+                embed_func=embed_image_func,
+                model=model,
+                stored_path=frame.logical_path,
+                title=frame.title,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+            )
+            indexed_frames += 1
+
+        for segment in artifacts.transcripts:
+            self.upsert_memory(
+                path=segment.logical_path,
+                text=segment.text,
+                collection=collection,
+                embed_func=embed_text_func,
+                model=model,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+            )
+            indexed_transcripts += 1
+
+        return {
+            "success": True,
+            "path": logical_path,
+            "collection": collection,
+            "indexed_frames": indexed_frames,
+            "indexed_transcripts": indexed_transcripts,
+            "duration_seconds": artifacts.duration_seconds,
+            "transcript_path": artifacts.transcript_path,
+            "ffmpeg_available": artifacts.ffmpeg_available,
+        }
+
+    def index_document_file(
+        self,
+        path: str,
+        collection: str,
+        embed_func,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Extract and index a document file into structured text assets."""
+        actual_path = str(Path(path).expanduser().resolve())
+        logical_path = stored_path or actual_path
+
+        self._delete_path_entries(
+            collection=collection,
+            logical_path=logical_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            include_children=True,
+        )
+
+        artifacts = extract_document_artifacts(actual_path, logical_path)
+        indexed_sections = 0
+
+        for section in artifacts.sections:
+            self.upsert_memory(
+                path=section.logical_path,
+                text=section.text,
+                collection=collection,
+                embed_func=embed_func,
+                model=model,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                _skip_delete=True,
+            )
+            indexed_sections += 1
+
+        return {
+            "success": True,
+            "path": logical_path,
+            "collection": collection,
+            "document_type": artifacts.document_type,
+            "extractor": artifacts.extractor,
+            "indexed_sections": indexed_sections,
+        }
 
 
 class _BulkModeContext:

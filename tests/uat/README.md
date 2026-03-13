@@ -40,23 +40,29 @@ Each test is self-contained and can be run independently:
 # Tiered modes (embed/hybrid/full model loading and behavior)
 ./tests/uat/test_tiered_modes.sh
 
+# Document ingest (PDF/DOCX/PPTX extraction through CLI)
+./tests/uat/test_document_ingest.sh
+
+# Video ingest (transcript fallback + ffmpeg frame extraction when available)
+./tests/uat/test_video_ingest.sh
+
+# Video retrieval quality (text->video and image->video across modes)
+./tests/uat/test_video_quality.sh
+
 # ★ CROSS-MODAL SEARCH (the key differentiator) ★
 ./tests/uat/test_cross_modal.sh
 
 # Search quality (recall@5, MRR, edge cases, dedup)
 ./tests/uat/test_search_quality.sh
 
-# MCP contract test (mock backend, all 12 tools, fast/deterministic)
-./tests/uat/test_mcp_contract.sh
-
-# MCP live test (real backend/models)
-./tests/uat/test_mcp_live.sh
-
 # Backward-compatible MCP entrypoint (defaults to contract mode)
 ./tests/uat/test_mcp_server.sh
 
-# CLI commands (index, search, status, serve)
+# CLI commands (index, search, watch, status, serve + README contract checks)
 ./tests/uat/test_cli.sh
+
+# COCO benchmark smoke test (skip when datasets/network unavailable)
+./tests/uat/test_benchmarks.sh
 
 # Performance (cold start, p50/p95, throughput, memory)
 ./tests/uat/test_latency.sh
@@ -154,10 +160,16 @@ Each test script exits 0 on success, 1 on any failure.
 
 2. **First run is slow**: Models download on first use (~4GB per model). Subsequent runs use cached models.
 
-3. **MLX tests skip on non-Apple Silicon**: MLX backend tests only run on macOS ARM64.
+3. **MLX tests skip when runtime probe fails**: MLX backend tests only run when `recallforge.backends.MLX_AVAILABLE` is true (macOS ARM64 + healthy MLX runtime probe).
 
 4. **CUDA tests skip without GPU**: CUDA backend tests only run when `torch.cuda.is_available()` is True.
 
 5. **MCP server test is in-process**: The MCP server test creates the server object directly rather than testing stdio transport. The CLI serve test in `test_cli.sh` covers the process lifecycle.
 
 6. **Full mode is memory-hungry**: Loading all 3 models requires ~12GB. If your machine has less, expect OOM or swap thrashing in full mode tests.
+
+7. **Video ingest depends on host capabilities**: Transcript sidecars (`.srt`, `.vtt`, `.txt`) are always supported. Frame extraction runs when `ffmpeg` and `ffprobe` are installed; otherwise video UAT validates transcript-only fallback.
+
+8. **Document ingest is local-first**: DOCX and PPTX fixtures are extracted through built-in OOXML parsing. PDF ingestion uses a lightweight fallback extractor by default and gets richer parsing when optional PDF tooling is installed.
+
+9. **Benchmark smoke is capability-aware**: `test_benchmarks.sh` runs a small COCO benchmark when the `datasets` package and HuggingFace dataset access are available. It skips cleanly otherwise.

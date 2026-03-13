@@ -30,6 +30,7 @@ CORPUS_DIR="${UAT_DIR}/corpus"
 HELPERS_DIR="${UAT_DIR}/helpers"
 # Each test gets its own temp store to avoid collisions
 UAT_STORE="${TMPDIR:-/tmp}/recallforge-uat-$$"
+UAT_BACKEND_PROBE_DIR="${TMPDIR:-/tmp}/recallforge-uat-backend-probes"
 
 # ──────────────────────────────────────────────
 # Activate project venv if present (ensures recallforge is importable)
@@ -170,7 +171,57 @@ has_cuda() {
 
 # Check if MLX is importable
 has_mlx() {
-    python3 -c "import mlx" 2>/dev/null
+    PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}" \
+        python3 -c "from recallforge.backends import MLX_AVAILABLE; raise SystemExit(0 if MLX_AVAILABLE else 1)" 2>/dev/null
+}
+
+backend_runtime_healthy() {
+    local backend="$1"
+    local cache_file="${UAT_BACKEND_PROBE_DIR}/${backend}.status"
+    mkdir -p "${UAT_BACKEND_PROBE_DIR}"
+
+    if PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}" \
+        RECALLFORGE_BACKEND="${backend}" \
+        RECALLFORGE_MODE="embed" \
+        RECALLFORGE_MLX_QUANTIZE="${RECALLFORGE_MLX_QUANTIZE:-4bit}" \
+        python3 <<'PYEOF' >/dev/null 2>&1
+from recallforge import get_backend
+
+backend = get_backend()
+backend.embed_text("uat backend probe")
+PYEOF
+    then
+        rm -f "${cache_file}"
+        return 0
+    fi
+
+    rm -f "${cache_file}"
+    return 1
+}
+
+select_live_backend() {
+    if is_apple_silicon && backend_runtime_healthy mlx; then
+        echo "mlx"
+        return 0
+    fi
+    if backend_runtime_healthy torch; then
+        echo "torch"
+        return 0
+    fi
+    return 1
+}
+
+live_backend_candidates() {
+    local emitted=0
+    if is_apple_silicon && backend_runtime_healthy mlx; then
+        echo "mlx"
+        emitted=1
+    fi
+    if backend_runtime_healthy torch; then
+        echo "torch"
+        emitted=1
+    fi
+    return $(( emitted == 0 ))
 }
 
 # Elapsed time helper

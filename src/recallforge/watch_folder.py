@@ -20,6 +20,9 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Dict, List, Optional
 
+from .documents import is_document_file
+from .video import is_video_file
+
 logger = logging.getLogger("recallforge.watch_folder")
 
 
@@ -57,9 +60,6 @@ class WatchFolderDaemon:
         self.worker_threads: Dict[str, threading.Thread] = {}
         self.scan_threads: Dict[str, threading.Thread] = {}
 
-        self._is_text_file = storage._is_text_file
-        self._is_image_file = storage._is_image_file
-
     def _get_state_path(self) -> Path:
         return Path(self.store_path) / self.STATE_FILE_NAME
 
@@ -73,11 +73,54 @@ class WatchFolderDaemon:
             logger.warning("Failed to save watch state: %s", e)
 
     def _candidate_files(self, root: Path, recursive: bool) -> List[Path]:
+        files: List[Path] = []
         if recursive:
-            files = [p for p in root.rglob("*") if p.is_file()]
-        else:
-            files = [p for p in root.glob("*") if p.is_file()]
+            pruned = {".git", "node_modules", "__pycache__", ".venv", "venv"}
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [
+                    dirname for dirname in sorted(dirnames)
+                    if dirname not in pruned and not dirname.startswith(".")
+                ]
+                for filename in sorted(filenames):
+                    candidate = Path(dirpath) / filename
+                    if candidate.is_file():
+                        files.append(candidate)
+            return files
+
+        for child in sorted(root.iterdir()):
+            if child.is_file():
+                files.append(child)
         return files
+
+    def _is_text_file(self, path: Path) -> bool:
+        try:
+            with path.open("rb") as handle:
+                sample = handle.read(8192)
+        except Exception:
+            return False
+        return b"\x00" not in sample
+
+    def _is_image_file(self, path: Path) -> bool:
+        return path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic"}
+
+    def _is_video_file(self, path: Path) -> bool:
+        return is_video_file(path)
+
+    def _is_document_file(self, path: Path) -> bool:
+        return is_document_file(path)
+
+    def _read_text_robust(self, path: Path) -> Optional[str]:
+        for encoding in ("utf-8", "utf-8-sig", "latin-1"):
+            try:
+                return path.read_text(encoding=encoding)
+            except UnicodeDecodeError:
+                continue
+            except Exception:
+                return None
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
 
     def _should_process(self, path: Path, config: WatchConfig) -> bool:
         root = Path(config.folder_path).expanduser().resolve()
@@ -104,7 +147,12 @@ class WatchFolderDaemon:
             if any(_match(pat) for pat in config.exclude_globs):
                 return False
 
-        return self._is_text_file(path) or self._is_image_file(path)
+        return (
+            self._is_text_file(path)
+            or self._is_image_file(path)
+            or self._is_video_file(path)
+            or self._is_document_file(path)
+        )
 
     def _build_snapshot(self, config: WatchConfig) -> Dict[str, float]:
         root = Path(config.folder_path).expanduser().resolve()
@@ -187,13 +235,15 @@ class WatchFolderDaemon:
             return
 
         if event_type == "deleted":
-            self.storage.delete_memory(rel_path, config.collection)
+            include_children = self._is_video_file(path) or self._is_document_file(path)
+            if hasattr(self.storage, "delete_path"):
+                self.storage.delete_path(rel_path, config.collection, include_children=include_children)
+            else:
+                self.storage.delete_memory(rel_path, config.collection)
             return
 
         if not path.exists():
             return
-
-        self.backend._load_embedder()
 
         if self._is_image_file(path):
             self.storage.index_image(
@@ -201,10 +251,32 @@ class WatchFolderDaemon:
                 collection=config.collection,
                 embed_func=self.backend.embed_image,
                 model="Qwen3-VL-Embedding-2B",
+                stored_path=rel_path,
             )
             return
 
-        text = self.storage._read_text_robust(path)
+        if self._is_video_file(path) and hasattr(self.storage, "index_video"):
+            self.storage.index_video(
+                path=str(path),
+                collection=config.collection,
+                embed_text_func=self.backend.embed_text,
+                embed_image_func=self.backend.embed_image,
+                model="Qwen3-VL-Embedding-2B",
+                stored_path=rel_path,
+            )
+            return
+
+        if self._is_document_file(path) and hasattr(self.storage, "index_document_file"):
+            self.storage.index_document_file(
+                path=str(path),
+                collection=config.collection,
+                embed_func=self.backend.embed_text,
+                model="Qwen3-VL-Embedding-2B",
+                stored_path=rel_path,
+            )
+            return
+
+        text = self._read_text_robust(path)
         if text:
             self.storage.upsert_memory(
                 path=rel_path,

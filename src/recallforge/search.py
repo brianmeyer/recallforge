@@ -65,6 +65,8 @@ class HybridSearcher:
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
         max_workers: int = 8,
+        overfetch_factor: int = 10,
+        max_candidates: int = 200,
     ):
         """
         Initialize hybrid searcher.
@@ -82,6 +84,8 @@ class HybridSearcher:
             project_id: Optional project namespace filter
             profile: Optional profile namespace filter
             max_workers: ThreadPoolExecutor workers for parallel searches
+            overfetch_factor: Candidate overfetch multiplier before final trim
+            max_candidates: Hard cap on candidate pool size
         """
         self.backend = backend
         self.storage = storage
@@ -95,6 +99,33 @@ class HybridSearcher:
         self.project_id = project_id
         self.profile = profile
         self.max_workers = max_workers
+        env_overfetch = int(os.environ.get("RECALLFORGE_OVERFETCH_FACTOR", overfetch_factor))
+        env_max_candidates = int(os.environ.get("RECALLFORGE_MAX_CANDIDATES", max_candidates))
+        self.overfetch_factor = max(2, env_overfetch)
+        self.max_candidates = max(self.limit, env_max_candidates)
+        self.candidate_limit = min(self.max_candidates, self.limit * self.overfetch_factor)
+
+    def _vector_results_to_hybrid(self, results: List[SearchResult]) -> List[HybridResult]:
+        """Convert raw vector results into HybridResult objects."""
+        hybrid_results: List[HybridResult] = []
+        for rank, result in enumerate(results, start=1):
+            hybrid_results.append(HybridResult(
+                filepath=result.filepath,
+                display_path=result.display_path,
+                title=result.title,
+                context=result.context,
+                hash=result.hash,
+                docid=result.docid,
+                collection=result.collection,
+                modified_at=result.modified_at,
+                body_length=result.body_length,
+                body=result.body,
+                score=result.score,
+                rrf_rank=rank,
+                rerank_score=0.5,
+                source=result.source,
+            ))
+        return hybrid_results
 
     def _bm25_probe(self, query: str) -> List[SearchResult]:
         """Run initial BM25 probe."""
@@ -135,6 +166,21 @@ class HybridSearcher:
             project_id=self.project_id,
             profile=self.profile,
         )
+
+    def search_image(self, image_path: str) -> List[HybridResult]:
+        """Run image-query search through the vector path."""
+        vector = self.backend.embed_image(image_path)
+        results = self.storage.search_vec(
+            vector.tolist() if hasattr(vector, 'tolist') else list(vector),
+            limit=self.limit,
+            collection=self.collection,
+            content_type=self.content_type,
+            user_id=self.user_id,
+            session_id=self.session_id,
+            project_id=self.project_id,
+            profile=self.profile,
+        )
+        return self._vector_results_to_hybrid(results)
     
     def _expand_query(self, query: str) -> List[Dict[str, str]]:
         """Expand query into variants (full mode only)."""
@@ -309,7 +355,7 @@ class HybridSearcher:
             final_results.append(result)
         
         final_results.sort(key=lambda x: x.score, reverse=True)
-        return final_results[:self.limit * 2]
+        return final_results[:self.candidate_limit]
     
     def _select_best_chunk(self, result: SearchResult) -> Dict[str, Any]:
         """Select the best chunk from a document for reranking."""
@@ -348,6 +394,21 @@ class HybridSearcher:
     ) -> List[HybridResult]:
         """Blend RRF scores with reranker scores."""
         hybrid_results = []
+
+        if not rrf_results:
+            return hybrid_results
+
+        def _normalize(values: Dict[str, float], neutral: float = 0.5) -> Dict[str, float]:
+            if not values:
+                return {}
+            min_v = min(values.values())
+            max_v = max(values.values())
+            if abs(max_v - min_v) < 1e-9:
+                return {k: neutral for k in values}
+            return {k: (v - min_v) / (max_v - min_v) for k, v in values.items()}
+
+        rrf_raw = {r.filepath: r.score for r in rrf_results}
+        rrf_norm = _normalize(rrf_raw, neutral=0.0)
         
         # Check if reranking was actually performed (embed mode returns all 0.5)
         # In embed mode, rerank_scores are uniform - use RRF scores directly
@@ -356,10 +417,13 @@ class HybridSearcher:
             len(unique_rerank_scores) == 1 and 0.5 not in unique_rerank_scores
         )
         
+        rerank_norm = _normalize(rerank_scores, neutral=0.5)
+
         for rank, result in enumerate(rrf_results):
             rrf_rank = rank + 1
-            rrf_score = result.score
-            rerank_score = rerank_scores.get(result.filepath, 0.0)
+            rrf_score = rrf_norm.get(result.filepath, 0.0)
+            rerank_score_raw = rerank_scores.get(result.filepath, 0.5)
+            rerank_score = rerank_norm.get(result.filepath, 0.5)
             
             if has_meaningful_rerank:
                 # Blend RRF with reranker scores
@@ -389,7 +453,7 @@ class HybridSearcher:
                 body=result.body,
                 score=blended,
                 rrf_rank=rrf_rank,
-                rerank_score=rerank_score,
+                rerank_score=rerank_score_raw,
                 source=result.source,
             ))
         
@@ -488,3 +552,37 @@ def hybrid_query(
     )
 
     return searcher.search(query)
+
+
+def hybrid_query_image(
+    image_path: str,
+    backend: Optional[ModelBackend] = None,
+    storage: Optional[StorageBackend] = None,
+    limit: int = 10,
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> List[HybridResult]:
+    """Convenience function for image-query vector search."""
+    if backend is None:
+        from . import get_backend
+        backend = get_backend()
+    if storage is None:
+        from . import get_storage
+        storage = get_storage()
+
+    searcher = HybridSearcher(
+        backend=backend,
+        storage=storage,
+        limit=limit,
+        collection=collection,
+        content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+    )
+    return searcher.search_image(image_path)

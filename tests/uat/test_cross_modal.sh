@@ -13,9 +13,12 @@ trap cleanup_store EXIT
 
 ensure_test_images
 
-BACKEND_CANDIDATES=("torch")
-if is_apple_silicon; then
-    BACKEND_CANDIDATES=("mlx" "torch")
+mapfile -t BACKEND_CANDIDATES < <(live_backend_candidates || true)
+if [[ ${#BACKEND_CANDIDATES[@]} -eq 0 ]]; then
+    warn "No usable live backend on this host; skipping cross-modal live coverage."
+    skip "Cross-modal live backend"
+    print_summary "Cross-Modal Search Tests"
+    exit 0
 fi
 info "Backend order: ${BACKEND_CANDIDATES[*]}"
 
@@ -129,12 +132,12 @@ def search_text(query, limit=5, content_type=None):
     return searcher.search(query)
 
 def search_by_image(image_path, limit=5, content_type=None):
-    vec = backend.embed_image(image_path)
-    results = storage.search_vec(
-        vec.tolist(), limit=limit,
-        collection="xmodal", content_type=content_type,
+    searcher = HybridSearcher(
+        backend=backend, storage=storage,
+        limit=limit, collection="xmodal",
+        content_type=content_type,
     )
-    return results
+    return searcher.search_image(image_path)
 
 def check_results(results, expected_keywords, top_k=5):
     titles = [r.title.lower() if hasattr(r, "title") else str(r).lower() for r in results[:top_k]]
@@ -238,11 +241,6 @@ PYEOF_MODE
 
 selected_backend=""
 for backend_name in "${BACKEND_CANDIDATES[@]}"; do
-    if [[ "${backend_name}" == "mlx" ]] && ! has_mlx; then
-        warn "MLX backend unavailable on this host; falling back to torch."
-        continue
-    fi
-
     subsection "Backend Attempt: ${backend_name}"
     if run_cross_modal_for_backend "${backend_name}"; then
         selected_backend="${backend_name}"

@@ -12,13 +12,30 @@ trap cleanup_store EXIT
 
 ensure_test_images
 
+SELECTED_BACKEND="$(select_live_backend || true)"
+TORCH_COMPARE_AVAILABLE=0
+if backend_runtime_healthy torch; then
+    TORCH_COMPARE_AVAILABLE=1
+fi
+
+if [[ -z "${SELECTED_BACKEND}" ]]; then
+    skip "Latency tests (no usable live backend on this host)"
+    print_summary "Performance Tests"
+    exit 0
+fi
+
+export UAT_SELECTED_BACKEND="${SELECTED_BACKEND}"
+export UAT_TORCH_COMPARE_AVAILABLE="${TORCH_COMPARE_AVAILABLE}"
+
 python3 << PYEOF
-import os, sys, time, statistics, subprocess, random, string
+import os, sys, time, statistics, subprocess, random, string, platform
 sys.path.insert(0, "src")
 
 STORE = "${UAT_STORE}"
 CORPUS_TEXT = "${CORPUS_DIR}/text"
 CORPUS_IMAGES = "${CORPUS_DIR}/images"
+SELECTED_BACKEND = os.environ["UAT_SELECTED_BACKEND"]
+TORCH_COMPARE_AVAILABLE = os.environ["UAT_TORCH_COMPARE_AVAILABLE"] == "1"
 
 pass_count = 0
 fail_count = 0
@@ -45,8 +62,9 @@ def get_rss_mb():
 print("\n\033[0;36m--- Cold Start: Backend + First Search ---\033[0m\n")
 # ═══════════════════════════════════
 
-os.environ["RECALLFORGE_BACKEND"] = "torch"
+os.environ["RECALLFORGE_BACKEND"] = SELECTED_BACKEND
 os.environ["RECALLFORGE_MODE"] = "embed"
+os.environ["RECALLFORGE_MLX_QUANTIZE"] = "4bit"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 
 rss_before = get_rss_mb()
@@ -57,6 +75,12 @@ from recallforge.search import HybridSearcher
 
 backend = get_backend()
 storage = get_storage(STORE)
+info = backend.get_info()
+print(f"  Backend selected: {info.name} (dtype={info.dtype}, quant={info.quantization})")
+
+report(info.name == SELECTED_BACKEND, f"Selected live backend is {SELECTED_BACKEND}")
+if info.name == "mlx":
+    report((info.quantization or "4bit") == "4bit", "MLX-first default quantization is 4bit")
 
 # Index a few docs for searching
 text_files = sorted([f for f in os.listdir(CORPUS_TEXT) if f.endswith('.md')])
@@ -188,35 +212,26 @@ report(rss_peak < 16000, f"Peak RSS < 16 GB: actual {rss_peak:.0f} MB")
 print("\n\033[0;36m--- Backend Comparison (if multiple available) ---\033[0m\n")
 # ═══════════════════════════════════
 
-try:
-    import mlx
-    has_mlx = True
-except ImportError:
-    has_mlx = False
+if info.name == "mlx" and TORCH_COMPARE_AVAILABLE:
+    print("  Default path is MLX; comparing against Torch embed mode:")
+    from recallforge.backends.torch_backend import TorchBackend
+    torch_backend = TorchBackend(mode="embed")
+    torch_backend._load_embedder()
 
-if has_mlx:
-    print("  MLX available - comparing backends:")
-    os.environ["RECALLFORGE_BACKEND"] = "mlx"
-    from recallforge.backends.mlx_backend import MLXBackend
-    mlx_backend = MLXBackend(mode="embed", quantization="bf16")
-    mlx_backend._load_embedder()
-
-    mlx_latencies = []
-    mlx_searcher = HybridSearcher(
-        backend=mlx_backend, storage=storage,
+    torch_latencies = []
+    torch_searcher = HybridSearcher(
+        backend=torch_backend, storage=storage,
         limit=5, collection="perf",
     )
     for q in queries[:10]:
         t0 = time.time()
-        mlx_searcher.search(q)
-        mlx_latencies.append((time.time() - t0) * 1000)
+        torch_searcher.search(q)
+        torch_latencies.append((time.time() - t0) * 1000)
 
-    mlx_avg = statistics.mean(mlx_latencies)
-    print(f"  Torch avg: {avg:.0f}ms  |  MLX avg: {mlx_avg:.0f}ms")
-    mlx_rss = get_rss_mb()
-    print(f"  MLX RSS: {mlx_rss:.0f} MB")
+    torch_avg = statistics.mean(torch_latencies)
+    print(f"  Active ({info.name}) avg: {avg:.0f}ms  |  Torch avg: {torch_avg:.0f}ms")
 else:
-    print("  Only Torch backend available (MLX not installed)")
+    print("  No secondary backend comparison performed")
 
 # ── Summary ──
 print(f"\n\033[1m{'='*40}\033[0m")

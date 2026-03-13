@@ -11,6 +11,7 @@ Model IDs:
 """
 
 import os
+import importlib.util
 import warnings
 from typing import List, Dict, Any, Optional
 
@@ -19,12 +20,20 @@ from PIL import Image, UnidentifiedImageError
 
 from .base import ModelBackend, BackendInfo
 
-# Check if MLX is available
-try:
-    import mlx.core as mx
-    MLX_AVAILABLE = True
-except ImportError:
-    MLX_AVAILABLE = False
+mx = None
+
+# Check if MLX is installed without importing runtime at module import time.
+# Importing mlx.core can abort Python on some broken Metal/MLX setups.
+MLX_AVAILABLE = importlib.util.find_spec("mlx") is not None
+
+
+def _load_mlx_core():
+    """Import mlx.core lazily and cache the module reference."""
+    global mx
+    if mx is None:
+        import mlx.core as _mx
+        mx = _mx
+    return mx
 
 # Optional torch import for expander fallback
 _torch_available = False
@@ -92,6 +101,12 @@ class MLXBackend(ModelBackend):
             raise ImportError(
                 "MLX is not available. Install with: pip install recallforge[mlx]"
             )
+        try:
+            _load_mlx_core()
+        except Exception as exc:
+            raise ImportError(
+                "MLX runtime failed to initialize in this environment."
+            ) from exc
 
         self._mode = mode
         self._quantization = quantization

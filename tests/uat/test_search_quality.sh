@@ -12,6 +12,14 @@ trap cleanup_store EXIT
 
 ensure_test_images
 
+SELECTED_BACKEND="$(select_live_backend || true)"
+if [[ -z "${SELECTED_BACKEND}" ]]; then
+    warn "No usable live backend on this host; skipping search-quality live coverage."
+    skip "Search quality live backend"
+    print_summary "Search Quality Tests"
+    exit 0
+fi
+
 python3 << PYEOF
 import os, sys, time
 sys.path.insert(0, "src")
@@ -32,18 +40,14 @@ def report(ok, msg):
         fail_count += 1
 
 # ── Index corpus ──
-import platform
-if platform.machine() == "arm64" and platform.system() == "Darwin":
-    os.environ["RECALLFORGE_BACKEND"] = "mlx"
+os.environ["RECALLFORGE_BACKEND"] = "${SELECTED_BACKEND}"
+if "${SELECTED_BACKEND}" == "mlx":
     os.environ.setdefault("RECALLFORGE_MLX_QUANTIZE", "4bit")
-else:
-    os.environ["RECALLFORGE_BACKEND"] = "torch"
 os.environ["RECALLFORGE_MODE"] = "embed"
 os.environ["RECALLFORGE_STORE_PATH"] = STORE
 
 from recallforge import get_backend, get_storage
 from recallforge.search import HybridSearcher
-from recallforge.backends.torch_backend import TorchBackend
 
 backend = get_backend()
 backend._load_embedder()
@@ -59,8 +63,10 @@ for f in text_files:
         model="Qwen3-VL-Embedding-2B", embed_func=backend.embed_text,
     )
 
-# Load hybrid for quality tests
-backend_h = TorchBackend(mode="hybrid")
+# Load hybrid for quality tests using the same viable backend family.
+os.environ["RECALLFORGE_MODE"] = "hybrid"
+backend_h = get_backend()
+backend_h.set_mode("hybrid")
 backend_h._load_embedder()
 backend_h._load_reranker()
 

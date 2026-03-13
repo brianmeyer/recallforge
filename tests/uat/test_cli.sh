@@ -12,13 +12,6 @@ trap cleanup_store EXIT
 
 ensure_test_images
 
-# Prefer MLX 4-bit on Apple Silicon to avoid MPS OOM on 16GB machines
-if is_apple_silicon; then
-    export RECALLFORGE_BACKEND=mlx
-    export RECALLFORGE_MLX_QUANTIZE=4bit
-else
-    export RECALLFORGE_BACKEND=torch
-fi
 export RECALLFORGE_MODE=embed
 export RECALLFORGE_STORE_PATH="${UAT_STORE}"
 
@@ -32,6 +25,36 @@ run_test_grep "recallforge index --help" "index" recallforge index --help
 run_test_grep "recallforge search --help" "query" recallforge search --help
 run_test_grep "recallforge serve --help" "serve" recallforge serve --help
 run_test_grep "recallforge status --help" "status" recallforge status --help
+run_test_grep "recallforge watch --help" "watch" recallforge watch --help
+
+# ──────────────────────────────────────────────
+subsection "README/CLI Contract Checks"
+# ──────────────────────────────────────────────
+
+SEARCH_HELP=$(recallforge search --help 2>&1 || true)
+
+if rg -n "recallforge search --image" README.md >/dev/null 2>&1; then
+    if echo "$SEARCH_HELP" | grep -q -- "--image"; then
+        pass "README image-query example matches CLI (--image available)"
+    else
+        fail "README advertises --image, but CLI search help lacks --image"
+    fi
+else
+    info "README does not advertise --image query mode"
+fi
+
+SELECTED_BACKEND="$(select_live_backend || true)"
+if [[ -z "${SELECTED_BACKEND}" ]]; then
+    warn "No usable live backend on this host; skipping CLI index/search/serve coverage."
+    skip "CLI live backend"
+    print_summary "CLI Tests"
+    exit 0
+fi
+
+export RECALLFORGE_BACKEND="${SELECTED_BACKEND}"
+if [[ "${SELECTED_BACKEND}" == "mlx" ]]; then
+    export RECALLFORGE_MLX_QUANTIZE=4bit
+fi
 
 # ──────────────────────────────────────────────
 subsection "Index Single Text File"
@@ -55,6 +78,7 @@ if [[ -f "$IMG_FILE" ]]; then
     OUTPUT=$(recallforge index "$IMG_FILE" --collection cli_test --store-path "$UAT_STORE" 2>&1)
     if echo "$OUTPUT" | grep -q "Indexed\|Indexing image"; then
         pass "recallforge index <image>"
+        recallforge index "$IMG_FILE" --collection cli_dir_test --store-path "$UAT_STORE" >/dev/null 2>&1 || true
     else
         fail "recallforge index <image>"
         echo "    Output: $OUTPUT"
@@ -127,6 +151,25 @@ if echo "$OUTPUT" | grep -q "Results for"; then
     pass "recallforge search --content-type text"
 else
     fail "recallforge search --content-type text"
+fi
+
+# Image query search
+if [[ -f "$IMG_FILE" ]]; then
+    OUTPUT=$(recallforge search --image "$IMG_FILE" --content-type image --store-path "$UAT_STORE" --collection cli_dir_test 2>&1)
+    if echo "$OUTPUT" | grep -q "Results for image"; then
+        pass "recallforge search --image (image→image)"
+    else
+        fail "recallforge search --image (image→image)"
+        echo "    Output: $(echo "$OUTPUT" | head -5)"
+    fi
+
+    OUTPUT=$(recallforge search --image "$IMG_FILE" --content-type text --store-path "$UAT_STORE" --collection cli_dir_test 2>&1)
+    if echo "$OUTPUT" | grep -q "Results for image"; then
+        pass "recallforge search --image (image→text)"
+    else
+        fail "recallforge search --image (image→text)"
+        echo "    Output: $(echo "$OUTPUT" | head -5)"
+    fi
 fi
 
 # ──────────────────────────────────────────────
