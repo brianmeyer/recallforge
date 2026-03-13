@@ -15,17 +15,24 @@ Model Backends:
 Storage Backends:
 - lancedb: LanceDB with vector + FTS (default)
 
-Tiered Search Modes:
-- embed: Embedder only (1 model, ~4GB)
-- hybrid: Embedder + Reranker (2 models, ~8GB)
-- full: All three models (3 models, ~12GB)
+Tiered Search Modes (MLX 4-bit):
+- embed: Embedder only (1 model, ~1.7GB)
+- hybrid: Embedder + Reranker (2 models, ~3.4GB)
+- full: All three models (3 models, ~4.4GB)
 """
 
+import importlib.util
 import os
 import warnings
 from typing import Optional
 
 __version__ = "0.1.0"
+
+
+def _has_torch() -> bool:
+    """Check if torch is importable without actually importing it."""
+    return importlib.util.find_spec("torch") is not None
+
 
 # Backend selection via environment
 RECALLFORGE_BACKEND = os.environ.get("RECALLFORGE_BACKEND", "auto")
@@ -71,6 +78,11 @@ def get_backend():
         )
     
     elif backend_type == "torch":
+        if not _has_torch():
+            raise ImportError(
+                "PyTorch backend requested but torch is not installed. "
+                "Install with: pip install recallforge[torch]"
+            )
         return TorchBackend(mode=mode)
     
     elif backend_type == "auto":
@@ -89,6 +101,14 @@ def get_backend():
                         f"MLX auto-selection failed ({exc}); falling back to torch.",
                         RuntimeWarning,
                     )
+        if not _has_torch():
+            raise ImportError(
+                "No inference backend available. RecallForge requires either MLX or PyTorch.\n\n"
+                "Install a backend for your platform:\n"
+                "  Apple Silicon:  pip install recallforge[mlx]\n"
+                "  NVIDIA GPU:     pip install recallforge[cuda]\n"
+                "  CPU/other:      pip install recallforge[torch]\n"
+            )
         return TorchBackend(mode=mode)
     
     else:
