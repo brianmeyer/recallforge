@@ -484,7 +484,75 @@ class LanceDBBackend(StorageBackend):
                     raise
         
         self._ensure_indices()
-    
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """
+        Migrate existing tables to match the current target schema.
+
+        Older stores may lack columns that were added in recent versions,
+        most notably the namespace columns ``user_id``, ``session_id``,
+        ``project_id``, and ``profile`` (REC-34), as well as Phase-2 metadata
+        columns ``importance``, ``ttl_seconds``, ``tags``, and ``expires_at``.
+
+        Writing rows that include fields absent from the on-disk schema raises
+        ``Field '<name>' not found``.  This method detects the gap and backfills
+        every missing column (initialised to NULL) so the rest of the code can
+        assume a consistent schema.
+
+        The migration is driven by the authoritative target schemas returned by
+        ``_build_embeddings_schema()`` and ``_build_documents_schema()``, so it
+        will automatically cover any new columns added to those schemas in the
+        future.
+
+        Safe to call on up-to-date stores — it is a no-op when all columns
+        already exist.
+        """
+        tables_and_schemas = [
+            (self._embeddings_table, "embeddings", self._build_embeddings_schema()),
+            (self._documents_table,  "documents",  self._build_documents_schema()),
+        ]
+
+        for table, table_name, target_schema in tables_and_schemas:
+            if table is None:
+                continue
+            try:
+                current_cols = {field.name for field in table.schema}
+
+                # Collect pa.Field objects for every column in the target schema
+                # that is absent from the on-disk table.
+                new_fields: List[pa.Field] = [
+                    field
+                    for field in target_schema
+                    if field.name not in current_cols
+                ]
+
+                if not new_fields:
+                    continue
+
+                missing_names = [f.name for f in new_fields]
+                logger.info(
+                    "_migrate_schema: table '%s' is missing columns %s — adding them now",
+                    table_name,
+                    missing_names,
+                )
+
+                # add_columns accepts a list of pa.Field objects and initialises
+                # each new column to NULL (all new fields are nullable=True).
+                table.add_columns(new_fields)
+
+                logger.info(
+                    "_migrate_schema: successfully added %s to '%s'",
+                    missing_names,
+                    table_name,
+                )
+            except Exception as exc:
+                logger.error(
+                    "_migrate_schema: failed to migrate table '%s': %s",
+                    table_name,
+                    exc,
+                )
+
     def close(self) -> None:
         """Close the database connection."""
         # Flush any pending FTS rebuild before closing
