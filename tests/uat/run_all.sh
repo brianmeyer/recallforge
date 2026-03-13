@@ -35,6 +35,7 @@ TESTS=(
     "test_document_ingest.sh:Document Ingest"
     "test_video_ingest.sh:Video Ingest"
     "test_video_quality.sh:Video Quality"
+    "test_video_query_contract.sh:Raw Video Query Contract"
     "test_cross_modal.sh:Cross-Modal ★"
     "test_search_quality.sh:Search Quality"
     "test_mcp_server.sh:MCP Server"

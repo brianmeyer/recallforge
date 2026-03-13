@@ -49,6 +49,9 @@ Each test is self-contained and can be run independently:
 # Video retrieval quality (text->video and image->video across modes)
 ./tests/uat/test_video_quality.sh
 
+# Raw video query contract (explicitly skips until native video query ships)
+./tests/uat/test_video_query_contract.sh
+
 # ★ CROSS-MODAL SEARCH (the key differentiator) ★
 ./tests/uat/test_cross_modal.sh
 
@@ -170,6 +173,8 @@ Each test script exits 0 on success, 1 on any failure.
 
 7. **Video ingest depends on host capabilities**: Transcript sidecars (`.srt`, `.vtt`, `.txt`) are always supported. Frame extraction runs when `ffmpeg` and `ffprobe` are installed; otherwise video UAT validates transcript-only fallback.
 
-8. **Document ingest is local-first**: DOCX and PPTX fixtures are extracted through built-in OOXML parsing. PDF ingestion uses a lightweight fallback extractor by default and gets richer parsing when optional PDF tooling is installed.
+8. **Raw video query is contract-tested but not shipped yet**: `test_video_query_contract.sh` is included in the suite so the gap is explicit. It skips until a native `--video` / `search_video()` path exists, then becomes an active smoke test.
 
-9. **Benchmark smoke is capability-aware**: `test_benchmarks.sh` runs a small COCO benchmark when the `datasets` package and HuggingFace dataset access are available. It skips cleanly otherwise.
+9. **Document ingest is local-first**: DOCX and PPTX fixtures are extracted through built-in OOXML parsing. PDF ingestion uses a lightweight fallback extractor by default and gets richer parsing when optional PDF tooling is installed.
+
+10. **Benchmark smoke is capability-aware**: `test_benchmarks.sh` runs a small COCO benchmark when the `datasets` package and HuggingFace dataset access are available. It skips cleanly otherwise.
