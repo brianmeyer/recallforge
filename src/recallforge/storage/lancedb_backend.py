@@ -58,6 +58,12 @@ CHUNK_SIZE_CHARS = CHUNK_SIZE_TOKENS * 4
 CHUNK_OVERLAP_CHARS = CHUNK_OVERLAP_TOKENS * 4
 CHUNK_WINDOW_CHARS = 200
 
+# =============================================================================
+# File Size Limits
+# =============================================================================
+
+DEFAULT_MAX_FILE_SIZE_MB = 100
+
 
 # =============================================================================
 # Helper Functions
@@ -1730,6 +1736,7 @@ class LanceDBBackend(StorageBackend):
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
     ) -> Dict[str, Any]:
         """Index text files from a folder and return summary counts."""
         root = Path(folder_path).expanduser().resolve()
@@ -1756,6 +1763,20 @@ class LanceDBBackend(StorageBackend):
                 if exclude and any(fnmatch.fnmatch(rel, pattern) for pattern in exclude):
                     skipped += 1
                     continue
+
+                # Check file size before processing
+                try:
+                    file_size = os.path.getsize(file_path)
+                    if file_size > max_file_size_mb * 1024 * 1024:
+                        logger.warning("Skipping %s: file size %dMB exceeds limit %dMB",
+                                       file_path, file_size // (1024 * 1024), max_file_size_mb)
+                        skipped += 1
+                        continue
+                except OSError as e:
+                    logger.warning("Could not get size for %s: %s", file_path, e)
+                    skipped += 1
+                    continue
+
                 if not self._is_text_file(file_path):
                     skipped += 1
                     continue
@@ -1817,6 +1838,7 @@ class LanceDBBackend(StorageBackend):
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text, file, or folder inputs."""
         content_types = content_types or ["text", "image", "video", "document"]
@@ -2009,6 +2031,22 @@ class LanceDBBackend(StorageBackend):
                         summary["skipped"] += 1
                         mark(rel, "unknown", "skipped")
                         continue
+
+                    # Check file size before processing
+                    try:
+                        file_size = os.path.getsize(candidate)
+                        if file_size > max_file_size_mb * 1024 * 1024:
+                            logger.warning("Skipping %s: file size %dMB exceeds limit %dMB",
+                                           candidate, file_size // (1024 * 1024), max_file_size_mb)
+                            summary["skipped"] += 1
+                            mark(rel, "unknown", "skipped")
+                            continue
+                    except OSError as e:
+                        logger.warning("Could not get size for %s: %s", candidate, e)
+                        summary["skipped"] += 1
+                        mark(rel, "unknown", "skipped")
+                        continue
+
                     ingest_single(candidate, rel)
 
             if text is None and not file_path and not folder_path:
