@@ -2153,9 +2153,14 @@ class LanceDBBackend(StorageBackend):
             if text is not None:
                 if "text" not in allowed:
                     summary["skipped"] += 1
-                    mark(path or "inline", "text", "skipped")
+                    mark(path or "inline/skipped", "text", "skipped")
                 else:
-                    text_path = (path or "inline").strip() or "inline"
+                    if path:
+                        text_path = path.strip() or "inline"
+                    else:
+                        import hashlib
+                        text_hash = hashlib.sha256(text.encode()).hexdigest()[:12]
+                        text_path = f"inline/{text_hash}"
                     self.upsert_memory(
                         path=text_path,
                         text=text,

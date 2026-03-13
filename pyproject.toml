@@ -40,6 +40,8 @@ mlx = [
     "mlx>=0.20,<1.0",
     "mlx-vlm>=0.1,<1.0",
     "qwen-vl-utils>=0.0.14,<1.0",
+    # transformers 5.x Qwen3VLVideoProcessor requires torchvision for processor loading
+    "torchvision>=0.15,<1.0",
 ]
 docs = ["pypdf>=5.0,<6.0"]
 cuda = [
