@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 from .documents import is_document_file
 from .video import is_video_file
 
-logger = logging.getLogger("recallforge.watch_folder")
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -97,6 +97,7 @@ class WatchFolderDaemon:
             with path.open("rb") as handle:
                 sample = handle.read(8192)
         except Exception:
+            logger.warning("Failed to read file for text detection: %s", path)
             return False
         return b"\x00" not in sample
 
@@ -116,10 +117,12 @@ class WatchFolderDaemon:
             except UnicodeDecodeError:
                 continue
             except Exception:
+                logger.warning("Failed to read %s with encoding %s", path, encoding)
                 return None
         try:
             return path.read_text(encoding="utf-8", errors="replace")
         except Exception:
+            logger.warning("Failed to read %s with error replacement", path)
             return None
 
     def _should_process(self, path: Path, config: WatchConfig) -> bool:
@@ -127,6 +130,7 @@ class WatchFolderDaemon:
         try:
             rel = path.resolve().relative_to(root).as_posix()
         except Exception:
+            logger.warning("Failed to resolve relative path for %s", path)
             return False
 
         rel_path = Path(rel)
@@ -164,6 +168,7 @@ class WatchFolderDaemon:
                 rel = p.resolve().relative_to(root).as_posix()
                 snap[rel] = p.stat().st_mtime
             except Exception:
+                logger.warning("Failed to get stats for %s", p)
                 continue
         return snap
 
@@ -232,6 +237,7 @@ class WatchFolderDaemon:
         try:
             rel_path = path.resolve().relative_to(root).as_posix()
         except Exception:
+            logger.exception("Failed to resolve relative path for %s", path)
             return
 
         if event_type == "deleted":
