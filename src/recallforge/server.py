@@ -338,6 +338,29 @@ async def create_server(
                     "properties": {},
                 },
             ),
+            Tool(
+                name="list_collections",
+                description="List unique collection names in the store, with optional namespace filters",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "user_id": {"type": "string", "description": "Optional user namespace filter"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
+                    },
+                },
+            ),
+            Tool(
+                name="list_namespaces",
+                description="List unique namespace combinations (user_id, session_id, project_id, profile) in the store",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                    },
+                },
+            ),
         ]
     
     @server.call_tool()
@@ -368,6 +391,10 @@ async def create_server(
                 return await _handle_status(backend, storage)
             elif name == "rebuild_fts":
                 return await _handle_rebuild_fts(storage)
+            elif name == "list_collections":
+                return await _handle_list_collections(arguments, storage)
+            elif name == "list_namespaces":
+                return await _handle_list_namespaces(arguments, storage)
             else:
                 raise ValueError(f"Unknown tool: {name}")
         except Exception as e:
@@ -885,6 +912,49 @@ async def _handle_rebuild_fts(storage) -> list[TextContent]:
         return [TextContent(type="text", text=json.dumps(output, indent=2))]
     except Exception as e:
         return _error_response("BACKEND_ERROR", str(e), {"exception_type": type(e).__name__})
+
+
+async def _handle_list_collections(arguments: dict, storage) -> list[TextContent]:
+    """Handle list_collections."""
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    trace_log("list_collections_start",
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+
+    collections = await _run_blocking(
+        storage.list_collections,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+    )
+
+    output = {
+        "count": len(collections),
+        "collections": collections,
+    }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_list_namespaces(arguments: dict, storage) -> list[TextContent]:
+    """Handle list_namespaces."""
+    collection = arguments.get("collection")
+
+    trace_log("list_namespaces_start", collection=collection)
+
+    namespaces = await _run_blocking(
+        storage.list_namespaces,
+        collection=collection,
+    )
+
+    output = {
+        "count": len(namespaces),
+        "namespaces": namespaces,
+    }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
 async def main() -> None:

@@ -799,5 +799,97 @@ class TestBulkModeFTSRebuild(unittest.TestCase):
         self.assertFalse(self.backend._fts_needs_rebuild)
 
 
+class TestListCollectionsAndNamespaces(unittest.TestCase):
+    """Tests for list_collections and list_namespaces (REC-29)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-list-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _upsert(self, path, text, collection, **ns_kwargs):
+        self.backend.upsert_memory(
+            path=path,
+            text=text,
+            collection=collection,
+            embed_func=mock_embed,
+            model="mock-embedder",
+            **ns_kwargs,
+        )
+
+    # --- list_collections ---
+
+    def test_list_collections_empty_store(self):
+        result = self.backend.list_collections()
+        self.assertEqual(result, [])
+
+    def test_list_collections_returns_unique_sorted(self):
+        self._upsert("a.md", "Alpha doc", "colA")
+        self._upsert("b.md", "Beta doc", "colB")
+        self._upsert("c.md", "Another in colA", "colA")
+        result = self.backend.list_collections()
+        self.assertEqual(result, ["colA", "colB"])
+
+    def test_list_collections_namespace_filter(self):
+        self._upsert("x.md", "User1 doc colA", "colA", user_id="user1")
+        self._upsert("y.md", "User2 doc colB", "colB", user_id="user2")
+        self._upsert("z.md", "User1 doc colC", "colC", user_id="user1")
+        # Only user1's collections
+        result = self.backend.list_collections(user_id="user1")
+        self.assertEqual(result, ["colA", "colC"])
+
+    def test_list_collections_profile_filter(self):
+        self._upsert("p.md", "Profile A doc", "colP", profile="profileA")
+        self._upsert("q.md", "Profile B doc", "colQ", profile="profileB")
+        result = self.backend.list_collections(profile="profileA")
+        self.assertEqual(result, ["colP"])
+
+    # --- list_namespaces ---
+
+    def test_list_namespaces_empty_store(self):
+        result = self.backend.list_namespaces()
+        self.assertEqual(result, [])
+
+    def test_list_namespaces_no_namespace_fields(self):
+        # Documents with no namespace fields should appear as empty dict
+        self._upsert("a.md", "No namespace doc", "col1")
+        result = self.backend.list_namespaces()
+        self.assertEqual(result, [{}])
+
+    def test_list_namespaces_returns_unique_combinations(self):
+        self._upsert("a.md", "Doc A", "col1", user_id="u1", session_id="s1")
+        self._upsert("b.md", "Doc B", "col1", user_id="u1", session_id="s2")
+        self._upsert("c.md", "Doc C", "col2", user_id="u1", session_id="s1")
+        # Two chunks from same namespace → still one entry
+        self._upsert("d.md", "Doc D " * 300, "col1", user_id="u2", session_id="s1")
+        result = self.backend.list_namespaces()
+        user_ids = {ns.get("user_id") for ns in result}
+        self.assertIn("u1", user_ids)
+        self.assertIn("u2", user_ids)
+        # Three unique u1 combos + one u2 combo
+        u1_entries = [ns for ns in result if ns.get("user_id") == "u1"]
+        self.assertEqual(len(u1_entries), 2)  # (u1,s1) and (u1,s2)
+
+    def test_list_namespaces_collection_filter(self):
+        self._upsert("x.md", "ColX user1", "colX", user_id="u1")
+        self._upsert("y.md", "ColY user2", "colY", user_id="u2")
+        result = self.backend.list_namespaces(collection="colX")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].get("user_id"), "u1")
+
+    def test_list_namespaces_omits_empty_fields(self):
+        self._upsert("m.md", "Mixed ns", "col1", user_id="u1")
+        result = self.backend.list_namespaces()
+        # Only non-empty namespace fields should be present
+        self.assertTrue(all("session_id" not in ns for ns in result))
+        self.assertTrue(all("project_id" not in ns for ns in result))
+        self.assertTrue(all("profile" not in ns for ns in result))
+        self.assertEqual(result[0]["user_id"], "u1")
+
+
 if __name__ == "__main__":
     unittest.main()

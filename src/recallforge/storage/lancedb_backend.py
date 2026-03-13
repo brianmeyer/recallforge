@@ -1291,6 +1291,90 @@ class LanceDBBackend(StorageBackend):
             return self._documents_table.count_rows()
         except Exception:
             return 0
+
+    def list_collections(
+        self,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> List[str]:
+        """Return sorted list of unique collection names, with optional namespace filters."""
+        if self._embeddings_table is None:
+            return []
+
+        try:
+            filter_parts: List[str] = []
+            if user_id is not None:
+                filter_parts.append(_safe_filter("user_id", user_id))
+            if session_id is not None:
+                filter_parts.append(_safe_filter("session_id", session_id))
+            if project_id is not None:
+                filter_parts.append(_safe_filter("project_id", project_id))
+            if profile is not None:
+                filter_parts.append(_safe_filter("profile", profile))
+
+            builder = self._embeddings_table.search().select(["collection"])
+            if filter_parts:
+                builder = builder.where(" AND ".join(filter_parts))
+
+            rows = builder.limit(100_000).to_list()
+            seen: set = set()
+            for row in rows:
+                val = row.get("collection")
+                if val:
+                    seen.add(val)
+            return sorted(seen)
+        except Exception as e:
+            logger.warning(f"list_collections: failed: {e}")
+            return []
+
+    def list_namespaces(
+        self,
+        collection: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        """Return unique namespace combinations (user_id, session_id, project_id, profile)."""
+        if self._embeddings_table is None:
+            return []
+
+        try:
+            filter_parts: List[str] = []
+            if collection is not None:
+                filter_parts.append(_safe_filter("collection", collection))
+
+            builder = self._embeddings_table.search().select(
+                ["user_id", "session_id", "project_id", "profile"]
+            )
+            if filter_parts:
+                builder = builder.where(" AND ".join(filter_parts))
+
+            rows = builder.limit(100_000).to_list()
+            seen: set = set()
+            for row in rows:
+                key = (
+                    row.get("user_id") or "",
+                    row.get("session_id") or "",
+                    row.get("project_id") or "",
+                    row.get("profile") or "",
+                )
+                seen.add(key)
+
+            result = []
+            for user_id, session_id, project_id, profile in sorted(seen):
+                ns: Dict[str, str] = {}
+                if user_id:
+                    ns["user_id"] = user_id
+                if session_id:
+                    ns["session_id"] = session_id
+                if project_id:
+                    ns["project_id"] = project_id
+                if profile:
+                    ns["profile"] = profile
+                result.append(ns)
+            return result
+        except Exception as e:
+            logger.warning(f"list_namespaces: failed: {e}")
+            return []
     
     # =========================================================================
     # High-Level Indexing
