@@ -4,6 +4,8 @@
 
 **Every modality, one search. Local first.**
 
+![RecallForge Architecture](docs/architecture-hero.png)
+
 Search text, images, documents, and video in one unified query. Type "whiteboard diagram from last meeting" to find the photo. Drop an image to find related notes. Index `pdf`/`docx`/`pptx` locally for agent memory. All embeddings stay on your machine.
 
 ## Quick Start (30 seconds)
