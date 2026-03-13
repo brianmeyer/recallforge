@@ -21,6 +21,20 @@ import numpy as np
 from .base import ModelBackend, BackendInfo
 
 
+# ---------------------------------------------------------------------------
+# HuggingFace cache helpers
+# ---------------------------------------------------------------------------
+
+def _check_model_cached(repo_id: str) -> bool:
+    """Return True if *repo_id* already exists in the local HuggingFace cache."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        result = try_to_load_from_cache(repo_id, "config.json")
+        return result is not None
+    except Exception:
+        return False
+
+
 class TorchBackend(ModelBackend):
     """
     PyTorch-based model backend.
@@ -178,6 +192,12 @@ class TorchBackend(ModelBackend):
         dtype = self._get_dtype()
         attn = self._get_attention_implementation()
         
+        if not _check_model_cached(self.EMBEDDER_MODEL):
+            print(
+                f"[RecallForge] Downloading embedder model "
+                f"({self.EMBEDDER_MODEL.split('/')[-1]}, ~4GB)... first run only."
+            )
+
         # Suppress flash-linear-attention not-installed warning
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
@@ -299,6 +319,12 @@ class TorchBackend(ModelBackend):
         else:
             dtype = self._get_dtype()
         
+        if not _check_model_cached(self.RERANKER_MODEL):
+            print(
+                f"[RecallForge] Downloading reranker model "
+                f"({self.RERANKER_MODEL.split('/')[-1]}, ~4GB)... first run only."
+            )
+
         # Suppress flash-linear-attention not-installed warning
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
@@ -360,6 +386,12 @@ class TorchBackend(ModelBackend):
         
         model_name = self.EXPANDER_MODEL
         
+        if not _check_model_cached(model_name):
+            print(
+                f"[RecallForge] Downloading expander model "
+                f"({model_name.split('/')[-1]}, ~4GB)... first run only."
+            )
+
         # Suppress flash-linear-attention not-installed warning
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*The fast path is not available.*")

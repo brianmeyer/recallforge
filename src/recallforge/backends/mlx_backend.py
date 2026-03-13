@@ -20,6 +20,20 @@ from PIL import Image, UnidentifiedImageError
 
 from .base import ModelBackend, BackendInfo
 
+
+# ---------------------------------------------------------------------------
+# HuggingFace cache helpers
+# ---------------------------------------------------------------------------
+
+def _check_model_cached(repo_id: str) -> bool:
+    """Return True if *repo_id* already exists in the local HuggingFace cache."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        result = try_to_load_from_cache(repo_id, "config.json")
+        return result is not None
+    except Exception:
+        return False
+
 mx = None
 
 # Check if MLX is installed without importing runtime at module import time.
@@ -159,6 +173,12 @@ class MLXBackend(ModelBackend):
                 "Install with: pip install recallforge[mlx]"
             ) from exc
 
+        if not _check_model_cached(self.EMBEDDER_MODEL):
+            size = "~800MB" if self._quantization == "4bit" else "~4GB"
+            print(
+                f"[RecallForge] Downloading embedder model "
+                f"({self.EMBEDDER_MODEL.split('/')[-1]}, {size})... first run only."
+            )
         print(f"[MLXBackend] Loading embedder: {self.EMBEDDER_MODEL}")
 
         try:
@@ -992,6 +1012,12 @@ class MLXBackend(ModelBackend):
 
         from mlx_vlm import load
 
+        if not _check_model_cached(self.RERANKER_MODEL):
+            size = "~800MB" if self._quantization == "4bit" else "~4GB"
+            print(
+                f"[RecallForge] Downloading reranker model "
+                f"({self.RERANKER_MODEL.split('/')[-1]}, {size})... first run only."
+            )
         print(f"[MLXBackend] Loading reranker: {self.RERANKER_MODEL}")
         try:
             with warnings.catch_warnings():
@@ -1081,6 +1107,11 @@ class MLXBackend(ModelBackend):
         """Load the MLX 4-bit query expander natively."""
         from mlx_lm import load as mlx_lm_load
 
+        if not _check_model_cached(self.EXPANDER_MODEL):
+            print(
+                f"[RecallForge] Downloading expander model "
+                f"({self.EXPANDER_MODEL.split('/')[-1]}, ~700MB)... first run only."
+            )
         print(f"[MLXBackend] Loading expander: {self.EXPANDER_MODEL}")
         model, tokenizer = mlx_lm_load(self.EXPANDER_MODEL)
         self._expander = model
@@ -1099,6 +1130,11 @@ class MLXBackend(ModelBackend):
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
 
+        if not _check_model_cached(self.EXPANDER_MODEL):
+            print(
+                f"[RecallForge] Downloading expander model "
+                f"({self.EXPANDER_MODEL.split('/')[-1]}, ~4GB)... first run only."
+            )
         print(f"[MLXBackend] Loading expander via torch fallback on {device}")
 
         self._expander_tokenizer = AutoTokenizer.from_pretrained(self.EXPANDER_MODEL)
