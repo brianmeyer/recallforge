@@ -1,6 +1,6 @@
 # RecallForge
 
-![CI Status](https://img.shields.io/badge/CI-pending-yellow) ![PyPI](https://img.shields.io/badge/PyPI-coming_soon-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Python](https://img.shields.io/badge/Python-3.12+-blue)
+![CI](https://github.com/brianmeyer/recallforge/actions/workflows/ci.yml/badge.svg) ![PyPI](https://img.shields.io/badge/PyPI-coming_soon-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Python](https://img.shields.io/badge/Python-3.12+-blue)
 
 **Every modality, one search. Local first.**
 
