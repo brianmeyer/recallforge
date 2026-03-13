@@ -9,8 +9,10 @@ Search text, images, documents, and video in one unified query. Type "whiteboard
 ## Quick Start (30 seconds)
 
 ```bash
-# 1. Install
-pip install recallforge
+# 1. Install (pick your platform)
+pip install recallforge[mlx]     # Apple Silicon
+pip install recallforge[cuda]    # NVIDIA GPU
+pip install recallforge[torch]   # CPU / other
 
 # 2. Index anything — text, images, documents, video
 recallforge index ./photos ./docs
@@ -78,12 +80,17 @@ Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
 
 ## Installation
 
+RecallForge requires a backend for inference. Choose the right one for your platform:
+
 ```bash
-pip install recallforge            # auto-detects best backend
-pip install recallforge[mlx]       # force MLX (Apple Silicon)
-pip install recallforge[cuda]      # force CUDA (NVIDIA)
-pip install recallforge[docs]      # richer PDF extraction
+pip install recallforge[mlx]       # Apple Silicon (recommended, 4-bit quantization)
+pip install recallforge[cuda]      # NVIDIA GPU
+pip install recallforge[torch]     # CPU / other PyTorch targets
+pip install recallforge[docs]      # add richer PDF extraction (optional)
 ```
+
+> **Note:** `pip install recallforge` installs the core without a backend.
+> You need at least one of `[mlx]`, `[cuda]`, or `[torch]` to run inference.
 
 From source:
 
@@ -122,6 +129,11 @@ recallforge search --video ~/Movies/demo.mp4
 
 # Status
 recallforge status
+
+# Watch a folder for new files (auto-index on change)
+recallforge watch start ~/Documents --collection docs
+recallforge watch list
+recallforge watch stop ~/Documents
 ```
 
 ## Python API
@@ -204,14 +216,19 @@ Full hybrid search with all pipeline stages:
 ## Architecture
 
 ```
-RecallForge
-├── backends/          # Model backends (MLX, PyTorch)
-├── storage/          # LanceDB + Tantivy FTS
-├── search.py         # Hybrid search pipeline
-├── server.py         # MCP server (17 tools)
-├── documents.py      # PDF/DOCX/PPTX extraction
-├── video.py          # Frame/transcript extraction
-└── cli.py            # CLI interface
+src/recallforge/
+├── backends/
+│   ├── mlx_backend.py    # MLX 4-bit/bf16 (Apple Silicon)
+│   └── torch_backend.py  # PyTorch (CUDA/MPS/CPU)
+├── storage/
+│   └── lancedb_backend.py # LanceDB + Tantivy FTS
+├── cache.py              # LRU embedding cache
+├── search.py             # Hybrid search pipeline (BM25 + vector + RRF)
+├── server.py             # MCP server (17 tools)
+├── documents.py          # PDF/DOCX/PPTX extraction
+├── video.py              # Frame/transcript extraction
+├── watch_folder.py       # Folder monitoring with dedup
+└── cli.py                # CLI interface
 ```
 
 **Search pipeline:** BM25 probe → Query expansion (full mode) → Parallel BM25 + Vector → RRF fusion → Reranking (hybrid/full) → Score blending
