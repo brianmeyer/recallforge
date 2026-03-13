@@ -1,0 +1,19 @@
+{
+  "video": "coding_demo.mp4",
+  "description": "Coding tutorial demo with text overlay on code editor screenshot.",
+  "duration_seconds": 4,
+  "resolution": "320x240",
+  "fps": 15,
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 2.0,
+      "text": "Code editor showing a Python script."
+    },
+    {
+      "start": 2.0,
+      "end": 4.0,
+      "text": "Walkthrough of coding concepts and syntax."
+    }
+  ]
+}

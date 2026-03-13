@@ -1,0 +1,19 @@
+{
+  "video": "whiteboard_session.mp4",
+  "description": "Whiteboard session panning over brainstorm board and handwritten notes.",
+  "duration_seconds": 4,
+  "resolution": "320x240",
+  "fps": 15,
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 2.0,
+      "text": "Brainstorming session on a whiteboard with ideas."
+    },
+    {
+      "start": 2.0,
+      "end": 4.0,
+      "text": "Handwritten notes with key points and action items."
+    }
+  ]
+}
