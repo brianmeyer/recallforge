@@ -173,12 +173,18 @@ class HybridSearcher:
         return self._search_vector(vector)
 
     def search_video(self, video_path: str) -> List[HybridResult]:
-        """Run raw-video query search through the vector path."""
+        """Run raw-video query search through the vector path.
+
+        Raises:
+            NotImplementedError: If the backend does not support native video embedding.
+        """
         embed_video = getattr(self.backend, "embed_video", None)
-        if callable(embed_video):
-            vector = embed_video(video_path)
-        else:
-            vector = self.backend.embed_image(video_path)
+        if not callable(embed_video):
+            raise NotImplementedError(
+                f"Backend {type(self.backend).__name__} does not support raw video queries. "
+                "Install a backend with video support (e.g. recallforge[mlx] or recallforge[torch])."
+            )
+        vector = embed_video(video_path)
         return self._search_vector(vector)
 
     def _search_vector(self, vector) -> List[HybridResult]:
