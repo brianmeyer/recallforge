@@ -135,6 +135,13 @@ async def create_server(
     # Set mode if specified
     if mode:
         backend.set_mode(mode)
+
+    # Mutable runtime config — safe to change without restart
+    _mutable_config: dict = {
+        "mode": mode or os.environ.get("RECALLFORGE_MODE", "full"),
+        "collection": "default",
+        "max_file_size_mb": 100,
+    }
     
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -385,6 +392,37 @@ async def create_server(
                     "required": ["operations"],
                 },
             ),
+            Tool(
+                name="get_config",
+                description="Get current server configuration including version, backend, mode, quantization, data directory, default collection, and max file size",
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
+            Tool(
+                name="set_config",
+                description="Update safe runtime configuration values. Allows changing mode (embed/hybrid/full), collection, and max_file_size_mb. Does NOT allow changing backend, quantize, or data_dir (those require a server restart).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["embed", "hybrid", "full"],
+                            "description": "Search mode: embed (vector only), hybrid (vector + rerank), full (all models)",
+                        },
+                        "collection": {
+                            "type": "string",
+                            "description": "Default collection name used when none is specified",
+                        },
+                        "max_file_size_mb": {
+                            "type": "number",
+                            "description": "Maximum file size in MB for ingest operations",
+                            "minimum": 1,
+                        },
+                    },
+                },
+            ),
         ]
     
     @server.call_tool()
@@ -392,8 +430,8 @@ async def create_server(
         """Execute a tool."""
         try:
             if name == "batch":
-                return await _handle_batch(arguments, backend, storage)
-            return await _dispatch_tool(name, arguments, backend, storage)
+                return await _handle_batch(arguments, backend, storage, _mutable_config)
+            return await _dispatch_tool(name, arguments, backend, storage, _mutable_config)
         except Exception as e:
             return _error_response("INTERNAL_ERROR", str(e), {"exception_type": type(e).__name__})
     
@@ -408,8 +446,16 @@ async def _dispatch_tool(
     arguments: dict,
     backend,
     storage,
+    mutable_config: Optional[dict] = None,
 ) -> list[TextContent | ImageContent | EmbeddedResource]:
     """Route a single tool call to the appropriate handler."""
+    # Apply mutable config defaults: if a handler expects collection/max_file_size_mb
+    # and the caller didn't explicitly provide them, use the mutable config values.
+    if mutable_config:
+        if "collection" not in arguments and "collection" in mutable_config:
+            arguments.setdefault("collection", mutable_config["collection"])
+        if "max_file_size_mb" not in arguments and "max_file_size_mb" in mutable_config:
+            arguments.setdefault("max_file_size_mb", mutable_config["max_file_size_mb"])
     if name == "search":
         return await _handle_search(arguments, backend, storage)
     elif name == "search_fts":
@@ -438,6 +484,10 @@ async def _dispatch_tool(
         return await _handle_list_collections(arguments, storage)
     elif name == "list_namespaces":
         return await _handle_list_namespaces(arguments, storage)
+    elif name == "get_config":
+        return await _handle_get_config(backend, storage, mutable_config or {})
+    elif name == "set_config":
+        return await _handle_set_config(arguments, backend, storage, mutable_config if mutable_config is not None else {})
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -446,6 +496,7 @@ async def _handle_batch(
     arguments: dict,
     backend,
     storage,
+    mutable_config: Optional[dict] = None,
 ) -> list[TextContent]:
     """Execute multiple RecallForge operations in a single call."""
     operations = arguments.get("operations")
@@ -482,7 +533,7 @@ async def _handle_batch(
             continue
 
         try:
-            content_list = await _dispatch_tool(tool_name, op_args, backend, storage)
+            content_list = await _dispatch_tool(tool_name, op_args, backend, storage, mutable_config)
             # Unwrap the first TextContent result into a parsed dict when possible
             if content_list and hasattr(content_list[0], "text"):
                 try:
@@ -985,6 +1036,94 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
     trace_log("index_folder_done", folder_path=folder_path, indexed=output.get("indexed", 0))
 
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_get_config(backend, storage, mutable_config: dict) -> list[TextContent]:
+    """Return current server configuration."""
+    info = await _run_blocking(backend.get_info)
+
+    # Resolve data_dir: prefer storage attribute, fall back to env, then default
+    raw_data_dir = (
+        getattr(storage, "_store_path", None)
+        or os.environ.get("RECALLFORGE_STORE_PATH")
+        or os.path.join(os.path.expanduser("~"), ".recallforge")
+    )
+    try:
+        from pathlib import Path as _Path
+        data_dir = str(_Path(raw_data_dir).expanduser().resolve())
+    except Exception:
+        data_dir = raw_data_dir
+
+    config = {
+        "version": __version__,
+        "backend": info.name,
+        "mode": mutable_config.get("mode", backend.get_mode()),
+        "quantize": info.quantization or "none",
+        "data_dir": data_dir,
+        "collection": mutable_config.get("collection", "default"),
+        "max_file_size_mb": mutable_config.get("max_file_size_mb", 100),
+    }
+    return [TextContent(type="text", text=json.dumps(config, indent=2))]
+
+
+async def _handle_set_config(
+    arguments: dict,
+    backend,
+    storage,
+    mutable_config: dict,
+) -> list[TextContent]:
+    """Validate and apply safe runtime configuration changes."""
+    _IMMUTABLE = {"backend", "quantize", "data_dir"}
+    _ALLOWED = {"mode", "collection", "max_file_size_mb"}
+
+    # Reject attempts to change immutable fields
+    attempted_immutable = set(arguments.keys()) & _IMMUTABLE
+    if attempted_immutable:
+        return _error_response(
+            "INVALID_INPUT",
+            f"Cannot change at runtime (requires restart): {sorted(attempted_immutable)}",
+            {"immutable_fields": sorted(attempted_immutable)},
+        )
+
+    # Reject unknown fields
+    unknown = set(arguments.keys()) - _ALLOWED - _IMMUTABLE
+    if unknown:
+        return _error_response(
+            "INVALID_INPUT",
+            f"Unknown config field(s): {sorted(unknown)}",
+            {"unknown_fields": sorted(unknown)},
+        )
+
+    # Apply validated changes
+    if "mode" in arguments:
+        mode_val = arguments["mode"]
+        if mode_val not in ("embed", "hybrid", "full"):
+            return _error_response(
+                "INVALID_INPUT",
+                f"Invalid mode {mode_val!r}. Must be one of: embed, hybrid, full",
+                {"allowed_values": ["embed", "hybrid", "full"]},
+            )
+        mutable_config["mode"] = mode_val
+        backend.set_mode(mode_val)
+
+    if "collection" in arguments:
+        collection_val = arguments["collection"]
+        if not isinstance(collection_val, str) or not collection_val.strip():
+            return _error_response("INVALID_INPUT", "collection must be a non-empty string")
+        mutable_config["collection"] = collection_val.strip()
+
+    if "max_file_size_mb" in arguments:
+        max_mb = arguments["max_file_size_mb"]
+        if not isinstance(max_mb, (int, float)) or max_mb < 1:
+            return _error_response(
+                "INVALID_INPUT",
+                "max_file_size_mb must be a number >= 1",
+                {"provided": max_mb},
+            )
+        mutable_config["max_file_size_mb"] = int(max_mb)
+
+    # Return the updated configuration
+    return await _handle_get_config(backend, storage, mutable_config)
 
 
 async def _handle_status(backend, storage) -> list[TextContent]:
