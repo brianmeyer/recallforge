@@ -63,18 +63,20 @@ CHUNK_WINDOW_CHARS = 200
 # Helper Functions
 # =============================================================================
 
-# SQL metacharacters that indicate injection attempts
+# SQL metacharacters that indicate injection attempts (denylist approach).
+# We block dangerous SQL characters rather than allowlisting safe ones,
+# because file paths legitimately contain (), [], commas, #, &, etc.
 _SQL_METACHARACTERS = frozenset("'\";\\\n\r\x00\x1a")
 _SQL_COMMENT_PATTERNS = ("--", "/*", "*/")
-# Allowlist pattern: alphanumeric, hyphens, underscores, dots, forward slashes.
-# Also allow spaces plus a minimal set of common safe separators used by RecallForge
-# paths and identifiers, such as colon for derived assets and @ for user-style ids.
-_SAFE_VALUE_PATTERN = re.compile(r"^[\w\-\.\/\s@:+]+$")
 
 
 def _validate_identifier(value: str, field_name: str = "value") -> str:
     """
-    Validate a value against SQL injection patterns.
+    Validate a value is safe for SQL filter interpolation.
+
+    Uses a denylist approach: blocks SQL metacharacters and comment patterns
+    while allowing the full range of characters found in real-world file paths
+    (parentheses, brackets, commas, hashes, ampersands, etc.).
 
     Args:
         value: The string value to validate
@@ -89,6 +91,9 @@ def _validate_identifier(value: str, field_name: str = "value") -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field_name} must be a string, got {type(value).__name__}")
 
+    if not value.strip():
+        raise ValueError(f"{field_name} is empty or whitespace-only")
+
     # Check for SQL comment patterns
     for pattern in _SQL_COMMENT_PATTERNS:
         if pattern in value:
@@ -97,10 +102,6 @@ def _validate_identifier(value: str, field_name: str = "value") -> str:
     # Check for SQL metacharacters
     if any(c in _SQL_METACHARACTERS for c in value):
         raise ValueError(f"{field_name} contains forbidden SQL metacharacters")
-
-    # Validate against allowlist pattern
-    if not _SAFE_VALUE_PATTERN.match(value):
-        raise ValueError(f"{field_name} contains characters outside allowed set (alphanumeric, hyphen, underscore, dot, slash, space, @, :)")
 
     return value
 
