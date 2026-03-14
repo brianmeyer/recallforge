@@ -1,78 +1,45 @@
 # RecallForge
 
-![CI](https://github.com/brianmeyer/recallforge/actions/workflows/ci.yml/badge.svg) ![PyPI](https://img.shields.io/badge/PyPI-coming_soon-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Python](https://img.shields.io/badge/Python-3.12+-blue)
+![CI](https://github.com/brianmeyer/recallforge/actions/workflows/ci.yml/badge.svg) ![PyPI](https://img.shields.io/badge/PyPI-coming_soon-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Python](https://img.shields.io/badge/Python-3.12%20%7C%203.13-blue)
 
 **Every modality, one search. Local first.**
 
-![RecallForge Architecture](docs/architecture-hero.png)
+Standard RAG only works on text. Drop a PDF with charts, a photo of a whiteboard, or a video recording — and your AI agent goes blind. RecallForge gives agents **eyes and ears over your local filesystem**. Text, images, documents, and video all live in one unified search space, and nothing ever leaves your machine.
 
-Search text, images, documents, and video in one unified query. Type "whiteboard diagram from last meeting" to find the photo. Drop an image to find related notes. Index `pdf`/`docx`/`pptx` locally for agent memory. All embeddings stay on your machine.
+## What this enables
 
-## Requirements
+> **You:** "What did the whiteboard look like in our last meeting?"
+>
+> **Claude:** *(Searches your local `~/Documents`, finds a photo of a whiteboard from an iPhone, reads the handwriting via Qwen3-VL, and surfaces the image with context.)*
 
-- Python 3.12 or 3.13 required
-- Python 3.14 not yet supported (pending pyarrow wheel availability)
-- Disk: ~2-5GB free for model downloads on first run
-- RAM (MLX 4-bit): ~1.7GB (`embed`) to ~4.4GB (`full`)
-- `ffmpeg` recommended for video indexing/search
-- First run downloads models automatically and may take a few minutes on a fast connection
+> **You:** "Find the architecture diagram from that PDF I downloaded last week."
+>
+> **Claude:** *(Indexes the PDF, matches your query against extracted text and embedded figures, returns the relevant page.)*
 
-## MCP Server (primary use)
+> **You:** *(Drops an image of a circuit board)* "Find my notes related to this."
+>
+> **Claude:** *(Reverse image-to-text search across your indexed notes. Returns matching documents.)*
 
-RecallForge is designed as a **Model Context Protocol server for AI agents**. The CLI exists for local testing, debugging, and ops.
-
-Configure in Claude Desktop (or any MCP-compatible agent host):
-
-```json
-{
-  "mcpServers": {
-    "recallforge": {
-      "command": "recallforge",
-      "args": ["serve", "--mode", "full"]
-    }
-  }
-}
-```
-
-Run manually:
-
-```bash
-recallforge serve --mode embed --backend mlx --quantize 4bit
-```
-
-Exposes **17 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
-
-## CLI Usage (development & testing)
-
-```bash
-# 1. Install (pick your platform)
-pip install recallforge[mlx]     # Apple Silicon
-pip install recallforge[cuda]    # NVIDIA GPU
-pip install recallforge[torch]   # CPU / other
-
-# 2. Index anything — text, images, documents, video
-recallforge index ./photos ./docs
-recallforge index ~/Movies/demo.mp4
-
-# 3. Search any modality
-recallforge search "whiteboard diagram from last meeting"
-recallforge search --image ./photos/whiteboard.png
-recallforge search --video ~/Movies/demo.mp4
-```
-
-RecallForge auto-detects MLX on Apple Silicon, PyTorch elsewhere.
+One query. Any modality. All local.
 
 ## What makes RecallForge different
 
-- **Cross-modal search:** Text↔Text, Text↔Image, Image↔Text, Image↔Image, Video↔Text **[Beta]**, Video↔Image **[Beta]**, Video↔Video **[Beta]**
-- **Shared embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
-- **3-stage pipeline:** Embedding → Reranking → Query expansion (all multimodal)
-- **Runs on macOS and Linux. Windows via WSL:** MLX 4-bit on Apple Silicon (~1.7GB RAM), PyTorch on CUDA/MPS/CPU
-- **Fast:** Cold start 7.6s, warm search 53ms p50 (MLX 4-bit, Mac mini M4)
-- **Tiered modes:** embed (~1.7GB), hybrid (~3.4GB), full (~4.4GB) — pick your tradeoff
-- **100% local:** Your data never leaves your machine
+| Capability | RecallForge | Chroma | Mem0 | Qdrant | Weaviate |
+|------------|-------------|--------|------|--------|----------|
+| Cross-modal search | ✅ Native | ✅ OpenCLIP | ❌ Text only | ❌ | ✅ CLIP modules |
+| Video support [Beta] | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
+| Query expansion | ✅ Multimodal | ❌ | ❌ | ❌ | ✅ Generative |
+| MCP-native | ✅ 17 tools | ❌ | ❌ | ❌ | ❌ |
+| 100% local | ✅ | ✅ | ⚠️ Cloud default | ✅ | ✅ Docker |
+| Apple Silicon optimized | ✅ MLX 4-bit | ❌ | ❌ | ❌ | ❌ |
+| Cloud option | ❌ | ✅ | ✅ | ✅ | ✅ |
+| JS/TS SDK | ❌ | ✅ | ✅ | ✅ | ✅ |
 
-> **Video [Beta] note:** Video support requires `ffmpeg`. The torch backend video path has a known upstream issue (see REC-44).
+**Use RecallForge when:** You need multimodal memory for AI agents that runs entirely on your machine, especially on Apple Silicon. One search across text, images, documents, and video.
+
+**Use something else when:** You need cloud hosting, massive scale (millions+ vectors), or a JS/TS-first ecosystem.
 
 ## Performance
 
@@ -95,36 +62,7 @@ Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
 | Text → Image | 23.6% | 36.8% | 46.4% |
 | Image → Text | 30.0% | 42.0% | 54.0% |
 
-## How RecallForge compares
-
-| Capability | RecallForge | Chroma | Mem0 | Qdrant | Weaviate |
-|------------|-------------|--------|------|--------|----------|
-| Cross-modal search | ✅ Native | ✅ OpenCLIP | ❌ Text only | ❌ | ✅ CLIP modules |
-| Video support [Beta] | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
-| Query expansion | ✅ Multimodal | ❌ | ❌ | ❌ | ✅ Generative |
-| MCP-native | ✅ 17 tools | ❌ | ❌ | ❌ | ❌ |
-| 100% local | ✅ | ✅ | ⚠️ Cloud default | ✅ | ✅ Docker |
-| Apple Silicon optimized | ✅ MLX 4-bit | ❌ | ❌ | ❌ | ❌ |
-| Cloud option | ❌ | ✅ | ✅ | ✅ | ✅ |
-| JS/TS SDK | ❌ | ✅ | ✅ | ✅ | ✅ |
-
-**Use RecallForge when:** You need multimodal memory for AI agents that runs entirely on your machine, especially on Apple Silicon. One search across text, images, documents, and video.
-
-**Use something else when:** You need cloud hosting, massive scale (millions+ vectors), or a JS/TS-first ecosystem.
-
-## Search modes at a glance
-
-| Mode | Models loaded | Memory (MLX 4-bit) | Quality | Best for |
-|------|--------------|-------------------|---------|----------|
-| `embed` | Embedder | ~1.7GB | Good | Memory-constrained, fast searches |
-| `hybrid` | + Reranker | ~3.4GB | Better | Balanced quality and memory |
-| `full` | + Query Expander | ~4.4GB | Best | Maximum retrieval quality |
-
 ## Installation
-
-RecallForge requires a backend for inference. Choose the right one for your platform:
 
 ```bash
 pip install recallforge[mlx]       # Apple Silicon (recommended, 4-bit quantization)
@@ -144,35 +82,109 @@ cd recallforge
 pip install -e ".[mlx]"
 ```
 
-## Tiered Search Modes
+### Requirements
 
-```bash
-recallforge serve --mode embed   # minimal (~1.7GB)
-recallforge serve --mode hybrid  # balanced (~3.4GB)
-recallforge serve --mode full    # best quality (~4.4GB, default)
+- Python 3.12 or 3.13 required (3.14 not yet supported, pending pyarrow wheel)
+- Disk: ~2-5GB free for model downloads on first run
+- RAM (MLX 4-bit): ~1.7GB (`embed`) to ~4.4GB (`full`)
+- `ffmpeg` recommended for video indexing/search
+- First run downloads models automatically and may take a few minutes
+
+## MCP Server (primary use)
+
+RecallForge is designed as a **Model Context Protocol server for AI agents**. Configure in Claude Desktop (or any MCP-compatible agent host):
+
+```json
+{
+  "mcpServers": {
+    "recallforge": {
+      "command": "recallforge",
+      "args": ["serve", "--mode", "full"]
+    }
+  }
+}
 ```
 
-## CLI Reference
+Run manually:
 
 ```bash
-# Index files
-recallforge index ~/Documents --collection docs
-recallforge index ~/Movies/demo.mp4 --collection docs
-recallforge index ~/Documents/roadmap.pptx ~/Documents/notes.docx
+recallforge serve --mode embed --backend mlx --quantize 4bit
+```
 
-# Search
-recallforge search "machine learning algorithms"
-recallforge search --image ~/Pictures/diagram.png
+Exposes **17 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
+
+See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
+
+## Search modes
+
+| Mode | Models loaded | Memory (MLX 4-bit) | Quality | Best for |
+|------|--------------|-------------------|---------|----------|
+| `embed` | Embedder | ~1.7GB | Good | Memory-constrained, fast searches |
+| `hybrid` | + Reranker | ~3.4GB | Better | Balanced quality and memory |
+| `full` | + Query Expander | ~4.4GB | Best | Maximum retrieval quality |
+
+> **Video [Beta] note:** Video support requires `ffmpeg`. The torch backend video path has a known upstream issue (see [QwenLM/Qwen3.5#58](https://github.com/QwenLM/Qwen3.5/issues/58)).
+
+## How it works
+
+RecallForge encodes text, images, and video frames into the same 2048-dimensional vector space using Qwen3-VL. This means "find notes about this diagram" works whether the diagram is text, an image, or a frame from a video. A 3-stage pipeline handles the rest:
+
+```mermaid
+graph TD
+    subgraph Local Filesystem
+        Docs[📄 Documents]
+        Imgs[🖼️ Images]
+        Vids[🎬 Video]
+    end
+
+    subgraph RecallForge Ingest
+        Docs --> TxtExt[Text Extractor]
+        Imgs --> VLM[Qwen3-VL Encoder]
+        Vids --> Frame[Frame & Audio Extractor]
+        Frame --> VLM
+        TxtExt --> VLM
+    end
+
+    subgraph LanceDB Storage
+        VLM -->|2048-dim Vectors| VecDB[(Vector Space)]
+        TxtExt -->|Text/Transcripts| FTS[(Tantivy FTS)]
+    end
+
+    subgraph MCP Search Pipeline
+        Query[Agent Query] --> BM25[BM25 Text Search]
+        Query --> Dense[Vector Similarity Search]
+        BM25 --> RRF[RRF Fusion]
+        Dense --> RRF
+        RRF --> Rerank[Cross-Encoder Reranker]
+        Rerank --> Output[Final Context to Agent]
+    end
+```
+
+**Pipeline:** BM25 probe → Query expansion (full mode) → Parallel BM25 + Vector → RRF fusion → Reranking (hybrid/full) → Score blending
+
+## CLI (development & debugging)
+
+```bash
+# Index anything
+recallforge index ./photos ./docs
+recallforge index ~/Movies/demo.mp4
+recallforge index ~/Documents/roadmap.pptx
+
+# Search any modality
+recallforge search "whiteboard diagram from last meeting"
+recallforge search --image ./photos/whiteboard.png
 recallforge search --video ~/Movies/demo.mp4
 
-# Status
-recallforge status
-
-# Watch a folder for new files (auto-index on change)
+# Watch a folder for changes (auto-index)
 recallforge watch start ~/Documents --collection docs
 recallforge watch list
 recallforge watch stop ~/Documents
+
+# Status
+recallforge status
 ```
+
+RecallForge auto-detects MLX on Apple Silicon, PyTorch elsewhere.
 
 ## Python API
 
@@ -200,48 +212,6 @@ for r in results:
     print(f"[{r.score:.3f}] {r.title}")
 ```
 
-## MCP Tools
-
-### `ingest` (recommended)
-
-Unified entry point for all content types:
-
-```json
-{
-  "file_path": "/path/to/file",
-  "folder_path": "/path/to/folder",
-  "collection": "default",
-  "recursive": true
-}
-```
-
-### `search`
-
-Full hybrid search with all pipeline stages:
-
-```json
-{
-  "query": "machine learning algorithms",
-  "limit": 10,
-  "collection": "docs"
-}
-```
-
-### Other tools
-
-- `search_fts` — BM25 full-text search only
-- `search_vec` — Vector similarity search only
-- `index_document` — Index a text document
-- `index_image` — Index an image for cross-modal search
-- `memory_add` / `memory_update` / `memory_delete` — Manage agent memory
-- `index_folder` — Batch index a folder
-- `status` — Server health check
-- `rebuild_fts` — Rebuild full-text index
-- `list_collections` — List all collections
-- `list_namespaces` — List namespace combinations
-- `batch` — Execute multiple operations in one call
-- `get_config` / `set_config` — Inspect and adjust runtime config
-
 ## Configuration
 
 | Variable | Default | Description |
@@ -251,7 +221,7 @@ Full hybrid search with all pipeline stages:
 | `RECALLFORGE_MLX_QUANTIZE` | `4bit` | `4bit`, `bf16` |
 | `RECALLFORGE_STORE_PATH` | `~/.recallforge` | Storage directory |
 
-## Architecture
+## Project structure
 
 ```
 src/recallforge/
@@ -268,8 +238,6 @@ src/recallforge/
 ├── watch_folder.py       # Folder monitoring with dedup
 └── cli.py                # CLI interface
 ```
-
-**Search pipeline:** BM25 probe → Query expansion (full mode) → Parallel BM25 + Vector → RRF fusion → Reranking (hybrid/full) → Score blending
 
 ## Development
 
