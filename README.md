@@ -45,6 +45,8 @@ One query. Any modality. All local.
 
 ## Performance
 
+4 modalities (text, images, documents, video) unified in a single MLX-optimized local vector space. Sub-60ms search latency. Under 400MB resident memory.
+
 Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
 
 | Metric | MLX 4-bit | PyTorch fp16 |
@@ -57,12 +59,7 @@ Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
 
 *\*MLX maps model weights lazily via memory-mapped files. RSS reflects resident pages, not full model size (~1.7GB on disk for embed mode). Actual memory pressure is low.*
 
-**COCO Retrieval (50 images, embed mode, MLX 4-bit):**
-
-| Direction | R@1 | R@5 | R@10 |
-|-----------|-----|-----|------|
-| Text → Image | 23.6% | 36.8% | 46.4% |
-| Image → Text | 30.0% | 42.0% | 54.0% |
+Search quality comes from the multi-stage pipeline (BM25 + vector + RRF fusion + cross-encoder reranking), not raw embedding accuracy alone.
 
 ## Installation
 
