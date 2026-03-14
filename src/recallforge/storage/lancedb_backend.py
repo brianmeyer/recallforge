@@ -11,7 +11,9 @@ import logging
 import math
 import os
 import re
+import shutil
 import struct
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -1687,6 +1689,30 @@ class LanceDBBackend(StorageBackend):
             "profile": profile,
         }
 
+    def _video_frames_dir_for_logical_path(self, logical_path: str) -> Path:
+        artifact_root = Path(self._store_path or DEFAULT_INDEX_DIR) / "video_frames"
+        digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
+        return artifact_root / digest
+
+    def _delete_video_frame_artifacts(self, logical_path: str) -> None:
+        output_dir = self._video_frames_dir_for_logical_path(logical_path)
+        if not output_dir.exists():
+            return
+
+        try:
+            trash_bin = shutil.which("trash")
+            if trash_bin:
+                subprocess.run([trash_bin, str(output_dir)], check=True, capture_output=True, text=True)
+            else:
+                shutil.rmtree(output_dir, ignore_errors=True)
+        except Exception as e:
+            logger.warning(
+                "delete_path: failed to cleanup video frame artifacts for %s at %s: %s",
+                logical_path,
+                output_dir,
+                e,
+            )
+
     def delete_path(
         self,
         path: str,
@@ -1711,6 +1737,8 @@ class LanceDBBackend(StorageBackend):
             profile=profile,
             include_children=include_children,
         )
+        if include_children:
+            self._delete_video_frame_artifacts(normalized_path)
         self._schedule_fts_rebuild()
         return {
             "success": True,
