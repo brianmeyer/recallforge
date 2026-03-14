@@ -33,7 +33,6 @@ Example MCP client config (Claude Desktop):
 - `ingest`
 - `index_document`
 - `index_image`
-- `index_folder`
 
 ### Memory
 - `memory_add`
@@ -501,52 +500,6 @@ Example MCP client config (Claude Desktop):
 
 ---
 
-## index_folder
-
-**Description:** DEPRECATED. Batch-index text files from a folder into memory entries.
-
-**Deprecation Notice:** `index_folder` only indexes text files. For multimodal folder indexing with images, documents, video, and text, use `ingest` with the `folder_path` parameter instead.
-
-**Parameters:**
-| Name | Type | Required | Default | Description |
-|------|------|----------|---------|-------------|
-| folder_path | string | Yes | — | Root folder path |
-| collection | string | No | server default collection | Collection name |
-| recursive | boolean | No | true | Recurse subfolders |
-| include_globs | array[string] | No | — | Include globs |
-| exclude_globs | array[string] | No | — | Exclude globs |
-| max_file_size_mb | integer | No | server default (100) | Max file size in MB |
-| user_id | string | No | — | User namespace |
-| session_id | string | No | — | Session namespace |
-| project_id | string | No | — | Project namespace |
-| profile | string | No | — | Profile namespace |
-
-**Example Request:**
-```json
-{
-  "folder_path": "/Users/me/notes",
-  "recursive": true,
-  "include_globs": ["**/*.md"]
-}
-```
-
-**Example Response:**
-```json
-{
-  "success": true,
-  "indexed": 128,
-  "skipped": 5
-}
-```
-
-**Errors:**
-- `INVALID_INPUT`: when `folder_path` is missing/empty.
-- `INTERNAL_ERROR`: uncaught exceptions.
-
-**Notes:** Text-focused path. For mixed modalities use `ingest`.
-
----
-
 ## status
 
 **Description:** Return server/model/database status.
@@ -828,7 +781,7 @@ Operation object schema:
 ### 3) Configure mode, then ingest
 1. Inspect config using `get_config`.
 2. Set desired runtime defaults with `set_config` (for mode, default collection, max file size).
-3. Run `ingest`/`index_folder` without repeating shared defaults.
+3. Run `ingest` without repeating shared defaults.
 
 ## Error Code Reference
 Structured errors returned via `_error_response(code, message, details)`:

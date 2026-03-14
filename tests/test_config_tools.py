@@ -379,7 +379,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
             "search", "search_fts", "search_vec", "ingest",
             "index_document", "index_image",
             "memory_add", "memory_update", "memory_delete",
-            "index_folder", "status", "rebuild_fts", "batch",
+            "status", "rebuild_fts", "batch",
             "list_collections", "list_namespaces",
             "get_config", "set_config",
         }

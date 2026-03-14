@@ -284,19 +284,6 @@ class TestHandleMemoryErrors:
 
 
 # ---------------------------------------------------------------------------
-# _handle_index_folder — INVALID_INPUT
-# ---------------------------------------------------------------------------
-
-class TestHandleIndexFolderErrors:
-    @pytest.mark.asyncio
-    async def test_missing_folder_path_returns_invalid_input(self):
-        from recallforge.server import _handle_index_folder
-        result = _parse(await _handle_index_folder({}, MagicMock(), MagicMock()))
-        assert result["error"] is True
-        assert result["code"] == "INVALID_INPUT"
-
-
-# ---------------------------------------------------------------------------
 # _handle_rebuild_fts — BACKEND_ERROR
 # ---------------------------------------------------------------------------
 

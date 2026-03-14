@@ -33,7 +33,7 @@ One query. Any modality. All local.
 | Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
 | Query expansion | ✅ Multimodal | ❌ | ❌ | ❌ | ✅ Generative |
-| MCP-native | ✅ 17 tools | ❌ | ❌ | ❌ | ❌ |
+| MCP-native | ✅ 16 tools | ❌ | ❌ | ❌ | ❌ |
 | 100% local | ✅ | ✅ | ⚠️ Cloud default | ✅ | ✅ Docker |
 | Apple Silicon optimized | ✅ MLX 4-bit | ❌ | ❌ | ❌ | ❌ |
 | Cloud option | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -110,7 +110,7 @@ Run manually:
 recallforge serve --mode embed --backend mlx --quantize 4bit
 ```
 
-Exposes **17 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
+Exposes **16 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
 
 See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 
@@ -231,7 +231,7 @@ src/recallforge/
 │   └── lancedb_backend.py # LanceDB + Tantivy FTS
 ├── cache.py              # LRU embedding cache
 ├── search.py             # Hybrid search pipeline (BM25 + vector + RRF)
-├── server.py             # MCP server (17 tools)
+├── server.py             # MCP server (16 tools)
 ├── documents.py          # PDF/DOCX/PPTX extraction
 ├── video.py              # Frame/transcript extraction
 ├── watch_folder.py       # Folder monitoring with dedup

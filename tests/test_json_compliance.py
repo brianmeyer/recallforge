@@ -13,7 +13,6 @@ from recallforge.server import (
     _handle_batch,
     _handle_get_config,
     _handle_index_document,
-    _handle_index_folder,
     _handle_index_image,
     _handle_ingest,
     _handle_list_collections,
@@ -190,10 +189,6 @@ class TestMCPJsonCompliance(unittest.IsolatedAsyncioTestCase):
                     (
                         lambda: _handle_memory_delete({"path": "mem/1"}, self.storage),
                         lambda: _handle_memory_delete({"path": ""}, self.storage),
-                    ),
-                    (
-                        lambda: _handle_index_folder({"folder_path": "/tmp"}, self.backend, self.storage),
-                        lambda: _handle_index_folder({"folder_path": ""}, self.backend, self.storage),
                     ),
                     (
                         lambda: _handle_status(self.backend, self.storage),

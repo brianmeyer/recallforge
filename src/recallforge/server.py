@@ -3,7 +3,7 @@ server.py - MCP Server for RecallForge.
 
 MCP protocol server with stdio transport.
 Tools: search, search_fts, search_vec, ingest, index_document, index_image,
-memory_add, memory_update, memory_delete, index_folder, status, rebuild_fts
+memory_add, memory_update, memory_delete, status, rebuild_fts
 
 Calls backend.warm_up() on server start for predictable latency.
 """
@@ -312,26 +312,6 @@ async def create_server(
                 },
             ),
             Tool(
-                name="index_folder",
-                description="DEPRECATED: Index text files from a folder. For multimodal folder indexing (images, documents, video), use the `ingest` tool with `folder_path` parameter instead.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "folder_path": {"type": "string", "description": "Absolute or relative folder path"},
-                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
-                        "recursive": {"type": "boolean", "description": "Recursively index subfolders", "default": True},
-                        "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
-                        "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"},
-                        "max_file_size_mb": {"type": "integer", "description": "Maximum file size in MB (files exceeding this will be skipped)", "default": 100},
-                        "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
-                        "session_id": {"type": "string", "description": "Optional session namespace"},
-                        "project_id": {"type": "string", "description": "Optional project namespace"},
-                        "profile": {"type": "string", "description": "Optional profile namespace"},
-                    },
-                    "required": ["folder_path"],
-                },
-            ),
-            Tool(
                 name="status",
                 description="Get server status including model loading and database info",
                 inputSchema={
@@ -474,8 +454,6 @@ async def _dispatch_tool(
         return await _handle_memory_update(arguments, backend, storage)
     elif name == "memory_delete":
         return await _handle_memory_delete(arguments, storage)
-    elif name == "index_folder":
-        return await _handle_index_folder(arguments, backend, storage)
     elif name == "status":
         return await _handle_status(backend, storage)
     elif name == "rebuild_fts":
@@ -994,50 +972,6 @@ async def _handle_memory_delete(arguments: dict, storage) -> list[TextContent]:
     )
 
     trace_log("memory_delete_done", path=path, removed_vectors=output.get("removed_vectors", 0))
-
-    return [TextContent(type="text", text=json.dumps(output, indent=2))]
-
-
-async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextContent]:
-    """Handle folder indexing."""
-    folder_path = arguments.get("folder_path", "")
-    collection = arguments.get("collection", "default")
-    recursive = arguments.get("recursive", True)
-    include_globs = arguments.get("include_globs")
-    exclude_globs = arguments.get("exclude_globs")
-    max_file_size_mb = arguments.get("max_file_size_mb", 100)
-    user_id = arguments.get("user_id")
-    session_id = arguments.get("session_id")
-    project_id = arguments.get("project_id")
-    profile = arguments.get("profile")
-
-    trace_log("index_folder_start", folder_path=folder_path, collection=collection, recursive=recursive,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
-
-    if not folder_path:
-        return _error_response("INVALID_INPUT", "folder_path is required")
-
-    output = {
-        "deprecated": True,
-        "deprecation_notice": "index_folder only indexes text files. Use ingest(folder_path=...) for multimodal indexing (images, documents, video, text).",
-    }
-    output.update(await _run_blocking(
-        storage.index_folder,
-        folder_path=folder_path,
-        collection=collection,
-        recursive=recursive,
-        include_globs=include_globs,
-        exclude_globs=exclude_globs,
-        model="Qwen3-VL-Embedding-2B",
-        embed_func=backend.embed_text,
-        user_id=user_id,
-        session_id=session_id,
-        project_id=project_id,
-        profile=profile,
-        max_file_size_mb=max_file_size_mb,
-    ))
-
-    trace_log("index_folder_done", folder_path=folder_path, indexed=output.get("indexed", 0))
 
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
