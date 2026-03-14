@@ -82,8 +82,10 @@ Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
 | Warm search p50 | 53ms | 599ms |
 | Warm search p95 | 55ms | — |
 | Cold start | 7.6s | ~20s |
-| Peak RSS (embed) | 329MB | ~4GB |
+| Peak RSS (embed) | 329MB* | ~4GB |
 | Text indexing | 5.0 docs/sec | — |
+
+*\*MLX maps model weights lazily via memory-mapped files. RSS reflects resident pages, not full model size (~1.7GB on disk for embed mode). Actual memory pressure is low.*
 
 **COCO Retrieval (50 images, embed mode, MLX 4-bit):**
 

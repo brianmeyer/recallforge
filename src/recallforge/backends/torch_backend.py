@@ -554,19 +554,20 @@ Query: {query}<|im_end|>
         # Always load embedder
         self._load_embedder()
         t1 = time.time()
+        last_checkpoint = t1
         logger.info("[TorchBackend]   Embedder loaded in %.1fs", t1 - start)
         
         # Load reranker for hybrid/full
         if self.needs_reranker():
             self._load_reranker()
-            t2 = time.time()
-            logger.info("[TorchBackend]   Reranker loaded in %.1fs", t2 - t1)
+            last_checkpoint = time.time()
+            logger.info("[TorchBackend]   Reranker loaded in %.1fs", last_checkpoint - t1)
         
         # Load expander for full
         if self.needs_expander():
             self._load_expander()
-            t3 = time.time()
-            logger.info("[TorchBackend]   Expander loaded in %.1fs", t3 - t2)
+            t_exp = time.time()
+            logger.info("[TorchBackend]   Expander loaded in %.1fs", t_exp - last_checkpoint)
         
         logger.info("[TorchBackend] All models ready in %.1fs total", time.time() - start)
     
