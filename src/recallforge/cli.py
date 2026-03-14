@@ -11,7 +11,9 @@ Commands:
 import argparse
 import json
 import os
+import signal
 import sys
+import threading
 
 from . import __version__, RECALLFORGE_BACKEND, RECALLFORGE_MODE, RECALLFORGE_STORAGE
 from .documents import is_document_file
@@ -481,6 +483,24 @@ def cmd_watch(args):
         )
         watch_id = daemon.start_watch(config)
         print(json.dumps({"watch_id": watch_id, "status": "running", "folder": args.folder}, indent=2))
+
+        stop_event = threading.Event()
+
+        def _handle_shutdown(*_args):
+            stop_event.set()
+
+        previous_sigint = signal.getsignal(signal.SIGINT)
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGINT, _handle_shutdown)
+        signal.signal(signal.SIGTERM, _handle_shutdown)
+
+        try:
+            stop_event.wait()
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint)
+            signal.signal(signal.SIGTERM, previous_sigterm)
+            stopped = daemon.stop_watch(watch_id)
+            print(json.dumps({"watch_id": watch_id, "status": "stopped" if stopped else "not_found"}, indent=2))
         return 0
 
     if args.watch_command == "stop":
