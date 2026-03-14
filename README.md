@@ -4,7 +4,7 @@
 
 **Every modality, one search. Local first.**
 
-![RecallForge — Your Files → One Search](docs/hero-image.png)
+![RecallForge — Your Files → One Search](docs/hero-banner.png)
 
 Standard RAG only works on text. Drop a PDF with charts, a photo of a whiteboard, or a video recording — and your AI agent goes blind. RecallForge gives agents **eyes and ears over your local filesystem**. Text, images, documents, and video all live in one unified search space, and nothing ever leaves your machine.
 
