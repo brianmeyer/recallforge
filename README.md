@@ -10,7 +10,8 @@ Search text, images, documents, and video in one unified query. Type "whiteboard
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.12 or 3.13 required
+- Python 3.14 not yet supported (pending pyarrow wheel availability)
 - Disk: ~2-5GB free for model downloads on first run
 - RAM (MLX 4-bit): ~1.7GB (`embed`) to ~4.4GB (`full`)
 - `ffmpeg` recommended for video indexing/search

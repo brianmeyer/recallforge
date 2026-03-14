@@ -1904,16 +1904,22 @@ class LanceDBBackend(StorageBackend):
         indexed = 0
         skipped = 0
         errors = 0
+        skipped_details: List[Dict[str, str]] = []
+
+        def mark_skipped(item_path: str, reason: str) -> None:
+            nonlocal skipped
+            skipped += 1
+            skipped_details.append({"path": item_path, "reason": reason})
 
         # Use bulk mode to defer FTS rebuilds until the end
         with self.bulk_mode():
             for file_path in self._iter_folder_files(root, recursive):
                 rel = file_path.relative_to(root).as_posix()
                 if include and not any(fnmatch.fnmatch(rel, pattern) for pattern in include):
-                    skipped += 1
+                    mark_skipped(rel, "glob_mismatch")
                     continue
                 if exclude and any(fnmatch.fnmatch(rel, pattern) for pattern in exclude):
-                    skipped += 1
+                    mark_skipped(rel, "excluded")
                     continue
 
                 # Check file size before processing
@@ -1922,20 +1928,20 @@ class LanceDBBackend(StorageBackend):
                     if file_size > max_file_size_mb * 1024 * 1024:
                         logger.warning("Skipping %s: file size %dMB exceeds limit %dMB",
                                        file_path, file_size // (1024 * 1024), max_file_size_mb)
-                        skipped += 1
+                        mark_skipped(rel, "file_too_large")
                         continue
                 except OSError as e:
                     logger.warning("Could not get size for %s: %s", file_path, e)
-                    skipped += 1
+                    mark_skipped(rel, "unreadable")
                     continue
 
                 if not self._is_text_file(file_path):
-                    skipped += 1
+                    mark_skipped(rel, "not_text_file")
                     continue
 
                 text = self._read_text_robust(file_path)
                 if text is None or not text.strip():
-                    skipped += 1
+                    mark_skipped(rel, "empty_content")
                     continue
 
                 try:
@@ -1952,6 +1958,9 @@ class LanceDBBackend(StorageBackend):
                     )
                     indexed += 1
                 except Exception as e:
+                    if "already indexed" in str(e).lower():
+                        mark_skipped(rel, "dedup")
+                        continue
                     logger.error(f"index_folder: failed to index {rel}: {e}")
                     errors += 1
         # FTS rebuild happens once at context exit
@@ -1965,6 +1974,7 @@ class LanceDBBackend(StorageBackend):
             "skipped": skipped,
             "errors": errors,
             "total_seen": indexed + skipped + errors,
+            "skipped_details": skipped_details,
             "user_id": user_id,
             "session_id": session_id,
             "project_id": project_id,
@@ -2021,10 +2031,18 @@ class LanceDBBackend(StorageBackend):
             "profile": profile,
         }
 
-        def mark(item_path: str, item_type: str, status: str, error: Optional[str] = None) -> None:
+        def mark(
+            item_path: str,
+            item_type: str,
+            status: str,
+            error: Optional[str] = None,
+            reason: Optional[str] = None,
+        ) -> None:
             item = {"path": item_path, "type": item_type, "status": status}
             if error:
                 item["error"] = error
+            if reason:
+                item["reason"] = reason
             summary["items"].append(item)
 
         def ingest_single(candidate: Path, rel_hint: Optional[str] = None) -> None:
@@ -2043,7 +2061,7 @@ class LanceDBBackend(StorageBackend):
                 if is_image:
                     if "image" not in allowed:
                         summary["skipped"] += 1
-                        mark(item_path, "image", "skipped")
+                        mark(item_path, "image", "skipped", reason="not_in_content_types")
                         return
                     self.index_image(
                         path=str(candidate),
@@ -2063,7 +2081,7 @@ class LanceDBBackend(StorageBackend):
                 if is_video:
                     if "video" not in allowed:
                         summary["skipped"] += 1
-                        mark(item_path, "video", "skipped")
+                        mark(item_path, "video", "skipped", reason="not_in_content_types")
                         return
                     video_summary = self.index_video(
                         path=str(candidate),
@@ -2090,7 +2108,7 @@ class LanceDBBackend(StorageBackend):
                 if is_document:
                     if "document" not in allowed:
                         summary["skipped"] += 1
-                        mark(item_path, "document", "skipped")
+                        mark(item_path, "document", "skipped", reason="not_in_content_types")
                         return
                     document_summary = self.index_document_file(
                         path=str(candidate),
@@ -2111,16 +2129,16 @@ class LanceDBBackend(StorageBackend):
 
                 if "text" not in allowed:
                     summary["skipped"] += 1
-                    mark(item_path, "text", "skipped")
+                    mark(item_path, "text", "skipped", reason="not_in_content_types")
                     return
                 if not self._is_text_file(candidate):
                     summary["skipped"] += 1
-                    mark(item_path, "text", "skipped")
+                    mark(item_path, "text", "skipped", reason="not_text_file")
                     return
                 body = self._read_text_robust(candidate)
                 if body is None or not body.strip():
                     summary["skipped"] += 1
-                    mark(item_path, "text", "skipped")
+                    mark(item_path, "text", "skipped", reason="empty_content")
                     return
                 self.upsert_memory(
                     path=item_path,
@@ -2153,7 +2171,7 @@ class LanceDBBackend(StorageBackend):
             if text is not None:
                 if "text" not in allowed:
                     summary["skipped"] += 1
-                    mark(path or "inline/skipped", "text", "skipped")
+                    mark(path or "inline/skipped", "text", "skipped", reason="not_in_content_types")
                 else:
                     if path:
                         text_path = path.strip() or "inline"
@@ -2184,9 +2202,13 @@ class LanceDBBackend(StorageBackend):
                     raise ValueError(f"Folder not found: {folder_path}")
                 for candidate in self._iter_folder_files(root, recursive):
                     rel = candidate.relative_to(root).as_posix()
-                    if not self._matches_globs(rel, include_globs, exclude_globs):
+                    if include_globs and not any(fnmatch.fnmatch(rel, pattern) for pattern in include_globs):
                         summary["skipped"] += 1
-                        mark(rel, "unknown", "skipped")
+                        mark(rel, "unknown", "skipped", reason="glob_mismatch")
+                        continue
+                    if exclude_globs and any(fnmatch.fnmatch(rel, pattern) for pattern in exclude_globs):
+                        summary["skipped"] += 1
+                        mark(rel, "unknown", "skipped", reason="excluded")
                         continue
 
                     # Check file size before processing
@@ -2196,12 +2218,12 @@ class LanceDBBackend(StorageBackend):
                             logger.warning("Skipping %s: file size %dMB exceeds limit %dMB",
                                            candidate, file_size // (1024 * 1024), max_file_size_mb)
                             summary["skipped"] += 1
-                            mark(rel, "unknown", "skipped")
+                            mark(rel, "unknown", "skipped", reason="file_too_large")
                             continue
                     except OSError as e:
                         logger.warning("Could not get size for %s: %s", candidate, e)
                         summary["skipped"] += 1
-                        mark(rel, "unknown", "skipped")
+                        mark(rel, "unknown", "skipped", reason="unreadable")
                         continue
 
                     ingest_single(candidate, rel)

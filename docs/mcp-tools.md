@@ -503,7 +503,9 @@ Example MCP client config (Claude Desktop):
 
 ## index_folder
 
-**Description:** Batch-index text files from a folder into memory entries.
+**Description:** DEPRECATED. Batch-index text files from a folder into memory entries.
+
+**Deprecation Notice:** `index_folder` only indexes text files. For multimodal folder indexing with images, documents, video, and text, use `ingest` with the `folder_path` parameter instead.
 
 **Parameters:**
 | Name | Type | Required | Default | Description |

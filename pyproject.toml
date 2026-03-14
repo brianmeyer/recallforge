@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "RecallForge - Cross-Modal Vision-Language Search Engine"
 authors = [{name = "Brian Meyer"}]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 license = {text = "MIT"}
 keywords = ["search", "semantic", "embedding", "vision-language", "cross-modal"]
 classifiers = [

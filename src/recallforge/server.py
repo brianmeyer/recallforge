@@ -313,7 +313,7 @@ async def create_server(
             ),
             Tool(
                 name="index_folder",
-                description="Index text files in a folder into memory entries",
+                description="DEPRECATED: Index text files from a folder. For multimodal folder indexing (images, documents, video), use the `ingest` tool with `folder_path` parameter instead.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -1017,7 +1017,11 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
     if not folder_path:
         return _error_response("INVALID_INPUT", "folder_path is required")
 
-    output = await _run_blocking(
+    output = {
+        "deprecated": True,
+        "deprecation_notice": "index_folder only indexes text files. Use ingest(folder_path=...) for multimodal indexing (images, documents, video, text).",
+    }
+    output.update(await _run_blocking(
         storage.index_folder,
         folder_path=folder_path,
         collection=collection,
@@ -1031,7 +1035,7 @@ async def _handle_index_folder(arguments: dict, backend, storage) -> list[TextCo
         project_id=project_id,
         profile=profile,
         max_file_size_mb=max_file_size_mb,
-    )
+    ))
 
     trace_log("index_folder_done", folder_path=folder_path, indexed=output.get("indexed", 0))
 

@@ -10,6 +10,8 @@ All notable changes to RecallForge will be documented in this file.
 
 First public release. The local multimodal memory engine for AI agents.
 
+**Note:** Python 3.12 and 3.13 supported. Python 3.14 is not yet supported due to pyarrow wheel availability.
+
 ### Core
 
 - **Cross-modal search** across text, images, documents (PDF/DOCX/PPTX), and video in one unified query
