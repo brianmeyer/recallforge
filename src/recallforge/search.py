@@ -270,7 +270,7 @@ class HybridSearcher:
                 all_vectors = self.backend.embed_texts(all_vec_queries)
                 vectors_by_query = {q: v for q, v in zip(all_vec_queries, all_vectors)}
             except Exception as e:
-                print(f"Batch embedding failed: {e}")
+                logger.error("Batch embedding failed: %s", e)
         
         # Build search tasks
         search_tasks: List[tuple] = []
@@ -353,7 +353,7 @@ class HybridSearcher:
                     result = future.result(timeout=30)
                     all_results[key] = result
                 except Exception as e:
-                    print(f"Search task {key} failed: {e}")
+                    logger.error("Search task %s failed: %s", key, e)
                     all_results[key] = []
         
         return all_results
@@ -429,7 +429,7 @@ class HybridSearcher:
             scores = self.backend.rerank(query, chunks)
             return {c.filepath: s for c, s in zip(candidates, scores)}
         except Exception as e:
-            print(f"Reranking failed: {e}")
+            logger.error("Reranking failed: %s", e)
             return {c.filepath: 0.5 for c in candidates}
     
     def _blend_scores(

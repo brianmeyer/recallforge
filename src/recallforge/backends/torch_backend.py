@@ -13,6 +13,7 @@ Model IDs:
 import os
 import sys
 import warnings
+import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ import numpy as np
 
 from .base import ModelBackend, BackendInfo
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # HuggingFace cache helpers
@@ -193,9 +195,9 @@ class TorchBackend(ModelBackend):
         attn = self._get_attention_implementation()
         
         if not _check_model_cached(self.EMBEDDER_MODEL):
-            print(
-                f"[RecallForge] Downloading embedder model "
-                f"({self.EMBEDDER_MODEL.split('/')[-1]}, ~4GB)... first run only."
+            logger.info(
+                "[RecallForge] Downloading embedder model (%s, ~4GB)... first run only.",
+                self.EMBEDDER_MODEL.split("/")[-1],
             )
 
         # Suppress flash-linear-attention not-installed warning
@@ -209,7 +211,7 @@ class TorchBackend(ModelBackend):
                 attn_implementation=attn,
             )
         
-        print(f"[TorchBackend] Loaded embedder on {device} with {dtype}")
+        logger.info("[TorchBackend] Loaded embedder on %s with %s", device, dtype)
     
     def embed_text(self, text: str) -> np.ndarray:
         """Embed a single text string."""
@@ -320,9 +322,9 @@ class TorchBackend(ModelBackend):
             dtype = self._get_dtype()
         
         if not _check_model_cached(self.RERANKER_MODEL):
-            print(
-                f"[RecallForge] Downloading reranker model "
-                f"({self.RERANKER_MODEL.split('/')[-1]}, ~4GB)... first run only."
+            logger.info(
+                "[RecallForge] Downloading reranker model (%s, ~4GB)... first run only.",
+                self.RERANKER_MODEL.split("/")[-1],
             )
 
         # Suppress flash-linear-attention not-installed warning
@@ -337,7 +339,7 @@ class TorchBackend(ModelBackend):
                 attn_implementation=attn,
             )
         
-        print(f"[TorchBackend] Loaded reranker on {device} with {dtype}")
+        logger.info("[TorchBackend] Loaded reranker on %s with %s", device, dtype)
     
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
         """Rerank documents for a query."""
@@ -365,7 +367,7 @@ class TorchBackend(ModelBackend):
             scores = self._reranker.process(inputs)
             return list(scores) if scores else [0.0] * len(documents)
         except Exception as e:
-            print(f"[TorchBackend] Rerank error: {e}")
+            logger.error("[TorchBackend] Rerank error: %s", e)
             return [0.5] * len(documents)
     
     # =========================================================================
@@ -387,9 +389,9 @@ class TorchBackend(ModelBackend):
         model_name = self.EXPANDER_MODEL
         
         if not _check_model_cached(model_name):
-            print(
-                f"[RecallForge] Downloading expander model "
-                f"({model_name.split('/')[-1]}, ~4GB)... first run only."
+            logger.info(
+                "[RecallForge] Downloading expander model (%s, ~4GB)... first run only.",
+                model_name.split("/")[-1],
             )
 
         # Suppress flash-linear-attention not-installed warning
@@ -406,7 +408,7 @@ class TorchBackend(ModelBackend):
         
         self._expander.eval()
         
-        print(f"[TorchBackend] Loaded expander ({model_name}) on {device} with {dtype}")
+        logger.info("[TorchBackend] Loaded expander (%s) on %s with %s", model_name, device, dtype)
     
     def expand_query(self, query: str) -> Dict[str, str]:
         """Generate query expansions."""
@@ -486,27 +488,27 @@ Query: {query}<|im_end|>
         """Preload all models for current mode."""
         import time
         
-        print(f"[TorchBackend] Warming up models (mode={self._mode})...")
+        logger.info("[TorchBackend] Warming up models (mode=%s)...", self._mode)
         start = time.time()
         
         # Always load embedder
         self._load_embedder()
         t1 = time.time()
-        print(f"[TorchBackend]   Embedder loaded in {t1 - start:.1f}s")
+        logger.info("[TorchBackend]   Embedder loaded in %.1fs", t1 - start)
         
         # Load reranker for hybrid/full
         if self.needs_reranker():
             self._load_reranker()
             t2 = time.time()
-            print(f"[TorchBackend]   Reranker loaded in {t2 - t1:.1f}s")
+            logger.info("[TorchBackend]   Reranker loaded in %.1fs", t2 - t1)
         
         # Load expander for full
         if self.needs_expander():
             self._load_expander()
             t3 = time.time()
-            print(f"[TorchBackend]   Expander loaded in {t3 - t2:.1f}s")
+            logger.info("[TorchBackend]   Expander loaded in %.1fs", t3 - t2)
         
-        print(f"[TorchBackend] All models ready in {time.time() - start:.1f}s total")
+        logger.info("[TorchBackend] All models ready in %.1fs total", time.time() - start)
     
     def get_info(self) -> BackendInfo:
         """Return backend information."""
