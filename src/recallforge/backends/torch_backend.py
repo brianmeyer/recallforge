@@ -16,6 +16,7 @@ import warnings
 import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
+from packaging.version import Version, InvalidVersion
 
 import numpy as np
 
@@ -166,6 +167,50 @@ class TorchBackend(ModelBackend):
     # Embedder (Qwen3-VL-Embedding-2B, ~4GB)
     # =========================================================================
     
+    def _is_qwen_video_transformers_bug_applicable(self) -> bool:
+        """Return True when running the known Qwen3-VL video bug on transformers 5.3.x."""
+        try:
+            import transformers
+        except Exception:
+            return False
+
+        try:
+            version = Version(transformers.__version__)
+        except (AttributeError, InvalidVersion, TypeError):
+            return False
+
+        if version.major != 5 or version.minor != 3:
+            return False
+
+        model_ids = [
+            getattr(self, "EMBEDDER_MODEL", ""),
+            getattr(self, "RERANKER_MODEL", ""),
+            getattr(self, "EXPANDER_MODEL", ""),
+        ]
+        return any("qwen3-vl" in model_id.lower() or "qwen3.5" in model_id.lower() for model_id in model_ids)
+
+    def _log_known_qwen_video_bug_warning(self):
+        """Log a one-time proactive warning for the known upstream torch video bug."""
+        if getattr(self, "_warned_qwen_video_bug", False):
+            return
+        if not self._is_qwen_video_transformers_bug_applicable():
+            return
+
+        logger.warning(
+            "[TorchBackend] transformers %s with Qwen3-VL/Qwen3.5 may crash on video embedding due to known upstream bug (QwenLM/Qwen3.5#58). Frame-based fallback will be used if video embedding fails.",
+            __import__("transformers").__version__,
+        )
+        self._warned_qwen_video_bug = True
+
+    def _handle_video_embedding_failure(self, exc: Exception) -> None:
+        """Normalize known upstream Qwen video embedding crashes into a clean RuntimeError."""
+        logger.warning(
+            "Video embedding failed due to known upstream transformers bug (QwenLM/Qwen3.5#58). Falling back to frame-based indexing."
+        )
+        raise RuntimeError(
+            "Video embedding failed due to known upstream transformers bug (QwenLM/Qwen3.5#58); frame-based fallback should be used."
+        ) from exc
+
     def _load_embedder(self):
         """Lazy-load the embedder model."""
         if self._embedder is not None:
@@ -212,6 +257,7 @@ class TorchBackend(ModelBackend):
             )
         
         logger.info("[TorchBackend] Loaded embedder on %s with %s", device, dtype)
+        self._log_known_qwen_video_bug_warning()
     
     def embed_text(self, text: str) -> np.ndarray:
         """Embed a single text string."""
@@ -253,7 +299,18 @@ class TorchBackend(ModelBackend):
 
     def embed_video(self, video_path: str) -> np.ndarray:
         """Embed a single video."""
-        return self.embed_videos([video_path])[0]
+        self._load_embedder()
+
+        inputs = [{
+            "video": video_path,
+            "instruction": "Retrieve content relevant to the video.",
+        }]
+
+        try:
+            embeddings = self._embedder.process(inputs)
+        except (StopIteration, RuntimeError) as exc:
+            self._handle_video_embedding_failure(exc)
+        return self._coerce_embeddings(embeddings)[0]
 
     def embed_videos(self, video_paths: List[str]) -> np.ndarray:
         """Embed multiple videos in a batch."""
@@ -267,7 +324,10 @@ class TorchBackend(ModelBackend):
             for path in video_paths
         ]
 
-        embeddings = self._embedder.process(inputs)
+        try:
+            embeddings = self._embedder.process(inputs)
+        except (StopIteration, RuntimeError) as exc:
+            self._handle_video_embedding_failure(exc)
         return self._coerce_embeddings(embeddings)
 
     def _coerce_embeddings(self, embeddings) -> np.ndarray:
