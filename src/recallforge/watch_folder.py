@@ -35,7 +35,7 @@ class WatchConfig:
     exclude_globs: List[str] = field(default_factory=list)
     debounce_seconds: float = 2.0
     batch_size: int = 32
-    scan_interval: float = 0.5
+    scan_interval: float = 5.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -250,8 +250,13 @@ class WatchFolderDaemon:
 
     def _process_batch(self, watch_id: str, items: List[Dict[str, Any]], config: WatchConfig) -> None:
         """Process a pre-selected list of file-change items and update bookkeeping."""
-        for item in items:
-            self._process_file_change(item, config)
+        if hasattr(self.storage, "bulk_mode"):
+            with self.storage.bulk_mode():
+                for item in items:
+                    self._process_file_change(item, config)
+        else:
+            for item in items:
+                self._process_file_change(item, config)
 
         self.watches[watch_id]["last_processed"] = time.time()
         self.watches[watch_id]["processed_count"] = self.watches[watch_id].get("processed_count", 0) + len(items)
