@@ -401,6 +401,40 @@ class TestInlineMemoryOperations(unittest.TestCase):
         self.assertTrue(summary["success"])
         self.assertEqual(summary["indexed"], 2)
         self.assertGreaterEqual(summary["skipped"], 1)
+        self.assertIn("skipped_details", summary)
+        self.assertIn({"path": "x.bin", "reason": "glob_mismatch"}, summary["skipped_details"])
+
+    def test_ingest_folder_reports_skip_reasons(self):
+        folder = os.path.join(self.temp_dir, "ingest_folder")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "keep.md"), "w", encoding="utf-8") as f:
+            f.write("keep this text")
+        with open(os.path.join(folder, "image.png"), "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+        with open(os.path.join(folder, "empty.txt"), "w", encoding="utf-8") as f:
+            f.write("   ")
+
+        summary = self.backend.ingest(
+            collection="test",
+            text=None,
+            path=None,
+            file_path=None,
+            folder_path=folder,
+            recursive=True,
+            content_types=["text"],
+            include_globs=["**/*", "*"],
+            exclude_globs=["empty.txt"],
+            embed_text_func=mock_embed,
+            embed_image_func=mock_embed,
+            embed_video_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        self.assertTrue(summary["success"])
+        self.assertEqual(summary["indexed_text"], 1)
+        skipped = {(item["path"], item.get("reason")) for item in summary["items"] if item["status"] == "skipped"}
+        self.assertIn(("image.png", "not_in_content_types"), skipped)
+        self.assertIn(("empty.txt", "excluded"), skipped)
 
 
 class TestContentTypeFilter(unittest.TestCase):
