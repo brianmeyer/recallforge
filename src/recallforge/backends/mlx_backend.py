@@ -11,6 +11,7 @@ Model IDs:
 """
 
 import os
+import logging
 import importlib.util
 import warnings
 from typing import List, Dict, Any, Optional
@@ -20,6 +21,7 @@ from PIL import Image, UnidentifiedImageError
 
 from .base import ModelBackend, BackendInfo
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # HuggingFace cache helpers
@@ -175,11 +177,11 @@ class MLXBackend(ModelBackend):
 
         if not _check_model_cached(self.EMBEDDER_MODEL):
             size = "~800MB" if self._quantization == "4bit" else "~4GB"
-            print(
+            logger.info(
                 f"[RecallForge] Downloading embedder model "
                 f"({self.EMBEDDER_MODEL.split('/')[-1]}, {size})... first run only."
             )
-        print(f"[MLXBackend] Loading embedder: {self.EMBEDDER_MODEL}")
+        logger.info(f"[MLXBackend] Loading embedder: {self.EMBEDDER_MODEL}")
 
         try:
             self._embedder_model, self._embedder_processor = load(
@@ -201,7 +203,7 @@ class MLXBackend(ModelBackend):
             ) from exc
 
         self._embed_text_max_tokens = self._resolve_max_text_tokens()
-        print(f"[MLXBackend] Loaded embedder ({self._quantization})")
+        logger.info(f"[MLXBackend] Loaded embedder ({self._quantization})")
 
     def _embed_hidden(self, input_ids: "mx.array", cache) -> "mx.array":
         """
@@ -782,7 +784,7 @@ class MLXBackend(ModelBackend):
                 dequant_kwargs["mode"] = mode
             return mx.dequantize(weight_mx, **dequant_kwargs).astype(mx.float32)
         except Exception as e:
-            print(f"[MLXBackend] Warning: Failed to dequantize weight: {e}")
+            logger.debug(f"[MLXBackend] Failed to dequantize weight: {e}")
             return None
 
     def _derive_binary_head_from_lm(self) -> Optional["mx.array"]:
@@ -839,7 +841,7 @@ class MLXBackend(ModelBackend):
                     if yes_emb is not None and no_emb is not None:
                         return (yes_emb[0] - no_emb[0]).astype(mx.float32)
                 except Exception as e:
-                    print(f"[MLXBackend] Warning: Failed to get embeddings via module call: {e}")
+                    logger.debug(f"[MLXBackend] Failed to get embeddings via module call: {e}")
             return None
 
         return (lm_head_weight[yes_id] - lm_head_weight[no_id]).astype(mx.float32)
@@ -872,10 +874,10 @@ class MLXBackend(ModelBackend):
                 self._reranker_score_bias = self._to_mx_array(bias).astype(mx.float32)
 
             if self._reranker_score_weight is not None:
-                print("[MLXBackend] Using native score_linear reranker head")
+                logger.debug("[MLXBackend] Using native score_linear reranker head")
                 return
             if callable(self._reranker_score_linear):
-                print("[MLXBackend] Using callable score_linear reranker head")
+                logger.debug("[MLXBackend] Using callable score_linear reranker head")
                 return
 
         derived_weight = self._derive_binary_head_from_lm()
@@ -883,7 +885,7 @@ class MLXBackend(ModelBackend):
             self._reranker_score_weight = derived_weight
             self._reranker_score_bias = None
             self._reranker_score_linear = None
-            print("[MLXBackend] score_linear missing; using lm_head yes-no projection fallback")
+            logger.debug("[MLXBackend] score_linear missing; using lm_head yes-no projection fallback")
             return
 
         # Last-resort fallback for quantized tied embeddings: use direct language-model
@@ -896,7 +898,7 @@ class MLXBackend(ModelBackend):
             self._reranker_score_linear = None
             self._reranker_score_weight = None
             self._reranker_score_bias = None
-            print("[MLXBackend] score head missing; using direct yes/no logits fallback")
+            logger.debug("[MLXBackend] score head missing; using direct yes/no logits fallback")
             return
 
         raise RuntimeError("Unable to locate reranker score head (score_linear/lm_head)")
@@ -1014,11 +1016,11 @@ class MLXBackend(ModelBackend):
 
         if not _check_model_cached(self.RERANKER_MODEL):
             size = "~800MB" if self._quantization == "4bit" else "~4GB"
-            print(
+            logger.info(
                 f"[RecallForge] Downloading reranker model "
                 f"({self.RERANKER_MODEL.split('/')[-1]}, {size})... first run only."
             )
-        print(f"[MLXBackend] Loading reranker: {self.RERANKER_MODEL}")
+        logger.info(f"[MLXBackend] Loading reranker: {self.RERANKER_MODEL}")
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
@@ -1058,7 +1060,7 @@ class MLXBackend(ModelBackend):
             self._reranker_no_token_id = None
             self._reranker_use_direct_logits = False
             raise
-        print(f"[MLXBackend] Loaded reranker ({self._quantization})")
+        logger.info(f"[MLXBackend] Loaded reranker ({self._quantization})")
 
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
         """Rerank documents for a query."""
@@ -1072,7 +1074,7 @@ class MLXBackend(ModelBackend):
             self._load_reranker()
             num_layers = self._reranker_model.language_model.model.num_hidden_layers
         except Exception as e:
-            print(f"[MLXBackend] Failed to initialize reranker: {e}")
+            logger.error(f"[MLXBackend] Failed to initialize reranker: {e}")
             return [0.5] * len(documents)
 
         instruction = self._RERANK_DEFAULT_INSTRUCTION
@@ -1084,7 +1086,7 @@ class MLXBackend(ModelBackend):
                 score = self._score_reranker_prompt(prompt, num_layers)
                 scores.append(score)
             except Exception as e:
-                print(f"[MLXBackend] Rerank error at doc {idx}: {e}")
+                logger.error(f"[MLXBackend] Rerank error at doc {idx}: {e}")
                 scores.append(0.5)
 
         return scores
@@ -1108,15 +1110,15 @@ class MLXBackend(ModelBackend):
         from mlx_lm import load as mlx_lm_load
 
         if not _check_model_cached(self.EXPANDER_MODEL):
-            print(
+            logger.info(
                 f"[RecallForge] Downloading expander model "
                 f"({self.EXPANDER_MODEL.split('/')[-1]}, ~700MB)... first run only."
             )
-        print(f"[MLXBackend] Loading expander: {self.EXPANDER_MODEL}")
+        logger.info(f"[MLXBackend] Loading expander: {self.EXPANDER_MODEL}")
         model, tokenizer = mlx_lm_load(self.EXPANDER_MODEL)
         self._expander = model
         self._expander_tokenizer = tokenizer
-        print(f"[MLXBackend] Loaded expander (MLX 4-bit)")
+        logger.info(f"[MLXBackend] Loaded expander (MLX 4-bit)")
 
     def _load_expander_torch(self):
         """Load expander via torch fallback (bf16 mode)."""
@@ -1131,11 +1133,11 @@ class MLXBackend(ModelBackend):
         device = "mps" if torch.backends.mps.is_available() else "cpu"
 
         if not _check_model_cached(self.EXPANDER_MODEL):
-            print(
+            logger.info(
                 f"[RecallForge] Downloading expander model "
                 f"({self.EXPANDER_MODEL.split('/')[-1]}, ~4GB)... first run only."
             )
-        print(f"[MLXBackend] Loading expander via torch fallback on {device}")
+        logger.info(f"[MLXBackend] Loading expander via torch fallback on {device}")
 
         self._expander_tokenizer = AutoTokenizer.from_pretrained(self.EXPANDER_MODEL)
         self._expander = AutoModelForCausalLM.from_pretrained(
@@ -1145,7 +1147,7 @@ class MLXBackend(ModelBackend):
         ).to(device)
 
         self._expander.eval()
-        print(f"[MLXBackend] Loaded expander (torch fallback)")
+        logger.info(f"[MLXBackend] Loaded expander (torch fallback)")
 
     def _build_expander_prompt(self, query: str) -> str:
         """Build the query expansion prompt."""
@@ -1249,28 +1251,28 @@ Query: {query}<|im_end|>
         """Preload models and run a dummy embed pass to prime MLX compilation."""
         import time
 
-        print(f"[MLXBackend] Warming up (mode={self._mode}, quant={self._quantization})...")
+        logger.info(f"[MLXBackend] Warming up (mode={self._mode}, quant={self._quantization})...")
         start = time.time()
 
         self._load_embedder()
         self._warm_embed()
         t1 = time.time()
-        print(f"[MLXBackend]   Embedder+compile: {t1 - start:.1f}s")
+        logger.info(f"[MLXBackend]   Embedder+compile: {t1 - start:.1f}s")
 
         last_checkpoint = t1
 
         if self.needs_reranker():
             self._load_reranker()
             t2 = time.time()
-            print(f"[MLXBackend]   Reranker: {t2 - t1:.1f}s")
+            logger.info(f"[MLXBackend]   Reranker: {t2 - t1:.1f}s")
             last_checkpoint = t2
 
         if self.needs_expander():
             self._load_expander()
             t3 = time.time()
-            print(f"[MLXBackend]   Expander: {t3 - last_checkpoint:.1f}s")
+            logger.info(f"[MLXBackend]   Expander: {t3 - last_checkpoint:.1f}s")
 
-        print(f"[MLXBackend] Ready in {time.time() - start:.1f}s")
+        logger.info(f"[MLXBackend] Ready in {time.time() - start:.1f}s")
 
     def get_info(self) -> BackendInfo:
         """Return backend information."""
