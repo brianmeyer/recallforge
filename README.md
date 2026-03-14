@@ -8,7 +8,40 @@
 
 Search text, images, documents, and video in one unified query. Type "whiteboard diagram from last meeting" to find the photo. Drop an image to find related notes. Index `pdf`/`docx`/`pptx` locally for agent memory. All embeddings stay on your machine.
 
-## Quick Start (30 seconds)
+## Requirements
+
+- Python 3.12+
+- Disk: ~2-5GB free for model downloads on first run
+- RAM (MLX 4-bit): ~1.7GB (`embed`) to ~4.4GB (`full`)
+- `ffmpeg` recommended for video indexing/search
+- First run downloads models automatically and may take a few minutes on a fast connection
+
+## MCP Server (primary use)
+
+RecallForge is designed as a **Model Context Protocol server for AI agents**. The CLI exists for local testing, debugging, and ops.
+
+Configure in Claude Desktop (or any MCP-compatible agent host):
+
+```json
+{
+  "mcpServers": {
+    "recallforge": {
+      "command": "recallforge",
+      "args": ["serve", "--mode", "full"]
+    }
+  }
+}
+```
+
+Run manually:
+
+```bash
+recallforge serve --mode embed --backend mlx --quantize 4bit
+```
+
+Exposes **17 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
+
+## CLI Usage (development & testing)
 
 ```bash
 # 1. Install (pick your platform)
@@ -26,40 +59,19 @@ recallforge search --image ./photos/whiteboard.png
 recallforge search --video ~/Movies/demo.mp4
 ```
 
-That's it. RecallForge auto-detects MLX on Apple Silicon, PyTorch elsewhere.
-
-## MCP Server
-
-Run as a Model Context Protocol server for AI agents:
-
-```bash
-recallforge serve --mode embed --backend mlx --quantize 4bit
-```
-
-Exposes **17 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `index_folder`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
-
-Configure in Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "recallforge": {
-      "command": "recallforge",
-      "args": ["serve", "--mode", "full"]
-    }
-  }
-}
-```
+RecallForge auto-detects MLX on Apple Silicon, PyTorch elsewhere.
 
 ## What makes RecallForge different
 
-- **Cross-modal search:** Text↔Text, Text↔Image, Image↔Text, Image↔Image, Video↔Text, Video↔Image, Video↔Video
+- **Cross-modal search:** Text↔Text, Text↔Image, Image↔Text, Image↔Image, Video↔Text **[Beta]**, Video↔Image **[Beta]**, Video↔Video **[Beta]**
 - **Shared embedding space:** Qwen3-VL encodes images and text into the same 2048-dim vectors
 - **3-stage pipeline:** Embedding → Reranking → Query expansion (all multimodal)
-- **Runs anywhere:** MLX 4-bit on Apple Silicon (~1.7GB RAM), PyTorch on CUDA/MPS/CPU
+- **Runs on macOS and Linux. Windows via WSL:** MLX 4-bit on Apple Silicon (~1.7GB RAM), PyTorch on CUDA/MPS/CPU
 - **Fast:** Cold start 7.6s, warm search 53ms p50 (MLX 4-bit, Mac mini M4)
 - **Tiered modes:** embed (~1.7GB), hybrid (~3.4GB), full (~4.4GB) — pick your tradeoff
 - **100% local:** Your data never leaves your machine
+
+> **Video [Beta] note:** Video support requires `ffmpeg`. The torch backend video path has a known upstream issue (see REC-44).
 
 ## Performance
 
@@ -85,7 +97,7 @@ Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
 | Capability | RecallForge | Chroma | Mem0 | Qdrant | Weaviate |
 |------------|-------------|--------|------|--------|----------|
 | Cross-modal search | ✅ Native | ✅ OpenCLIP | ❌ Text only | ❌ | ✅ CLIP modules |
-| Video support | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Video support [Beta] | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
 | Query expansion | ✅ Multimodal | ❌ | ❌ | ❌ | ✅ Generative |
@@ -137,7 +149,7 @@ recallforge serve --mode hybrid  # balanced (~3.4GB)
 recallforge serve --mode full    # best quality (~4.4GB, default)
 ```
 
-## CLI Usage
+## CLI Reference
 
 ```bash
 # Index files

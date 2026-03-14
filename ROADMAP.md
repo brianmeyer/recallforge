@@ -90,7 +90,7 @@ This roadmap is honest about where RecallForge is, where it's going, and what's 
 
 ### Specific Integrations
 
-- **Native Windows support** — macOS and Linux only. Windows users should use WSL.
+- **Native Windows support** — Runs on macOS and Linux. Windows via WSL.
 
 ### Feature Creep
 - **Built-in LLM** — We embed and retrieve; we don't generate. Bring your own LLM.
