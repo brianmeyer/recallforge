@@ -1337,6 +1337,14 @@ def ingest_corpus(backend, storage, collection: str, corpus_dir: Path) -> int:
                 indexed += 1
             except Exception as e:
                 print(f"  WARN: Failed to index video {video_file.name}: {e}")
+            # Reclaim Metal memory between videos to avoid OOM on 16GB devices
+            import gc
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.metal.clear_cache()
+            except Exception:
+                pass
         
         # Index transcript JSONs
         for transcript_file in sorted(video_dir.glob("*.transcript.json")):
@@ -1510,6 +1518,14 @@ def run_benchmark(
 
     for stage_name, stage_mode in STAGES:
         all_results[stage_name] = {}
+        # Clear Metal cache between stages to avoid OOM on 16GB devices
+        import gc
+        gc.collect()
+        try:
+            import mlx.core as mx
+            mx.metal.clear_cache()
+        except Exception:
+            pass
 
         for cat_name, queries in categories.items():
             # Skip BM25 for image queries (BM25 can't process images)
