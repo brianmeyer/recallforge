@@ -33,8 +33,8 @@ It is inspired by and builds upon [QMD](https://github.com/tobil/qmd) by [Tobi](
 │  │           │                          │                            │   │
 │  │           └──> Vector Search ───────┼──> RRF Fusion ──> Rerank   │   │
 │  │                                       │                  │        │   │
-│  │   [full mode: Query Expansion]        ▼                  ▼        │   │
-│  │   Lex/Vec/HyDE expansions ──> Scored Results ──> Final Ranking   │   │
+│  │                                       ▼                  ▼        │   │
+│  │                           Scored Results ──> Final Ranking       │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -55,7 +55,6 @@ class MyBackend(ModelBackend):
     def embed_image(self, image_path: str) -> np.ndarray: ...
     def embed_images(self, image_paths: List[str]) -> np.ndarray: ...
     def rerank(self, query: str, documents: List[Dict]) -> List[float]: ...
-    def expand_query(self, query: str) -> Dict[str, str]: ...
     def warm_up(self) -> None: ...
     def get_info(self) -> BackendInfo: ...
 ```
@@ -65,21 +64,18 @@ class MyBackend(ModelBackend):
 | Mode | Models Loaded | Memory (MLX 4-bit) | Quality |
 |------|---------------|-------------------|---------|
 | `embed` | Embedder only | ~1.7 GB | Baseline |
-| `hybrid` | Embedder + Reranker | ~3.4 GB | Better |
-| `full` | Embedder + Reranker + Expander | ~4.4 GB | Best |
+| `hybrid` | Embedder + Reranker | ~3.4 GB | Best |
 
-> **Note:** Memory values are model download sizes for MLX 4-bit on Apple Silicon. Runtime process memory (RSS) is lower: ~329MB peak for embed mode. PyTorch fp16 uses significantly more memory (~4GB for embedder alone).
+> **Note:** Memory values are model download sizes for MLX 4-bit on Apple Silicon. Runtime process memory (RSS) is lower: ~329MB peak for embed mode, ~1.5GB for hybrid mode. PyTorch fp16 uses significantly more memory (~4GB for embedder alone).
 
 #### Concrete Backends
 
 - **TorchBackend** (`torch_backend.py`): PyTorch — CUDA > MPS > CPU, float16
   - Embedder: `Qwen/Qwen3-VL-Embedding-2B`
   - Reranker: `Qwen/Qwen3-VL-Reranker-2B`
-  - Expander: `tobil/qmd-query-expansion-qwen3.5-2B`
 - **MLXBackend** (`mlx_backend.py`): Apple Silicon MLX
   - BF16: `arthurcollet/Qwen3-VL-Embedding-2B-mlx`
   - 4-bit: `arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`
-  - Expander: Torch fallback
 
 ### 2. StorageBackend ABC (`src/recallforge/storage/base.py`)
 
@@ -134,22 +130,16 @@ Query
   │
   ├──[all modes]──> BM25 probe
   │
-  ├──[full mode]──> Query expansion (lex/vec/hyde)
-  │
   ├──[all modes]──> Parallel searches (ThreadPoolExecutor)
-  │                  ├── BM25 (original + lex expansions)
-  │                  └── Vector (original + vec + hyde)
+  │                  ├── BM25
+  │                  └── Vector
   │
   ├──[all modes]──> RRF fusion (k=60, weighted)
   │
-  ├──[hybrid/full]─> Cross-encoder reranking
+  ├──[hybrid mode]─> Cross-encoder reranking
   │
   └──[all modes]──> Score blending → top-K HybridResult
 ```
-
-#### RRF Weights
-- First 2 result lists: weight=2.0
-- Additional expansion lists: weight=1.0
 
 #### Score Blending
 - RRF rank 1-3: 75% RRF + 25% reranker

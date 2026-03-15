@@ -723,6 +723,7 @@ class IndexingOps:
                         path=str(candidate),
                         collection=collection,
                         embed_func=embed_text_func,
+                        embed_image_func=embed_image_func,
                         model=model,
                         stored_path=item_path,
                         user_id=user_id,
@@ -730,13 +731,15 @@ class IndexingOps:
                         project_id=project_id,
                         profile=profile,
                     )
-                    if document_summary.get("indexed_sections", 0) == 0:
+                    total_sections = document_summary.get("indexed_sections", 0) + document_summary.get("indexed_images", 0)
+                    if total_sections == 0:
                         summary["skipped"] += 1
                         mark(item_path, "document", "skipped", reason="empty_content")
                     else:
                         summary["indexed_documents"] += 1
-                        summary["indexed_document_sections"] += document_summary["indexed_sections"]
-                        summary["indexed_text"] += document_summary["indexed_sections"]
+                        summary["indexed_document_sections"] += total_sections
+                        summary["indexed_text"] += document_summary.get("indexed_sections", 0)
+                        summary["indexed_images"] += document_summary.get("indexed_images", 0)
                         mark(item_path, "document", "indexed")
                     return
 
@@ -1107,6 +1110,7 @@ class IndexingOps:
         path: str,
         collection: str,
         embed_func,
+        embed_image_func=None,
         model: str = "Qwen3-VL-Embedding-2B",
         stored_path: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -1130,25 +1134,44 @@ class IndexingOps:
 
         artifacts = extract_document_artifacts(actual_path, logical_path)
         indexed_sections = 0
+        indexed_images = 0
 
         for section in artifacts.sections:
-            self.upsert_memory(
-                path=section.logical_path,
-                text=section.text,
-                collection=collection,
-                embed_func=embed_func,
-                model=model,
-                user_id=user_id,
-                session_id=session_id,
-                project_id=project_id,
-                profile=profile,
-                _skip_delete=True,
-            )
-            indexed_sections += 1
+            if section.content_type == "image" and section.image_path:
+                # Use image embedding for image sections
+                image_embed = embed_image_func or embed_func
+                self.index_image(
+                    path=section.image_path,
+                    collection=collection,
+                    embed_func=image_embed,
+                    model=model,
+                    stored_path=section.logical_path,
+                    title=section.title,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                )
+                indexed_images += 1
+            else:
+                # Use text embedding for text sections
+                self.upsert_memory(
+                    path=section.logical_path,
+                    text=section.text,
+                    collection=collection,
+                    embed_func=embed_func,
+                    model=model,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                    _skip_delete=True,
+                )
+                indexed_sections += 1
 
         # Ensure FTS rebuild is scheduled even when no sections were indexed,
         # since _delete_path_entries above may have removed stale entries.
-        if indexed_sections == 0:
+        if indexed_sections == 0 and indexed_images == 0:
             self._backend._fts.schedule_fts_rebuild()
 
         return {
@@ -1158,4 +1181,5 @@ class IndexingOps:
             "document_type": artifacts.document_type,
             "extractor": artifacts.extractor,
             "indexed_sections": indexed_sections,
+            "indexed_images": indexed_images,
         }

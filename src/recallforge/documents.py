@@ -95,6 +95,7 @@ def _group_sections(
                 text=text,
                 section_type=section_type,
                 index=logical_index,
+                content_type="text",
             )
         )
         buffer = []
@@ -179,6 +180,7 @@ def _extract_pptx(path: Path, logical_path: str) -> DocumentArtifacts:
             text=text,
             section_type="slide",
             index=index,
+            content_type="text",
         )
         for index, text in enumerate(slides, start=1)
         if text
