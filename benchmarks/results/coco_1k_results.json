@@ -1,0 +1,17 @@
+{
+  "model": "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit",
+  "quantization": "4bit",
+  "backend": "MLX",
+  "num_images": 1000,
+  "total_runtime_seconds": 1141.2624170780182,
+  "text_to_image": {
+    "R@1": 0.245,
+    "R@5": 0.4228,
+    "R@10": 0.4994
+  },
+  "image_to_text": {
+    "R@1": 0.343,
+    "R@5": 0.42,
+    "R@10": 0.441
+  }
+}

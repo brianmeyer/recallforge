@@ -1,0 +1,86 @@
+{
+  "benchmark": "pipeline_ablation",
+  "generated_at": "2026-03-14T21:11:19-0400",
+  "config": {
+    "backend_mode": "real",
+    "backend": "mlx",
+    "requested_backend": "mlx",
+    "quantization": "4bit",
+    "num_text_docs": 200,
+    "num_images": 50,
+    "seed": 42,
+    "dataset_path": "benchmarks/results/pipeline_ablation_dataset.json",
+    "ground_truth_path": "benchmarks/results/pipeline_ablation_ground_truth.json"
+  },
+  "notes": [
+    "Using real RecallForge backend."
+  ],
+  "results": {
+    "vector-only": {
+      "stage_name": "Vector-only",
+      "recall_at_1": 0.6833333333333333,
+      "recall_at_5": 0.6833333333333333,
+      "recall_at_10": 0.7,
+      "mrr": 0.685,
+      "latency_p50_ms": 17.456542002037168,
+      "latency_p95_ms": 20.187500020256266,
+      "total_queries": 60,
+      "hits_at_1": 41,
+      "hits_at_5": 41,
+      "hits_at_10": 42
+    },
+    "bm25-only": {
+      "stage_name": "BM25-only",
+      "recall_at_1": 0.55,
+      "recall_at_5": 0.55,
+      "recall_at_10": 0.85,
+      "mrr": 0.6,
+      "latency_p50_ms": 15.42966702254489,
+      "latency_p95_ms": 17.83641698420979,
+      "total_queries": 60,
+      "hits_at_1": 33,
+      "hits_at_5": 33,
+      "hits_at_10": 51
+    },
+    "vector-bm25-rrf": {
+      "stage_name": "Vector + BM25 (RRF)",
+      "recall_at_1": 0.7166666666666667,
+      "recall_at_5": 0.8666666666666667,
+      "recall_at_10": 0.8666666666666667,
+      "mrr": 0.7636111111111111,
+      "latency_p50_ms": 93.22837501531467,
+      "latency_p95_ms": 98.31724999821745,
+      "total_queries": 60,
+      "hits_at_1": 43,
+      "hits_at_5": 52,
+      "hits_at_10": 52
+    },
+    "vector-bm25-reranker": {
+      "stage_name": "Vector + BM25 + Reranker",
+      "recall_at_1": 0.8333333333333334,
+      "recall_at_5": 0.9166666666666666,
+      "recall_at_10": 0.95,
+      "mrr": 0.8690476190476191,
+      "latency_p50_ms": 3851.2663330184296,
+      "latency_p95_ms": 5731.981457996881,
+      "total_queries": 60,
+      "hits_at_1": 50,
+      "hits_at_5": 55,
+      "hits_at_10": 57
+    },
+    "full-pipeline": {
+      "stage_name": "Full pipeline",
+      "recall_at_1": 0.8333333333333334,
+      "recall_at_5": 0.9,
+      "recall_at_10": 0.9333333333333333,
+      "mrr": 0.8569444444444444,
+      "latency_p50_ms": 5735.668665991398,
+      "latency_p95_ms": 9670.655041991267,
+      "total_queries": 60,
+      "hits_at_1": 50,
+      "hits_at_5": 54,
+      "hits_at_10": 56
+    }
+  },
+  "comparison_table_markdown": "## Pipeline Ablation Results\n\n| Stage | R@1 | R@5 | R@10 | MRR | Latency p50 (ms) | Latency p95 (ms) |\n|---|---:|---:|---:|---:|---:|---:|\n| Vector-only | 0.6833 | 0.6833 | 0.7000 | 0.6850 | 17.46 | 20.19 |\n| BM25-only | 0.5500 | 0.5500 | 0.8500 | 0.6000 | 15.43 | 17.84 |\n| Vector + BM25 (RRF) | 0.7167 | 0.8667 | 0.8667 | 0.7636 | 93.23 | 98.32 |\n| Vector + BM25 + Reranker | 0.8333 | 0.9167 | 0.9500 | 0.8690 | 3851.27 | 5731.98 |\n| Full pipeline | 0.8333 | 0.9000 | 0.9333 | 0.8569 | 5735.67 | 9670.66 |"
+}

@@ -129,6 +129,90 @@ def test_extract_pdf_artifacts_with_builtin_fallback(tmp_path):
     artifacts = extract_document_artifacts(path, "reports/report.pdf")
 
     assert artifacts.document_type == "pdf"
+    # The fallback PDF parser extracts text from the PDF stream.
+    # Our test PDF contains actual text content, so it should extract successfully.
     assert artifacts.sections
     assert artifacts.sections[0].logical_path == "reports/report.pdf::page:0001"
     assert "local-first MCP memory" in artifacts.sections[0].text
+
+
+def test_extract_pdf_empty_graceful_skip(tmp_path):
+    """PDFs with no extractable text should return empty sections, not crash."""
+    # Create a minimal PDF with no text streams - just structure
+    path = tmp_path / "empty.pdf"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+        b"<< /Length 0 >>\nstream\n\nendstream",
+    ]
+
+    chunks = [b"%PDF-1.4\n"]
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(sum(len(chunk) for chunk in chunks))
+        chunks.append(f"{index} 0 obj\n".encode("ascii"))
+        chunks.append(obj)
+        chunks.append(b"\nendobj\n")
+
+    xref_offset = sum(len(chunk) for chunk in chunks)
+    chunks.append(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    chunks.append(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        chunks.append(f"{offset:010d} 00000 n \n".encode("ascii"))
+    chunks.append(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode(
+            "ascii"
+        )
+    )
+    path.write_bytes(b"".join(chunks))
+
+    artifacts = extract_document_artifacts(path, "empty/empty.pdf")
+
+    # Should return empty sections gracefully, not raise
+    assert artifacts.document_type == "pdf"
+    assert artifacts.sections == []
+
+
+def test_extract_docx_empty_graceful_skip(tmp_path):
+    """DOCX with no extractable text should return empty sections."""
+    path = tmp_path / "empty.docx"
+    with ZipFile(path, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+              <w:body>
+              </w:body>
+            </w:document>
+            """,
+        )
+
+    artifacts = extract_document_artifacts(path, "empty/empty.docx")
+
+    assert artifacts.document_type == "docx"
+    assert artifacts.sections == []
+
+
+def test_extract_pptx_empty_graceful_skip(tmp_path):
+    """PPTX with no extractable text should return empty sections."""
+    path = tmp_path / "empty.pptx"
+    with ZipFile(path, "w") as archive:
+        # Empty slide with no text
+        archive.writestr(
+            "ppt/slides/slide1.xml",
+            """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                   xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+              <p:cSld>
+                <p:spTree>
+                </p:spTree>
+              </p:cSld>
+            </p:sld>
+            """,
+        )
+
+    artifacts = extract_document_artifacts(path, "empty/empty.pptx")
+
+    assert artifacts.document_type == "pptx"
+    assert artifacts.sections == []

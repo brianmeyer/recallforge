@@ -1,0 +1,1052 @@
+[
+  {
+    "query": "alerts and slo dashboards",
+    "relevant_doc_ids": [
+      "text_0006",
+      "text_0016",
+      "text_0026",
+      "text_0036",
+      "text_0046",
+      "text_0056",
+      "text_0066",
+      "text_0076",
+      "text_0086",
+      "text_0096",
+      "text_0106",
+      "text_0116",
+      "text_0126",
+      "text_0136",
+      "text_0146",
+      "text_0156",
+      "text_0166",
+      "text_0176",
+      "text_0186",
+      "text_0196"
+    ]
+  },
+  {
+    "query": "api gateway patterns",
+    "relevant_doc_ids": [
+      "text_0008",
+      "text_0018",
+      "text_0028",
+      "text_0038",
+      "text_0048",
+      "text_0058",
+      "text_0068",
+      "text_0078",
+      "text_0088",
+      "text_0098",
+      "text_0108",
+      "text_0118",
+      "text_0128",
+      "text_0138",
+      "text_0148",
+      "text_0158",
+      "text_0168",
+      "text_0178",
+      "text_0188",
+      "text_0198"
+    ]
+  },
+  {
+    "query": "backend for frontend architecture",
+    "relevant_doc_ids": [
+      "text_0008",
+      "text_0018",
+      "text_0028",
+      "text_0038",
+      "text_0048",
+      "text_0058",
+      "text_0068",
+      "text_0078",
+      "text_0088",
+      "text_0098",
+      "text_0108",
+      "text_0118",
+      "text_0128",
+      "text_0138",
+      "text_0148",
+      "text_0158",
+      "text_0168",
+      "text_0178",
+      "text_0188",
+      "text_0198"
+    ]
+  },
+  {
+    "query": "cosine similarity index tuning",
+    "relevant_doc_ids": [
+      "text_0001",
+      "text_0011",
+      "text_0021",
+      "text_0031",
+      "text_0041",
+      "text_0051",
+      "text_0061",
+      "text_0071",
+      "text_0081",
+      "text_0091",
+      "text_0101",
+      "text_0111",
+      "text_0121",
+      "text_0131",
+      "text_0141",
+      "text_0151",
+      "text_0161",
+      "text_0171",
+      "text_0181",
+      "text_0191"
+    ]
+  },
+  {
+    "query": "cross modal retrieval",
+    "relevant_doc_ids": [
+      "text_0007",
+      "text_0017",
+      "text_0027",
+      "text_0037",
+      "text_0047",
+      "text_0057",
+      "text_0067",
+      "text_0077",
+      "text_0087",
+      "text_0097",
+      "text_0107",
+      "text_0117",
+      "text_0127",
+      "text_0137",
+      "text_0147",
+      "text_0157",
+      "text_0167",
+      "text_0177",
+      "text_0187",
+      "text_0197"
+    ]
+  },
+  {
+    "query": "diagram about api gateway patterns",
+    "relevant_doc_ids": [
+      "image_0005",
+      "image_0015",
+      "image_0025",
+      "image_0035",
+      "image_0045"
+    ]
+  },
+  {
+    "query": "diagram about cross-modal retrieval",
+    "relevant_doc_ids": [
+      "image_0004",
+      "image_0014",
+      "image_0024",
+      "image_0034",
+      "image_0044"
+    ]
+  },
+  {
+    "query": "diagram about distributed systems architecture",
+    "relevant_doc_ids": [
+      "image_0000",
+      "image_0010",
+      "image_0020",
+      "image_0030",
+      "image_0040"
+    ]
+  },
+  {
+    "query": "diagram about feature store design",
+    "relevant_doc_ids": [
+      "image_0006",
+      "image_0016",
+      "image_0026",
+      "image_0036",
+      "image_0046"
+    ]
+  },
+  {
+    "query": "diagram about implementing rag systems",
+    "relevant_doc_ids": [
+      "image_0007",
+      "image_0017",
+      "image_0027",
+      "image_0037",
+      "image_0047"
+    ]
+  },
+  {
+    "query": "diagram about kubernetes deployment strategies",
+    "relevant_doc_ids": [
+      "image_0002",
+      "image_0012",
+      "image_0022",
+      "image_0032",
+      "image_0042"
+    ]
+  },
+  {
+    "query": "diagram about machine learning pipeline design",
+    "relevant_doc_ids": [
+      "image_0009",
+      "image_0019",
+      "image_0029",
+      "image_0039",
+      "image_0049"
+    ]
+  },
+  {
+    "query": "diagram about observability and monitoring",
+    "relevant_doc_ids": [
+      "image_0003",
+      "image_0013",
+      "image_0023",
+      "image_0033",
+      "image_0043"
+    ]
+  },
+  {
+    "query": "diagram about semantic search implementation",
+    "relevant_doc_ids": [
+      "image_0001",
+      "image_0011",
+      "image_0021",
+      "image_0031",
+      "image_0041"
+    ]
+  },
+  {
+    "query": "diagram about vector database optimization",
+    "relevant_doc_ids": [
+      "image_0008",
+      "image_0018",
+      "image_0028",
+      "image_0038",
+      "image_0048"
+    ]
+  },
+  {
+    "query": "distributed systems architecture",
+    "relevant_doc_ids": [
+      "text_0003",
+      "text_0013",
+      "text_0023",
+      "text_0033",
+      "text_0043",
+      "text_0053",
+      "text_0063",
+      "text_0073",
+      "text_0083",
+      "text_0093",
+      "text_0103",
+      "text_0113",
+      "text_0123",
+      "text_0133",
+      "text_0143",
+      "text_0153",
+      "text_0163",
+      "text_0173",
+      "text_0183",
+      "text_0193"
+    ]
+  },
+  {
+    "query": "distributed tracing and metrics",
+    "relevant_doc_ids": [
+      "text_0006",
+      "text_0016",
+      "text_0026",
+      "text_0036",
+      "text_0046",
+      "text_0056",
+      "text_0066",
+      "text_0076",
+      "text_0086",
+      "text_0096",
+      "text_0106",
+      "text_0116",
+      "text_0126",
+      "text_0136",
+      "text_0146",
+      "text_0156",
+      "text_0166",
+      "text_0176",
+      "text_0186",
+      "text_0196"
+    ]
+  },
+  {
+    "query": "fault tolerant service design",
+    "relevant_doc_ids": [
+      "text_0003",
+      "text_0013",
+      "text_0023",
+      "text_0033",
+      "text_0043",
+      "text_0053",
+      "text_0063",
+      "text_0073",
+      "text_0083",
+      "text_0093",
+      "text_0103",
+      "text_0113",
+      "text_0123",
+      "text_0133",
+      "text_0143",
+      "text_0153",
+      "text_0163",
+      "text_0173",
+      "text_0183",
+      "text_0193"
+    ]
+  },
+  {
+    "query": "feature engineering orchestration",
+    "relevant_doc_ids": [
+      "text_0002",
+      "text_0012",
+      "text_0022",
+      "text_0032",
+      "text_0042",
+      "text_0052",
+      "text_0062",
+      "text_0072",
+      "text_0082",
+      "text_0092",
+      "text_0102",
+      "text_0112",
+      "text_0122",
+      "text_0132",
+      "text_0142",
+      "text_0152",
+      "text_0162",
+      "text_0172",
+      "text_0182",
+      "text_0192"
+    ]
+  },
+  {
+    "query": "feature store design",
+    "relevant_doc_ids": [
+      "text_0009",
+      "text_0019",
+      "text_0029",
+      "text_0039",
+      "text_0049",
+      "text_0059",
+      "text_0069",
+      "text_0079",
+      "text_0089",
+      "text_0099",
+      "text_0109",
+      "text_0119",
+      "text_0129",
+      "text_0139",
+      "text_0149",
+      "text_0159",
+      "text_0169",
+      "text_0179",
+      "text_0189",
+      "text_0199"
+    ]
+  },
+  {
+    "query": "helm and service mesh setup",
+    "relevant_doc_ids": [
+      "text_0005",
+      "text_0015",
+      "text_0025",
+      "text_0035",
+      "text_0045",
+      "text_0055",
+      "text_0065",
+      "text_0075",
+      "text_0085",
+      "text_0095",
+      "text_0105",
+      "text_0115",
+      "text_0125",
+      "text_0135",
+      "text_0145",
+      "text_0155",
+      "text_0165",
+      "text_0175",
+      "text_0185",
+      "text_0195"
+    ]
+  },
+  {
+    "query": "how to implement rag systems",
+    "relevant_doc_ids": [
+      "text_0000",
+      "text_0010",
+      "text_0020",
+      "text_0030",
+      "text_0040",
+      "text_0050",
+      "text_0060",
+      "text_0070",
+      "text_0080",
+      "text_0090",
+      "text_0100",
+      "text_0110",
+      "text_0120",
+      "text_0130",
+      "text_0140",
+      "text_0150",
+      "text_0160",
+      "text_0170",
+      "text_0180",
+      "text_0190"
+    ]
+  },
+  {
+    "query": "hybrid search with bm25 and vectors",
+    "relevant_doc_ids": [
+      "text_0004",
+      "text_0014",
+      "text_0024",
+      "text_0034",
+      "text_0044",
+      "text_0054",
+      "text_0064",
+      "text_0074",
+      "text_0084",
+      "text_0094",
+      "text_0104",
+      "text_0114",
+      "text_0124",
+      "text_0134",
+      "text_0144",
+      "text_0154",
+      "text_0164",
+      "text_0174",
+      "text_0184",
+      "text_0194"
+    ]
+  },
+  {
+    "query": "image showing augmentation pipeline",
+    "relevant_doc_ids": [
+      "image_0007",
+      "image_0017",
+      "image_0027",
+      "image_0037",
+      "image_0047"
+    ]
+  },
+  {
+    "query": "image showing authentication pipeline",
+    "relevant_doc_ids": [
+      "image_0005",
+      "image_0015",
+      "image_0025",
+      "image_0035",
+      "image_0045"
+    ]
+  },
+  {
+    "query": "image showing hnsw pipeline",
+    "relevant_doc_ids": [
+      "image_0008",
+      "image_0018",
+      "image_0028",
+      "image_0038",
+      "image_0048"
+    ]
+  },
+  {
+    "query": "image showing online store pipeline",
+    "relevant_doc_ids": [
+      "image_0006",
+      "image_0016",
+      "image_0026",
+      "image_0036",
+      "image_0046"
+    ]
+  },
+  {
+    "query": "image showing replication pipeline",
+    "relevant_doc_ids": [
+      "image_0000",
+      "image_0010",
+      "image_0020",
+      "image_0030",
+      "image_0040"
+    ]
+  },
+  {
+    "query": "image showing reranking pipeline",
+    "relevant_doc_ids": [
+      "image_0001",
+      "image_0011",
+      "image_0021",
+      "image_0031",
+      "image_0041"
+    ]
+  },
+  {
+    "query": "image showing rolling update pipeline",
+    "relevant_doc_ids": [
+      "image_0002",
+      "image_0012",
+      "image_0022",
+      "image_0032",
+      "image_0042"
+    ]
+  },
+  {
+    "query": "image showing text image pipeline",
+    "relevant_doc_ids": [
+      "image_0004",
+      "image_0014",
+      "image_0024",
+      "image_0034",
+      "image_0044"
+    ]
+  },
+  {
+    "query": "image showing tracing pipeline",
+    "relevant_doc_ids": [
+      "image_0003",
+      "image_0013",
+      "image_0023",
+      "image_0033",
+      "image_0043"
+    ]
+  },
+  {
+    "query": "image showing training pipeline",
+    "relevant_doc_ids": [
+      "image_0009",
+      "image_0019",
+      "image_0029",
+      "image_0039",
+      "image_0049"
+    ]
+  },
+  {
+    "query": "improving ann search latency",
+    "relevant_doc_ids": [
+      "text_0001",
+      "text_0011",
+      "text_0021",
+      "text_0031",
+      "text_0041",
+      "text_0051",
+      "text_0061",
+      "text_0071",
+      "text_0081",
+      "text_0091",
+      "text_0101",
+      "text_0111",
+      "text_0121",
+      "text_0131",
+      "text_0141",
+      "text_0151",
+      "text_0161",
+      "text_0171",
+      "text_0181",
+      "text_0191"
+    ]
+  },
+  {
+    "query": "kubernetes deployment strategies",
+    "relevant_doc_ids": [
+      "text_0005",
+      "text_0015",
+      "text_0025",
+      "text_0035",
+      "text_0045",
+      "text_0055",
+      "text_0065",
+      "text_0075",
+      "text_0085",
+      "text_0095",
+      "text_0105",
+      "text_0115",
+      "text_0125",
+      "text_0135",
+      "text_0145",
+      "text_0155",
+      "text_0165",
+      "text_0175",
+      "text_0185",
+      "text_0195"
+    ]
+  },
+  {
+    "query": "machine learning pipeline design",
+    "relevant_doc_ids": [
+      "text_0002",
+      "text_0012",
+      "text_0022",
+      "text_0032",
+      "text_0042",
+      "text_0052",
+      "text_0062",
+      "text_0072",
+      "text_0082",
+      "text_0092",
+      "text_0102",
+      "text_0112",
+      "text_0122",
+      "text_0132",
+      "text_0142",
+      "text_0152",
+      "text_0162",
+      "text_0172",
+      "text_0182",
+      "text_0192"
+    ]
+  },
+  {
+    "query": "ml training and deployment workflow",
+    "relevant_doc_ids": [
+      "text_0002",
+      "text_0012",
+      "text_0022",
+      "text_0032",
+      "text_0042",
+      "text_0052",
+      "text_0062",
+      "text_0072",
+      "text_0082",
+      "text_0092",
+      "text_0102",
+      "text_0112",
+      "text_0122",
+      "text_0132",
+      "text_0142",
+      "text_0152",
+      "text_0162",
+      "text_0172",
+      "text_0182",
+      "text_0192"
+    ]
+  },
+  {
+    "query": "observability and monitoring",
+    "relevant_doc_ids": [
+      "text_0006",
+      "text_0016",
+      "text_0026",
+      "text_0036",
+      "text_0046",
+      "text_0056",
+      "text_0066",
+      "text_0076",
+      "text_0086",
+      "text_0096",
+      "text_0106",
+      "text_0116",
+      "text_0126",
+      "text_0136",
+      "text_0146",
+      "text_0156",
+      "text_0166",
+      "text_0176",
+      "text_0186",
+      "text_0196"
+    ]
+  },
+  {
+    "query": "online and offline feature store",
+    "relevant_doc_ids": [
+      "text_0009",
+      "text_0019",
+      "text_0029",
+      "text_0039",
+      "text_0049",
+      "text_0059",
+      "text_0069",
+      "text_0079",
+      "text_0089",
+      "text_0099",
+      "text_0109",
+      "text_0119",
+      "text_0129",
+      "text_0139",
+      "text_0149",
+      "text_0159",
+      "text_0169",
+      "text_0179",
+      "text_0189",
+      "text_0199"
+    ]
+  },
+  {
+    "query": "prevent training serving skew",
+    "relevant_doc_ids": [
+      "text_0009",
+      "text_0019",
+      "text_0029",
+      "text_0039",
+      "text_0049",
+      "text_0059",
+      "text_0069",
+      "text_0079",
+      "text_0089",
+      "text_0099",
+      "text_0109",
+      "text_0119",
+      "text_0129",
+      "text_0139",
+      "text_0149",
+      "text_0159",
+      "text_0169",
+      "text_0179",
+      "text_0189",
+      "text_0199"
+    ]
+  },
+  {
+    "query": "rate limiting and routing",
+    "relevant_doc_ids": [
+      "text_0008",
+      "text_0018",
+      "text_0028",
+      "text_0038",
+      "text_0048",
+      "text_0058",
+      "text_0068",
+      "text_0078",
+      "text_0088",
+      "text_0098",
+      "text_0108",
+      "text_0118",
+      "text_0128",
+      "text_0138",
+      "text_0148",
+      "text_0158",
+      "text_0168",
+      "text_0178",
+      "text_0188",
+      "text_0198"
+    ]
+  },
+  {
+    "query": "replication and partitioning patterns",
+    "relevant_doc_ids": [
+      "text_0003",
+      "text_0013",
+      "text_0023",
+      "text_0033",
+      "text_0043",
+      "text_0053",
+      "text_0063",
+      "text_0073",
+      "text_0083",
+      "text_0093",
+      "text_0103",
+      "text_0113",
+      "text_0123",
+      "text_0133",
+      "text_0143",
+      "text_0153",
+      "text_0163",
+      "text_0173",
+      "text_0183",
+      "text_0193"
+    ]
+  },
+  {
+    "query": "reranking and query expansion pipeline",
+    "relevant_doc_ids": [
+      "text_0004",
+      "text_0014",
+      "text_0024",
+      "text_0034",
+      "text_0044",
+      "text_0054",
+      "text_0064",
+      "text_0074",
+      "text_0084",
+      "text_0094",
+      "text_0104",
+      "text_0114",
+      "text_0124",
+      "text_0134",
+      "text_0144",
+      "text_0154",
+      "text_0164",
+      "text_0174",
+      "text_0184",
+      "text_0194"
+    ]
+  },
+  {
+    "query": "retrieval augmented generation guide",
+    "relevant_doc_ids": [
+      "text_0000",
+      "text_0010",
+      "text_0020",
+      "text_0030",
+      "text_0040",
+      "text_0050",
+      "text_0060",
+      "text_0070",
+      "text_0080",
+      "text_0090",
+      "text_0100",
+      "text_0110",
+      "text_0120",
+      "text_0130",
+      "text_0140",
+      "text_0150",
+      "text_0160",
+      "text_0170",
+      "text_0180",
+      "text_0190"
+    ]
+  },
+  {
+    "query": "rolling update and autoscaling",
+    "relevant_doc_ids": [
+      "text_0005",
+      "text_0015",
+      "text_0025",
+      "text_0035",
+      "text_0045",
+      "text_0055",
+      "text_0065",
+      "text_0075",
+      "text_0085",
+      "text_0095",
+      "text_0105",
+      "text_0115",
+      "text_0125",
+      "text_0135",
+      "text_0145",
+      "text_0155",
+      "text_0165",
+      "text_0175",
+      "text_0185",
+      "text_0195"
+    ]
+  },
+  {
+    "query": "semantic search implementation",
+    "relevant_doc_ids": [
+      "text_0004",
+      "text_0014",
+      "text_0024",
+      "text_0034",
+      "text_0044",
+      "text_0054",
+      "text_0064",
+      "text_0074",
+      "text_0084",
+      "text_0094",
+      "text_0104",
+      "text_0114",
+      "text_0124",
+      "text_0134",
+      "text_0144",
+      "text_0154",
+      "text_0164",
+      "text_0174",
+      "text_0184",
+      "text_0194"
+    ]
+  },
+  {
+    "query": "text to image retrieval system",
+    "relevant_doc_ids": [
+      "text_0007",
+      "text_0017",
+      "text_0027",
+      "text_0037",
+      "text_0047",
+      "text_0057",
+      "text_0067",
+      "text_0077",
+      "text_0087",
+      "text_0097",
+      "text_0107",
+      "text_0117",
+      "text_0127",
+      "text_0137",
+      "text_0147",
+      "text_0157",
+      "text_0167",
+      "text_0177",
+      "text_0187",
+      "text_0197"
+    ]
+  },
+  {
+    "query": "vector database optimization",
+    "relevant_doc_ids": [
+      "text_0001",
+      "text_0011",
+      "text_0021",
+      "text_0031",
+      "text_0041",
+      "text_0051",
+      "text_0061",
+      "text_0071",
+      "text_0081",
+      "text_0091",
+      "text_0101",
+      "text_0111",
+      "text_0121",
+      "text_0131",
+      "text_0141",
+      "text_0151",
+      "text_0161",
+      "text_0171",
+      "text_0181",
+      "text_0191"
+    ]
+  },
+  {
+    "query": "vector store and context retrieval",
+    "relevant_doc_ids": [
+      "text_0000",
+      "text_0010",
+      "text_0020",
+      "text_0030",
+      "text_0040",
+      "text_0050",
+      "text_0060",
+      "text_0070",
+      "text_0080",
+      "text_0090",
+      "text_0100",
+      "text_0110",
+      "text_0120",
+      "text_0130",
+      "text_0140",
+      "text_0150",
+      "text_0160",
+      "text_0170",
+      "text_0180",
+      "text_0190"
+    ]
+  },
+  {
+    "query": "vision language search pipeline",
+    "relevant_doc_ids": [
+      "text_0007",
+      "text_0017",
+      "text_0027",
+      "text_0037",
+      "text_0047",
+      "text_0057",
+      "text_0067",
+      "text_0077",
+      "text_0087",
+      "text_0097",
+      "text_0107",
+      "text_0117",
+      "text_0127",
+      "text_0137",
+      "text_0147",
+      "text_0157",
+      "text_0167",
+      "text_0177",
+      "text_0187",
+      "text_0197"
+    ]
+  },
+  {
+    "query": "visual architecture for api gateway and rate limiting",
+    "relevant_doc_ids": [
+      "image_0005",
+      "image_0015",
+      "image_0025",
+      "image_0035",
+      "image_0045"
+    ]
+  },
+  {
+    "query": "visual architecture for cross modal and image search",
+    "relevant_doc_ids": [
+      "image_0004",
+      "image_0014",
+      "image_0024",
+      "image_0034",
+      "image_0044"
+    ]
+  },
+  {
+    "query": "visual architecture for distributed systems and consensus",
+    "relevant_doc_ids": [
+      "image_0000",
+      "image_0010",
+      "image_0020",
+      "image_0030",
+      "image_0040"
+    ]
+  },
+  {
+    "query": "visual architecture for feature store and offline store",
+    "relevant_doc_ids": [
+      "image_0006",
+      "image_0016",
+      "image_0026",
+      "image_0036",
+      "image_0046"
+    ]
+  },
+  {
+    "query": "visual architecture for kubernetes and deployment",
+    "relevant_doc_ids": [
+      "image_0002",
+      "image_0012",
+      "image_0022",
+      "image_0032",
+      "image_0042"
+    ]
+  },
+  {
+    "query": "visual architecture for ml pipeline and feature engineering",
+    "relevant_doc_ids": [
+      "image_0009",
+      "image_0019",
+      "image_0029",
+      "image_0039",
+      "image_0049"
+    ]
+  },
+  {
+    "query": "visual architecture for observability and metrics",
+    "relevant_doc_ids": [
+      "image_0003",
+      "image_0013",
+      "image_0023",
+      "image_0033",
+      "image_0043"
+    ]
+  },
+  {
+    "query": "visual architecture for rag and retrieval",
+    "relevant_doc_ids": [
+      "image_0007",
+      "image_0017",
+      "image_0027",
+      "image_0037",
+      "image_0047"
+    ]
+  },
+  {
+    "query": "visual architecture for semantic search and embedding model",
+    "relevant_doc_ids": [
+      "image_0001",
+      "image_0011",
+      "image_0021",
+      "image_0031",
+      "image_0041"
+    ]
+  },
+  {
+    "query": "visual architecture for vector database and ann",
+    "relevant_doc_ids": [
+      "image_0008",
+      "image_0018",
+      "image_0028",
+      "image_0038",
+      "image_0048"
+    ]
+  }
+]
