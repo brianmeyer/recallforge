@@ -100,6 +100,11 @@ class MLXBackend(ModelBackend):
     _RERANK_DEFAULT_INSTRUCTION = (
         "Given a search query, retrieve relevant candidates that answer the query."
     )
+
+    # Video sampling: 1 fps adapts to video length (30s video = 30 frames,
+    # 5min video = 300 frames). Max cap prevents OOM on very long videos.
+    _VIDEO_SAMPLE_FPS = 1.0
+    _VIDEO_MAX_FRAMES = 128
     # Captioning descriptors removed — they produced captions too generic for BM25.
     # See REC-129 for dedicated captioning model support.
 
@@ -633,6 +638,16 @@ class MLXBackend(ModelBackend):
 
         return embeddings
 
+    def _video_content(self, path: str) -> dict:
+        """Build a video content dict with adaptive frame sampling.
+
+        Uses fps-based sampling (1 frame/sec) so longer videos get more frames.
+        Caps at _VIDEO_MAX_FRAMES to bound memory on very long videos.
+        A 30s video → 30 frames. A 10min video → 128 frames (capped).
+        """
+        return {"type": "video", "video": path, "fps": self._VIDEO_SAMPLE_FPS,
+                "max_frames": self._VIDEO_MAX_FRAMES}
+
     def embed_video(self, video_path: str) -> np.ndarray:
         """Embed a single video."""
         return self.embed_videos([video_path])[0]
@@ -789,7 +804,7 @@ class MLXBackend(ModelBackend):
             messages = [{
                 "role": "user",
                 "content": [
-                    {"type": "video", "video": path, "nframes": 8},
+                    self._video_content(path),
                     {"type": "text", "text": "Describe this video."},
                 ],
             }]
@@ -1058,7 +1073,7 @@ class MLXBackend(ModelBackend):
             if document:
                 doc_content.append({"type": "text", "text": document})
         elif video_path:
-            doc_content.append({"type": "video", "video": f"file://{video_path}", "nframes": 8})
+            doc_content.append(self._video_content(f"file://{video_path}"))
             if document:
                 doc_content.append({"type": "text", "text": document})
         else:
@@ -1174,7 +1189,7 @@ class MLXBackend(ModelBackend):
             try:
                 from qwen_vl_utils import process_vision_info
                 messages = [{"role": "user", "content": [
-                    {"type": "video", "video": video_path, "nframes": 8},
+                    self._video_content(video_path),
                     {"type": "text", "text": prompt},
                 ]}]
                 _, video_inputs, video_kwargs = process_vision_info(
