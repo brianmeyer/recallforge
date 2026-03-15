@@ -111,6 +111,10 @@ def _group_sections(
 
 
 def _extract_docx(path: Path, logical_path: str) -> DocumentArtifacts:
+    import logging
+
+    logger = logging.getLogger("recallforge.documents")
+
     paragraphs: List[str] = []
     with ZipFile(path) as archive:
         try:
@@ -133,11 +137,16 @@ def _extract_docx(path: Path, logical_path: str) -> DocumentArtifacts:
         max_chars=1600,
     )
     if not sections:
-        raise ValueError(f"No extractable text found in DOCX: {path}")
+        logger.warning("No extractable text found in DOCX: %s", path)
+        return DocumentArtifacts(sections=[], document_type="docx", extractor="ooxml")
     return DocumentArtifacts(sections=sections, document_type="docx", extractor="ooxml")
 
 
 def _extract_pptx(path: Path, logical_path: str) -> DocumentArtifacts:
+    import logging
+
+    logger = logging.getLogger("recallforge.documents")
+
     slides: List[str] = []
     with ZipFile(path) as archive:
         slide_names = sorted(
@@ -149,7 +158,8 @@ def _extract_pptx(path: Path, logical_path: str) -> DocumentArtifacts:
             key=_natural_slide_key,
         )
         if not slide_names:
-            raise ValueError(f"PPTX contains no slides: {path}")
+            logger.warning("PPTX contains no slides: %s", path)
+            return DocumentArtifacts(sections=[], document_type="pptx", extractor="ooxml")
 
         for slide_name in slide_names:
             xml_bytes = archive.read(slide_name)
@@ -171,7 +181,8 @@ def _extract_pptx(path: Path, logical_path: str) -> DocumentArtifacts:
         if text
     ]
     if not sections:
-        raise ValueError(f"No extractable text found in PPTX: {path}")
+        logger.warning("No extractable text found in PPTX: %s", path)
+        return DocumentArtifacts(sections=[], document_type="pptx", extractor="ooxml")
     return DocumentArtifacts(sections=sections, document_type="pptx", extractor="ooxml")
 
 
@@ -187,7 +198,10 @@ def _extract_pdf(path: Path, logical_path: str) -> DocumentArtifacts:
 
 
 def _extract_pdf_with_pypdf(path: Path, logical_path: str) -> DocumentArtifacts:
+    import logging
     from pypdf import PdfReader  # type: ignore
+
+    logger = logging.getLogger("recallforge.documents")
 
     reader = PdfReader(str(path))
     sections: List[DocumentSection] = []
@@ -205,11 +219,16 @@ def _extract_pdf_with_pypdf(path: Path, logical_path: str) -> DocumentArtifacts:
             )
         )
     if not sections:
-        raise ValueError(f"No extractable text found in PDF: {path}")
+        logger.warning("No extractable text found in PDF: %s", path)
+        return DocumentArtifacts(sections=[], document_type="pdf", extractor="pypdf")
     return DocumentArtifacts(sections=sections, document_type="pdf", extractor="pypdf")
 
 
 def _extract_pdf_fallback(path: Path, logical_path: str) -> DocumentArtifacts:
+    import logging
+
+    logger = logging.getLogger("recallforge.documents")
+
     raw = path.read_bytes()
     texts: List[str] = []
     for stream_bytes in _iter_pdf_streams(raw):
@@ -219,9 +238,11 @@ def _extract_pdf_fallback(path: Path, logical_path: str) -> DocumentArtifacts:
 
     merged = _clean_text("\n\n".join(texts))
     if not merged:
-        raise ValueError(
-            "No extractable text found in PDF. Install recallforge[docs] for richer PDF parsing."
+        logger.warning(
+            "No extractable text found in PDF: %s. Install recallforge[docs] for richer PDF parsing.",
+            path,
         )
+        return DocumentArtifacts(sections=[], document_type="pdf", extractor="builtin-pdf-fallback")
 
     return DocumentArtifacts(
         sections=[
