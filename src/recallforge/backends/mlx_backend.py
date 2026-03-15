@@ -134,7 +134,8 @@ class MLXBackend(ModelBackend):
         self._embedder_num_layers = None
         self._embed_text_max_tokens = None
         self._embed_warmed = False
-        self._caption_descriptor_embeddings: Optional[np.ndarray] = None
+        self._captioner_model = None
+        self._captioner_processor = None
 
         # Model IDs based on quantization
         if quantization == "4bit":
@@ -611,40 +612,107 @@ class MLXBackend(ModelBackend):
         """Embed a single video."""
         return self.embed_videos([video_path])[0]
 
+    # ── Captioning ──────────────────────────────────────────────────────
+    # Uses Qwen3-VL-2B-Instruct (generative VL model) loaded lazily and
+    # separately from the embedding/reranker models.  The key insight is
+    # that mlx_vlm.generate() needs the prompt formatted via the chat
+    # template with {"type":"image"} content blocks so that vision tokens
+    # (<|vision_start|><|image_pad|><|vision_end|>) are injected.
+    # Passing a raw text string skips vision token injection and crashes
+    # with "image features and image tokens do not match".
+
+    _CAPTION_MODEL_ID = "mlx-community/Qwen3-VL-2B-Instruct-4bit"
+    _CAPTION_MAX_TOKENS = 60
+    _CAPTION_PROMPT = "Describe this image in one concise sentence for search indexing. No thinking."
+
+    def _load_captioner(self) -> None:
+        """Lazily load the captioning model (Qwen3-VL-2B-Instruct)."""
+        if getattr(self, "_captioner_model", None) is not None:
+            return
+        from mlx_vlm import load as vlm_load
+
+        logger.debug("captioner_load model=%s", self._CAPTION_MODEL_ID)
+        self._captioner_model, self._captioner_processor = vlm_load(
+            self._CAPTION_MODEL_ID
+        )
+
+    def _unload_captioner(self) -> None:
+        """Free captioner memory when no longer needed."""
+        if getattr(self, "_captioner_model", None) is not None:
+            del self._captioner_model
+            del self._captioner_processor
+            self._captioner_model = None
+            self._captioner_processor = None
+            import gc
+            gc.collect()
+
+    def _format_caption_prompt(self, image_path: str) -> str:
+        """Build a chat-template prompt with vision tokens for captioning."""
+        import os
+        abs_path = os.path.abspath(image_path)
+        messages = [
+            {"role": "user", "content": [
+                {"type": "image", "image": f"file://{abs_path}"},
+                {"type": "text", "text": self._CAPTION_PROMPT},
+            ]}
+        ]
+        return self._captioner_processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
     def caption_image(self, image_path: str) -> str:
-        """Generate a short text caption for an image for BM25 indexing.
-        
-        Currently returns empty string because:
-        - The embedding model (Qwen3-VL-Embedding-2B) cannot generate text
-        - The reranker model (Qwen3-VL-Reranker-2B) is trained for yes/no,
-          not captioning — it produces degenerate output
-        - The previous descriptor-matching fallback (12 hardcoded labels +
-          cosine similarity) produced captions too generic for BM25 to use
-          (e.g., "Image appears to show a screenshot of software, code, or UI")
-        
-        TODO (REC-129): Load a dedicated captioning model (e.g.,
-        Qwen2.5-VL-3B-Instruct-4bit) for real image descriptions.
+        """Generate a one-sentence image caption using Qwen3-VL-2B-Instruct.
+
+        The captioning model is loaded lazily on first use and kept in memory
+        for the duration of the ingest batch.  Call _unload_captioner() after
+        batch completion to reclaim ~1.5 GB.
         """
-        return ""
+        try:
+            self._load_captioner()
+            from mlx_vlm import generate as vlm_generate
+
+            prompt = self._format_caption_prompt(image_path)
+            output = vlm_generate(
+                self._captioner_model,
+                self._captioner_processor,
+                prompt=prompt,
+                image=[image_path],
+                max_tokens=self._CAPTION_MAX_TOKENS,
+            )
+            text = output.text if hasattr(output, "text") else str(output)
+            caption = re.sub(r"\s+", " ", text).strip()
+            logger.debug(
+                "caption_image path=%s caption_len=%d caption=%s",
+                image_path, len(caption), caption[:100],
+            )
+            return caption[:512]  # Safety cap for BM25 field length
+        except Exception as exc:
+            logger.warning("caption_image failed for %s: %s", image_path, exc)
+            return ""
 
     def describe_image(self, image_path: str) -> str:
         """Backward-compatible alias for caption_image."""
         return self.caption_image(image_path)
 
     def describe_video(self, video_path: str, frame_paths: Optional[List[str]] = None) -> str:
-        """Generate a text description for a video for BM25 indexing.
-        
-        Currently returns empty string — same limitation as caption_image().
-        See REC-129 for dedicated captioning model support.
-        """
-        return ""
-        primary = top_phrases[0]
-        secondary = top_phrases[1] if len(top_phrases) > 1 else None
+        """Describe a video by captioning its keyframes.
 
-        caption = f"Video content appears to show {primary}."
-        if secondary and secondary != primary:
-            caption += f" Additional scenes may resemble {secondary}."
-        return re.sub(r"\s+", " ", caption).strip()
+        Generates captions for up to 3 keyframes and merges them.
+        Falls back to empty string if no frames are available.
+        """
+        if not frame_paths:
+            return ""
+
+        parts: List[str] = []
+        for frame_path in frame_paths[:3]:
+            try:
+                caption = self.caption_image(frame_path)
+                if caption:
+                    parts.append(caption)
+            except Exception:
+                continue
+
+        return " ".join(parts).strip()[:420] if parts else ""
 
     def embed_videos(self, video_paths: List[str]) -> np.ndarray:
         """
