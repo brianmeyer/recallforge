@@ -1631,6 +1631,7 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
     server, backend, storage = await _initialize_runtime(mode=mode)
     _server = server
     _http_start_time = time.time()
+    active_mode = backend.get_mode()
 
     sse = SseServerTransport("/messages/")
 
@@ -1641,7 +1642,7 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
             uptime = int(max(0, time.time() - _http_start_time))
         embedder_ok = bool(info.embedder_loaded)
         reranker_ok = bool(getattr(info, "reranker_loaded", False))
-        is_hybrid = resolved_mode == "hybrid"
+        is_hybrid = active_mode == "hybrid"
         all_loaded = embedder_ok and (not is_hybrid or reranker_ok)
         return JSONResponse(
             {

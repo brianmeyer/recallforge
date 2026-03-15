@@ -243,6 +243,9 @@ for r in results:
 | `RECALLFORGE_MLX_QUANTIZE` | `4bit` | `4bit`, `bf16` |
 | `RECALLFORGE_STORE_PATH` | `~/.recallforge` | Storage directory |
 
+Full reference (including advanced tuning and server/storage internals):
+[`docs/ENV_VARS.md`](docs/ENV_VARS.md)
+
 ## Project structure
 
 ```
