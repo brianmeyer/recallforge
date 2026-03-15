@@ -152,27 +152,10 @@ class ModelBackend(ABC):
     # Mode support: which models are active
     # Modes: embed (embedder only), hybrid (embedder + reranker)
     
-    _mode: str = "hybrid"  # Default to hybrid mode (backward compat: "full" falls back to "hybrid")
+    _mode: str = "hybrid"
     
     def set_mode(self, mode: str) -> None:
-        """
-        Set the search mode (tiered model loading).
-        
-        Args:
-            mode: One of 'embed', 'hybrid'
-                  Note: 'full' is deprecated and falls back to 'hybrid' with a warning.
-        """
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        if mode == "full":
-            # Backward compatibility: "full" falls back to "hybrid"
-            logger.warning(
-                "[RecallForge] Mode 'full' is deprecated (query expander removed). "
-                "Falling back to 'hybrid'. See REC-108 for details."
-            )
-            mode = "hybrid"
-        
+        """Set the search mode. Modes: embed (vector+BM25), hybrid (+reranker)."""
         if mode not in ("embed", "hybrid"):
             raise ValueError(f"Invalid mode: {mode}. Must be 'embed' or 'hybrid'")
         self._mode = mode

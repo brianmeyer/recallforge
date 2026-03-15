@@ -271,7 +271,7 @@ def run_full_benchmark(
         output_dir: Directory for results
     """
     backends = backends or ["torch"]
-    modes = modes or ["embed", "hybrid", "full"]
+    modes = modes or ["embed", "hybrid"]
     quantizations = quantizations or ["bf16"]
     
     # Create test data
@@ -402,8 +402,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--modes",
         nargs="+",
-        default=["embed", "hybrid", "full"],
-        choices=["embed", "hybrid", "full"],
+        default=["embed", "hybrid"],
+        choices=["embed", "hybrid"],
         help="Modes to benchmark",
     )
     parser.add_argument(

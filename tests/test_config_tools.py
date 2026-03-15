@@ -175,15 +175,15 @@ class TestHandleSetConfig(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertEqual(data["mode"], "hybrid")
 
-    async def test_set_mode_full_deprecated_falls_back_to_hybrid(self):
-        """'full' mode is deprecated and falls back to 'hybrid' with a warning."""
+    async def test_set_mode_full_rejected(self):
+        """'full' mode was removed — should be rejected as invalid."""
         backend = _make_backend()
         storage = _make_storage()
         cfg = _mutable_config()
         result = await _handle_set_config({"mode": "full"}, backend, storage, cfg)
         data = json.loads(result[0].text)
-        self.assertEqual(data["mode"], "hybrid")
-        backend.set_mode.assert_called_once_with("hybrid")
+        self.assertTrue(data.get("error"))
+        self.assertEqual(data["code"], "INVALID_INPUT")
 
     async def test_set_mode_invalid(self):
         backend = _make_backend()
@@ -412,7 +412,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("max_file_size_mb", schema["properties"])
         # mode is an enum
         self.assertIn("enum", schema["properties"]["mode"])
-        self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid", "full"])
+        self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid"])
 
     async def test_get_config_via_server_call(self):
         """Integration: get_config round-trip through create_server closure."""

@@ -131,12 +131,11 @@ class TestTieredModes(unittest.TestCase):
         backend.set_mode("hybrid")
         self.assertEqual(backend.get_mode(), "hybrid")
 
-    def test_set_mode_full_deprecated_falls_back_to_hybrid(self):
-        """'full' mode is deprecated and should fall back to 'hybrid'."""
+    def test_set_mode_full_raises(self):
+        """'full' mode was removed — should raise ValueError."""
         backend = StubBackend()
-        # Should not raise, should log warning and fall back
-        backend.set_mode("full")
-        self.assertEqual(backend.get_mode(), "hybrid")
+        with self.assertRaises(ValueError):
+            backend.set_mode("full")
 
     def test_set_invalid_mode_raises(self):
         backend = StubBackend()

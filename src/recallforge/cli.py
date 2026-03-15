@@ -38,9 +38,9 @@ def main():
     serve_parser = subparsers.add_parser("serve", help="Start MCP server")
     serve_parser.add_argument(
         "--mode", "-m",
-        choices=["embed", "hybrid", "full"],
+        choices=["embed", "hybrid"],
         default=None,
-        help="Search mode (default: from RECALLFORGE_MODE env). 'full' is deprecated and falls back to 'hybrid'.",
+        help="Search mode (default: from RECALLFORGE_MODE env)",
     )
     serve_parser.add_argument(
         "--backend", "-b",
@@ -116,9 +116,9 @@ def main():
     )
     search_parser.add_argument(
         "--mode", "-m",
-        choices=["embed", "hybrid", "full"],
+        choices=["embed", "hybrid"],
         default=None,
-        help="Search mode. 'full' is deprecated and falls back to 'hybrid'.",
+        help="Search mode",
     )
     search_parser.add_argument(
         "--intent",

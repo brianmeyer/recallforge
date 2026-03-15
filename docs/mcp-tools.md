@@ -6,7 +6,7 @@ RecallForge exposes a local Model Context Protocol (MCP) server over stdio for m
 Start the server:
 
 ```bash
-recallforge serve --mode full
+recallforge serve --mode hybrid
 ```
 
 Example MCP client config (Claude Desktop):
@@ -16,7 +16,7 @@ Example MCP client config (Claude Desktop):
   "mcpServers": {
     "recallforge": {
       "command": "recallforge",
-      "args": ["serve", "--mode", "full"]
+      "args": ["serve", "--mode", "hybrid"]
     }
   }
 }
@@ -52,7 +52,7 @@ Example MCP client config (Claude Desktop):
 
 ## search
 
-**Description:** Full hybrid search combining BM25, vector search, query expansion (in `full` mode), and reranking (in `hybrid`/`full`).
+**Description:** Full hybrid search combining BM25, vector search, and reranking (in `hybrid` mode).
 
 **Parameters:**
 | Name | Type | Required | Default | Description |
@@ -85,7 +85,7 @@ Example MCP client config (Claude Desktop):
   "query": "whiteboard diagram from last meeting",
   "image_path": null,
   "video_path": null,
-  "mode": "full",
+  "mode": "hybrid",
   "count": 1,
   "results": [
     {
@@ -527,7 +527,7 @@ Example MCP client config (Claude Desktop):
     "expander_loaded": true,
     "memory_gb": 1.9,
     "quantization": "4bit",
-    "mode": "full"
+    "mode": "hybrid"
   },
   "database": {
     "embeddings_count": 1024,
@@ -710,7 +710,7 @@ Operation object schema:
 {
   "version": "0.1.0",
   "backend": "mlx",
-  "mode": "full",
+  "mode": "hybrid",
   "quantize": "4bit",
   "data_dir": "/Users/me/.recallforge",
   "collection": "default",
@@ -732,7 +732,7 @@ Operation object schema:
 **Parameters:**
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| mode | string (`embed`\|`hybrid`\|`full`) | No | current mode | Search mode |
+| mode | string (`embed`\|`hybrid`) | No | current mode | Search mode |
 | collection | string | No | current default collection | Default collection for tools that omit `collection` |
 | max_file_size_mb | number | No | current max | Default ingest file-size limit (must be >= 1) |
 

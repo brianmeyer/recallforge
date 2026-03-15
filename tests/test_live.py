@@ -131,14 +131,10 @@ class TestTorchBackendLive:
         print(f"Rerank scores: {scores}")
     
     @pytest.mark.live
-    def test_full_mode_deprecated(self, backend):
-        """Test that setting mode='full' falls back to 'hybrid' with warning."""
-        import warnings
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+    def test_full_mode_rejected(self, backend):
+        """Test that setting mode='full' raises ValueError."""
+        with pytest.raises(ValueError):
             backend.set_mode("full")
-            assert len(w) == 1
-            assert "deprecated" in str(w[0].message).lower()
     
     @pytest.mark.live
     def test_backend_info(self, backend):

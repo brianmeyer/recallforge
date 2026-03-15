@@ -403,7 +403,7 @@ class TorchBackend(ModelBackend):
             return []
         
         if not self.needs_reranker():
-            # Hybrid/full mode not active, return neutral scores
+            # Hybrid mode not active, return neutral scores
             return [0.5] * len(documents)
         
         self._load_reranker()
@@ -477,16 +477,6 @@ class TorchBackend(ModelBackend):
     
     def set_mode(self, mode: str) -> None:
         """Set the search mode."""
-        if mode == "full":
-            import warnings
-            warnings.warn(
-                "Mode 'full' is deprecated (query expander removed). "
-                "Falling back to 'hybrid'. See REC-108 for details.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            mode = "hybrid"
-        
         if mode not in ("embed", "hybrid"):
             raise ValueError(f"Invalid mode: {mode}. Must be 'embed' or 'hybrid'")
         self._mode = mode

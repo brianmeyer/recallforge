@@ -137,12 +137,8 @@ async def create_server(
         backend.set_mode(mode)
 
     # Mutable runtime config — safe to change without restart
-    _raw_mode = mode or os.environ.get("RECALLFORGE_MODE", "hybrid")
-    # Normalize deprecated "full" mode at startup
-    if _raw_mode == "full":
-        _raw_mode = "hybrid"
     _mutable_config: dict = {
-        "mode": _raw_mode,
+        "mode": mode or os.environ.get("RECALLFORGE_MODE", "hybrid"),
         "collection": "default",
         "max_file_size_mb": 100,
     }
@@ -416,8 +412,8 @@ async def create_server(
                     "properties": {
                         "mode": {
                             "type": "string",
-                            "enum": ["embed", "hybrid", "full"],
-                            "description": "Search mode: embed (vector only), hybrid (vector + rerank). 'full' is deprecated and falls back to 'hybrid'.",
+                            "enum": ["embed", "hybrid"],
+                            "description": "Search mode: embed (vector only), hybrid (vector + rerank)",
                         },
                         "collection": {
                             "type": "string",
@@ -1069,15 +1065,6 @@ async def _handle_set_config(
     # Apply validated changes
     if "mode" in arguments:
         mode_val = arguments["mode"]
-        # Handle deprecated "full" mode with backward compatibility
-        if mode_val == "full":
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(
-                "[RecallForge] Mode 'full' is deprecated (query expander removed). "
-                "Falling back to 'hybrid'. See REC-108 for details."
-            )
-            mode_val = "hybrid"
         if mode_val not in ("embed", "hybrid"):
             return _error_response(
                 "INVALID_INPUT",
