@@ -1,18 +1,26 @@
 [project]
 name = "recallforge"
-version = "0.1.2"
-description = "RecallForge - Cross-Modal Vision-Language Search Engine"
-authors = [{name = "Brian Meyer"}]
+version = "0.2.0"
+description = "Local multimodal memory for AI agents — cross-modal vision-language search"
+authors = [{name = "Brian Meyer", email = "brian@recallforge.dev"}]
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12,<3.15"
 license = {text = "MIT"}
-keywords = ["search", "semantic", "embedding", "vision-language", "cross-modal"]
+keywords = [
+    "search", "semantic", "embedding", "vision-language", "cross-modal",
+    "mcp", "agent-memory", "local-first", "multimodal", "retrieval",
+    "rag", "vector-search", "reranking", "mlx", "apple-silicon",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+    "Typing :: Typed",
 ]
 
 dependencies = [
