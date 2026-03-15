@@ -18,7 +18,8 @@ import concurrent.futures
 import json
 import logging
 import os
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import List, Dict, Any, Optional
 
@@ -28,6 +29,67 @@ from .storage.base import StorageBackend, SearchResult
 
 logger = logging.getLogger(__name__)
 
+
+def _log_stage_metrics(
+    stage: str,
+    results: List[Any],
+    start_time: Optional[float] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Emit structured per-stage metrics for observability.
+
+    Args:
+        stage: Name of the pipeline stage (bm25, vector, rrf, reranker, blend)
+        results: List of results (SearchResult or HybridResult)
+        start_time: Optional start time for latency calculation
+        extra: Optional extra fields to include in log
+    """
+    # Calculate latency if start_time provided
+    latency_ms = 0.0
+    if start_time is not None:
+        latency_ms = (time.perf_counter() - start_time) * 1000
+
+    # Count candidates by content_type
+    total_count = len(results)
+    counts_by_type: Dict[str, int] = {}
+    scores_by_type: Dict[str, List[float]] = {}
+
+    for r in results:
+        # Handle both SearchResult and HybridResult
+        content_type = getattr(r, 'content_type', 'unknown')
+        score = getattr(r, 'score', 0.0)
+
+        counts_by_type[content_type] = counts_by_type.get(content_type, 0) + 1
+        if content_type not in scores_by_type:
+            scores_by_type[content_type] = []
+        scores_by_type[content_type].append(score)
+
+    # Build log message with key=value format
+    log_parts = [
+        f"stage={stage}",
+        f"candidate_count={total_count}",
+        f"latency_ms={latency_ms:.2f}",
+    ]
+
+    # Add per-content-type counts
+    for ct, count in sorted(counts_by_type.items()):
+        log_parts.append(f"count_{ct}={count}")
+
+    # Add per-content-type score stats
+    for ct, scores in sorted(scores_by_type.items()):
+        if scores:
+            log_parts.append(f"score_min_{ct}={min(scores):.4f}")
+            log_parts.append(f"score_max_{ct}={max(scores):.4f}")
+            log_parts.append(f"score_mean_{ct}={sum(scores)/len(scores):.4f}")
+
+    # Add extra fields
+    if extra:
+        for key, value in extra.items():
+            log_parts.append(f"{key}={value}")
+
+    logger.debug("stage_metrics " + " ".join(log_parts))
+
+
 # Intent-to-weight mappings for RRF fusion
 # Each intent maps source names to weight multipliers
 INTENT_WEIGHTS: Dict[str, Dict[str, float]] = {
@@ -35,6 +97,30 @@ INTENT_WEIGHTS: Dict[str, Dict[str, float]] = {
     "semantic": {"original_fts": 0.8, "original_vec": 2.5},
     "broad": {"original_fts": 1.0, "original_vec": 1.0},
 }
+
+
+@dataclass
+class SearchAudit:
+    """Per-result audit trail capturing all scoring provenance.
+
+    This dataclass stores detailed information about how a result was scored
+    through the pipeline, enabling post-hoc analysis and debugging.
+    """
+    # Result identification
+    filepath: str
+    content_type: str
+
+    # RRF provenance
+    rrf_sources: Dict[str, int] = field(default_factory=dict)  # source_name -> rank
+
+    # Reranker provenance
+    reranker_raw_score: float = 0.5
+    reranker_normalized_score: float = 0.5
+    reranker_scoring_path: str = "unknown"  # text_derived, text_direct_logits, vl_image, vl_video, fallback_text
+
+    # Blend provenance
+    blend_weights: Dict[str, float] = field(default_factory=dict)  # rrf_weight, rerank_weight
+    final_blended_score: float = 0.0
 
 
 @dataclass
@@ -54,6 +140,7 @@ class HybridResult:
     rrf_rank: int  # Position in RRF output
     rerank_score: float  # Reranker score
     source: str  # Sources that contributed to this result
+    audit: Optional[SearchAudit] = None  # Per-result audit trail
 
 
 # Visual query indicators - phrases that suggest visual content
@@ -279,7 +366,8 @@ class HybridSearcher:
 
     def _bm25_probe(self, query: str) -> List[SearchResult]:
         """Run initial BM25 probe."""
-        return self.storage.search_fts(
+        t0 = time.perf_counter()
+        results = self.storage.search_fts(
             query,
             limit=self.fts_probe_limit,
             collection=self.collection,
@@ -289,9 +377,12 @@ class HybridSearcher:
             project_id=self.project_id,
             profile=self.profile,
         )
+        _log_stage_metrics("bm25", results, start_time=t0)
+        return results
 
     def _vector_search(self, query: str) -> List[SearchResult]:
         """Run vector search."""
+        t0 = time.perf_counter()
         cache_key = self.cache.make_key("text", query)
         vector = self.cache.get(cache_key)
         if vector is not None:
@@ -299,7 +390,7 @@ class HybridSearcher:
         else:
             vector = self.backend.embed_text(query)
             self.cache.put(cache_key, vector)
-        return self.storage.search_vec(
+        results = self.storage.search_vec(
             vector.tolist() if hasattr(vector, 'tolist') else list(vector),
             limit=self.fts_probe_limit,
             collection=self.collection,
@@ -309,6 +400,8 @@ class HybridSearcher:
             project_id=self.project_id,
             profile=self.profile,
         )
+        _log_stage_metrics("vector", results, start_time=t0)
+        return results
 
     def _embed_image_cached(self, image_path: str):
         """Embed an image with cache lookup keyed by content hash."""
