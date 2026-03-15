@@ -83,6 +83,8 @@ class LanceDBBackend(StorageBackend):
     # FTS rebuild debounce configuration
     FTS_REBUILD_MIN_INTERVAL = 2.0  # Minimum seconds between rebuilds
     FTS_REBUILD_PENDING_THRESHOLD = 10  # Rebuild after this many pending writes
+    BULK_FLUSH_DOCS_THRESHOLD = max(1, int(os.environ.get("RECALLFORGE_BULK_FLUSH_DOCS", "75")))
+    BULK_FLUSH_EMBEDDINGS_THRESHOLD = max(1, int(os.environ.get("RECALLFORGE_BULK_FLUSH_EMBEDDINGS", "600")))
     
     def __init__(self, store_path: Optional[str] = None):
         """
@@ -103,6 +105,10 @@ class LanceDBBackend(StorageBackend):
         self._fts_last_rebuild = 0.0
         self._fts_needs_rebuild = False
         self._bulk_mode = False  # When True, defer all FTS rebuilds until bulk ends
+        self._pending_documents: Dict[str, Dict[str, Any]] = {}
+        self._pending_content: Dict[str, Dict[str, Any]] = {}
+        self._pending_embeddings: Dict[str, Dict[str, Any]] = {}
+        self._pending_embedding_deletes: set[str] = set()
         self._bm25_fallback_max_rows = max(
             100,
             int(os.environ.get("RECALLFORGE_BM25_FALLBACK_MAX_ROWS", "5000")),
@@ -259,6 +265,9 @@ class LanceDBBackend(StorageBackend):
 
     def close(self) -> None:
         """Close the database connection."""
+        # Flush pending buffered writes before rebuilding FTS.
+        self._flush_pending_writes(force=True)
+
         # Flush any pending FTS rebuild before closing
         if self._fts_needs_rebuild or self._fts_rebuild_pending > 0:
             self._fts.do_fts_rebuild()
@@ -383,6 +392,57 @@ class LanceDBBackend(StorageBackend):
         except Exception as e:
             logger.warning(f"_ensure_indices: failed to create cache index: {e}")
     
+    def _ensure_bulk_buffers(self) -> None:
+        """Initialize bulk-write buffers for tests that construct via __new__."""
+        if not hasattr(self, "_pending_documents") or self._pending_documents is None:
+            self._pending_documents = {}
+        if not hasattr(self, "_pending_content") or self._pending_content is None:
+            self._pending_content = {}
+        if not hasattr(self, "_pending_embeddings") or self._pending_embeddings is None:
+            self._pending_embeddings = {}
+        if not hasattr(self, "_pending_embedding_deletes") or self._pending_embedding_deletes is None:
+            self._pending_embedding_deletes = set()
+
+    def _flush_pending_writes(self, force: bool = False) -> None:
+        """Flush buffered bulk writes to LanceDB in large Arrow batches."""
+        self._ensure_bulk_buffers()
+
+        should_flush = force
+        if not should_flush:
+            should_flush = (
+                len(self._pending_documents) >= self.BULK_FLUSH_DOCS_THRESHOLD
+                or len(self._pending_content) >= self.BULK_FLUSH_DOCS_THRESHOLD
+                or len(self._pending_embeddings) >= self.BULK_FLUSH_EMBEDDINGS_THRESHOLD
+            )
+        if not should_flush:
+            return
+
+        if self._pending_embedding_deletes:
+            expr = " OR ".join(
+                _safe_filter("hash_seq", hash_seq)
+                for hash_seq in sorted(self._pending_embedding_deletes)
+            )
+            self._embeddings_table.delete(expr)
+            self._pending_embedding_deletes.clear()
+
+        if self._pending_content:
+            rows = list(self._pending_content.values())
+            self._content_table.add(pa.Table.from_pylist(rows, schema=self._build_content_schema()))
+            self._pending_content.clear()
+
+        if self._pending_documents:
+            rows = list(self._pending_documents.values())
+            if rows:
+                delete_expr = " OR ".join(_safe_filter("id", row["id"]) for row in rows)
+                self._documents_table.delete(delete_expr)
+                self._documents_table.add(pa.Table.from_pylist(rows, schema=self._build_documents_schema()))
+            self._pending_documents.clear()
+
+        if self._pending_embeddings:
+            rows = list(self._pending_embeddings.values())
+            self._embeddings_table.add(pa.Table.from_pylist(rows, schema=self._build_embeddings_schema()))
+            self._pending_embeddings.clear()
+
     # =========================================================================
     # Document Operations
     # =========================================================================
@@ -417,36 +477,37 @@ class LanceDBBackend(StorageBackend):
         if profile is not None:
             ns_filter += f" AND {_safe_filter('profile', profile)}"
 
-        # Check for existing
-        try:
-            existing = list(self._documents_table.search()
-                .where(ns_filter)
-                .limit(1)
-                .to_list())
+        self._ensure_bulk_buffers()
 
-            if len(existing) > 0:
-                doc_id = existing[0]["id"]
-                self._documents_table.update(
-                    where=_safe_filter("id", doc_id),
-                    values={
-                        "title": title,
-                        "content_hash": content_hash,
-                        "content_type": content_type,
-                        "active": 1,
-                        "updated_at": modified_ts,
-                        "user_id": user_id,
-                        "session_id": session_id,
-                        "project_id": project_id,
-                        "profile": profile,
-                    }
-                )
-                return doc_id
-        except Exception as e:
-            logger.warning(f"insert_document: failed to check existing doc {collection}/{file_path}: {e}")
+        # Check for existing (including staged bulk rows)
+        existing_row = None
+        if self._bulk_mode:
+            for row in self._pending_documents.values():
+                if (
+                    row["collection"] == collection
+                    and row["file_path"] == file_path
+                    and row.get("user_id") == user_id
+                    and row.get("session_id") == session_id
+                    and row.get("project_id") == project_id
+                    and row.get("profile") == profile
+                ):
+                    existing_row = row
+                    break
 
-        # Insert new
-        doc_id = str(uuid.uuid4())
-        self._documents_table.add([{
+        if existing_row is None:
+            try:
+                existing = list(self._documents_table.search()
+                    .where(ns_filter)
+                    .limit(1)
+                    .to_list())
+                if len(existing) > 0:
+                    existing_row = existing[0]
+            except Exception as e:
+                logger.warning(f"insert_document: failed to check existing doc {collection}/{file_path}: {e}")
+
+        doc_id = existing_row["id"] if existing_row else str(uuid.uuid4())
+        created_value = existing_row.get("created_at", created_ts) if existing_row else created_ts
+        row = {
             "id": doc_id,
             "collection": collection,
             "file_path": file_path,
@@ -454,13 +515,20 @@ class LanceDBBackend(StorageBackend):
             "content_hash": content_hash,
             "content_type": content_type,
             "active": 1,
-            "created_at": created_ts,
+            "created_at": created_value,
             "updated_at": modified_ts,
             "user_id": user_id,
             "session_id": session_id,
             "project_id": project_id,
             "profile": profile,
-        }])
+        }
+
+        if self._bulk_mode:
+            self._pending_documents[doc_id] = row
+            self._flush_pending_writes(force=False)
+        else:
+            self._documents_table.delete(_safe_filter("id", doc_id))
+            self._documents_table.add(pa.Table.from_pylist([row], schema=self._build_documents_schema()))
 
         return doc_id
     
@@ -504,6 +572,11 @@ class LanceDBBackend(StorageBackend):
     
     def insert_content(self, hash_str: str, content: str, content_type: str = "text") -> None:
         """Store content by hash."""
+        self._ensure_bulk_buffers()
+
+        if hash_str in self._pending_content:
+            return
+
         try:
             existing = list(self._content_table.search()
                 .where(_safe_filter("hash", hash_str))
@@ -513,13 +586,18 @@ class LanceDBBackend(StorageBackend):
                 return
         except Exception as e:
             logger.warning(f"insert_content: failed to check existing hash {hash_str[:8]}: {e}")
-        
-        self._content_table.add([{
+
+        row = {
             "hash": hash_str,
             "doc": content,
             "content_type": content_type,
             "created_at": int(time.time() * 1000),
-        }])
+        }
+        if self._bulk_mode:
+            self._pending_content[hash_str] = row
+            self._flush_pending_writes(force=False)
+        else:
+            self._content_table.add(pa.Table.from_pylist([row], schema=self._build_content_schema()))
     
     def get_content(self, hash_str: str) -> Optional[str]:
         """Retrieve content by hash."""
@@ -574,17 +652,22 @@ class LanceDBBackend(StorageBackend):
             import json
             tags_json = json.dumps(tags)
 
-        # Delete existing
-        try:
-            self._embeddings_table.delete(_safe_filter("hash_seq", hash_seq))
-        except Exception as e:
-            logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
+        self._ensure_bulk_buffers()
+
+        if self._bulk_mode:
+            self._pending_embedding_deletes.add(hash_seq)
+        else:
+            # Delete existing
+            try:
+                self._embeddings_table.delete(_safe_filter("hash_seq", hash_seq))
+            except Exception as e:
+                logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
 
         trace_log("insert_embedding", hash_seq=hash_seq, collection=collection, file_path=file_path, seq=seq,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
                   importance=importance, ttl_seconds=ttl_seconds, tags=tags)
 
-        self._embeddings_table.add([{
+        row = {
             "hash_seq": hash_seq,
             "content_hash": content_hash,
             "collection": collection,
@@ -605,7 +688,13 @@ class LanceDBBackend(StorageBackend):
             "ttl_seconds": ttl_seconds,
             "tags": tags_json,
             "expires_at": expires_at,
-        }])
+        }
+
+        if self._bulk_mode:
+            self._pending_embeddings[hash_seq] = row
+            self._flush_pending_writes(force=False)
+        else:
+            self._embeddings_table.add(pa.Table.from_pylist([row], schema=self._build_embeddings_schema()))
     
     def has_vectors(self) -> bool:
         """Check if index has any vectors."""

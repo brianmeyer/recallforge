@@ -24,6 +24,11 @@ class _BulkModeContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._backend._bulk_mode = self._was_in_bulk
+
+        # Flush batched writes once when leaving outermost bulk mode.
+        if not self._was_in_bulk:
+            self._backend._flush_pending_writes(force=True)
+
         trace_log("bulk_mode_exit", needs_rebuild=self._backend._fts_needs_rebuild)
 
         # Trigger a single rebuild at the end of bulk mode if needed
