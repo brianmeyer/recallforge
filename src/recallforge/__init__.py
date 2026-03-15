@@ -68,6 +68,7 @@ def get_backend():
             "[RecallForge] Mode 'full' is deprecated (query expander removed). "
             "Falling back to 'hybrid'. See REC-108 for details.",
             DeprecationWarning,
+            stacklevel=2,
         )
         mode = "hybrid"
     
