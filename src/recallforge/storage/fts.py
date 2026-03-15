@@ -2,6 +2,8 @@
 
 import time
 
+from .lancedb_shared import logger, trace_log
+
 
 class _BulkModeContext:
     """Context manager for bulk mode FTS rebuild deferral."""
