@@ -1644,6 +1644,7 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
         reranker_ok = bool(getattr(info, "reranker_loaded", False))
         is_hybrid = active_mode == "hybrid"
         all_loaded = embedder_ok and (not is_hybrid or reranker_ok)
+        model_ids = backend.get_model_ids() if hasattr(backend, "get_model_ids") else {}
         return JSONResponse(
             {
                 "status": "ok" if all_loaded else "degraded",
@@ -1651,6 +1652,7 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
                 "embedder_loaded": embedder_ok,
                 "reranker_loaded": reranker_ok,
                 "uptime_seconds": uptime,
+                **{f"{k}_model": v for k, v in model_ids.items()},
             },
             status_code=200 if all_loaded else 503,
         )
