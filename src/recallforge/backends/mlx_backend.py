@@ -101,6 +101,13 @@ class MLXBackend(ModelBackend):
     # Captioning descriptors removed — they produced captions too generic for BM25.
     # See REC-129 for dedicated captioning model support.
 
+    # Default model IDs (can be overridden via env vars or set_config)
+    _DEFAULT_EMBEDDER_MODEL_4BIT = "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit"
+    _DEFAULT_EMBEDDER_MODEL_BF16 = "arthurcollet/Qwen3-VL-Embedding-2B-mlx"
+    _DEFAULT_RERANKER_MODEL_4BIT = "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit"
+    _DEFAULT_RERANKER_MODEL_BF16 = "arthurcollet/Qwen3-VL-Reranker-2B-mlx"
+    _DEFAULT_CAPTION_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
+
     def __init__(
         self,
         mode: str = "hybrid",
@@ -137,13 +144,24 @@ class MLXBackend(ModelBackend):
         self._captioner_model = None
         self._captioner_processor = None
 
-        # Model IDs based on quantization
+        # Model IDs - configurable via env vars (REC-116)
+        # Priority: env var > default
         if quantization == "4bit":
-            self.EMBEDDER_MODEL = "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit"
-            self.RERANKER_MODEL = "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit"
+            default_embedder = self._DEFAULT_EMBEDDER_MODEL_4BIT
+            default_reranker = self._DEFAULT_RERANKER_MODEL_4BIT
         else:
-            self.EMBEDDER_MODEL = "arthurcollet/Qwen3-VL-Embedding-2B-mlx"
-            self.RERANKER_MODEL = "arthurcollet/Qwen3-VL-Reranker-2B-mlx"
+            default_embedder = self._DEFAULT_EMBEDDER_MODEL_BF16
+            default_reranker = self._DEFAULT_RERANKER_MODEL_BF16
+
+        self.EMBEDDER_MODEL = os.environ.get(
+            "RECALLFORGE_EMBEDDER_MODEL", default_embedder
+        )
+        self.RERANKER_MODEL = os.environ.get(
+            "RECALLFORGE_RERANKER_MODEL", default_reranker
+        )
+        self.CAPTION_MODEL = os.environ.get(
+            "RECALLFORGE_CAPTIONER_MODEL", self._DEFAULT_CAPTION_MODEL
+        )
 
     # =========================================================================
     # Embedder
@@ -612,21 +630,7 @@ class MLXBackend(ModelBackend):
         """Embed a single video."""
         return self.embed_videos([video_path])[0]
 
-    # ── Captioning & Generation ─────────────────────────────────────────
-    # Uses Qwen3.5-0.8B (natively multimodal, early-fusion architecture)
-    # loaded lazily and separately from the embedding/reranker models.
-    # Qwen3.5 has vision built into the base model — no separate VL variant
-    # needed.  At 4-bit, it's ~596MB on disk / ~0.9GB in memory.
-    #
-    # This model handles BOTH image captioning and query expansion,
-    # replacing the previous Qwen3-VL-2B-Instruct captioner (1.7GB) and
-    # the rule-based query expander.
-    #
-    # Key: mlx_vlm.generate() needs the prompt formatted via the chat
-    # template with {"type":"image"} content blocks so that vision tokens
-    # are injected.  Raw text strings skip vision token injection and crash.
-
-    _CAPTION_MODEL_ID = "mlx-community/Qwen3.5-0.8B-4bit"
+    # Captioning & Generation configuration
     _CAPTION_MAX_TOKENS = 60
     _CAPTION_PROMPT = "Describe this image in one concise sentence for search indexing. No thinking."
 
@@ -636,9 +640,9 @@ class MLXBackend(ModelBackend):
             return
         from mlx_vlm import load as vlm_load
 
-        logger.debug("captioner_load model=%s", self._CAPTION_MODEL_ID)
+        logger.debug("captioner_load model=%s", self.CAPTION_MODEL)
         self._captioner_model, self._captioner_processor = vlm_load(
-            self._CAPTION_MODEL_ID
+            self.CAPTION_MODEL
         )
 
     def _unload_captioner(self) -> None:
@@ -1429,3 +1433,64 @@ class MLXBackend(ModelBackend):
     def get_mode(self) -> str:
         """Get current search mode."""
         return self._mode
+
+    def get_model_ids(self) -> Dict[str, str]:
+        """Return current model IDs for embedder, reranker, and captioner."""
+        return {
+            "embedder_model": self.EMBEDDER_MODEL,
+            "reranker_model": self.RERANKER_MODEL,
+            "captioner_model": self.CAPTION_MODEL,
+        }
+
+    def set_model_ids(
+        self,
+        embedder_model: Optional[str] = None,
+        reranker_model: Optional[str] = None,
+        captioner_model: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """
+        Update model IDs and unload cached models so they reload on next use.
+
+        Args:
+            embedder_model: New embedder model ID (optional)
+            reranker_model: New reranker model ID (optional)
+            captioner_model: New captioner model ID (optional)
+
+        Returns:
+            Dict with the updated model IDs
+        """
+        changed = []
+        if embedder_model is not None and embedder_model != self.EMBEDDER_MODEL:
+            self.EMBEDDER_MODEL = embedder_model
+            self._embedder_model = None
+            self._embedder_processor = None
+            self._embedder_num_layers = None
+            self._embed_text_max_tokens = None
+            self._embed_warmed = False
+            changed.append("embedder")
+
+        if reranker_model is not None and reranker_model != self.RERANKER_MODEL:
+            self.RERANKER_MODEL = reranker_model
+            self._reranker_model = None
+            self._reranker_processor = None
+            self._reranker_score_linear = None
+            self._reranker_score_weight = None
+            self._reranker_score_bias = None
+            self._reranker_yes_token_id = None
+            self._reranker_no_token_id = None
+            self._reranker_use_direct_logits = False
+            changed.append("reranker")
+
+        if captioner_model is not None and captioner_model != self.CAPTION_MODEL:
+            self.CAPTION_MODEL = captioner_model
+            self._captioner_model = None
+            self._captioner_processor = None
+            changed.append("captioner")
+
+        if changed:
+            logger.info(
+                "[MLXBackend] Model IDs changed: %s. Cached models cleared.",
+                ", ".join(changed)
+            )
+
+        return self.get_model_ids()

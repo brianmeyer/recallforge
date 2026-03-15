@@ -22,7 +22,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from hashlib import sha256
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 from .backends.base import ModelBackend
 from .cache import EmbeddingCache
@@ -185,7 +185,7 @@ def _is_visual_query(query: str) -> bool:
     return bool(_VISUAL_WORD_PATTERN.search(query_lower))
 
 
-def _generate_text_variants(query: str, backend: ModelBackend) -> List[str]:
+def _generate_text_variants(query: str, _backend: ModelBackend) -> List[str]:
     """Generate 1-2 semantic variants of a text query using the VL model.
 
     Uses the backend's text embedding model to generate variations that
@@ -471,7 +471,7 @@ class HybridSearcher:
         }
 
         # Image queries cannot be expressed as text tokens, so BM25 is skipped.
-        # Text-to-image via BM25 works through search() using ingest-time captions (REC-122).
+        # Text-to-image BM25 retrieval still works through search() with ingest-time captions.
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_query = f"image_query:{image_path}"
         rerank_scores, reranker_path = self._rerank_candidates(candidates, rerank_query)
@@ -755,38 +755,6 @@ class HybridSearcher:
             logger.debug("reranker_path path=fallback reason=error")
             _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": "error_fallback"})
             return {c.filepath: 0.5 for c in candidates}, "fallback"
-            return {c.filepath: 0.5 for c in candidates}
-
-        rerank_limit = min(len(candidates), self.rerank_top_k)
-        if rerank_limit <= 0:
-            return {c.filepath: 0.5 for c in candidates}
-
-        candidates_by_rrf = sorted(candidates, key=lambda c: c.score, reverse=True)
-        rerank_candidates = candidates_by_rrf[:rerank_limit]
-        chunks = [self._select_best_chunk(c) for c in rerank_candidates]
-
-        # Determine reranker scoring path
-        has_image = any(c.get('image_path') for c in chunks)
-        has_video = any(c.get('video_path') for c in chunks)
-        if has_image:
-            path = "vl_image"
-        elif has_video:
-            path = "vl_video"
-        else:
-            path = "text"
-
-        try:
-            scores = self.backend.rerank(query, chunks)
-            logger.debug("reranker_path path=%s candidate_count=%d", path, len(rerank_candidates))
-            rerank_scores = {c.filepath: 0.5 for c in candidates}
-            rerank_scores.update({c.filepath: s for c, s in zip(rerank_candidates, scores)})
-            _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": path})
-            return rerank_scores
-        except Exception as e:
-            logger.error("Reranking failed: %s", e)
-            logger.debug("reranker_path path=fallback reason=error")
-            _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": "error_fallback"})
-            return {c.filepath: 0.5 for c in candidates}
     
     def _blend_scores(
         self,

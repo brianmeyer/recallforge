@@ -1160,7 +1160,7 @@ class LanceDBBackend(StorageBackend):
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
-        enable_captioning: bool = True,
+        caption_media: bool = True,
     ) -> str:
         """Index an image file."""
         return self._indexer.index_image(
@@ -1174,7 +1174,7 @@ class LanceDBBackend(StorageBackend):
             session_id=session_id,
             project_id=project_id,
             profile=profile,
-            enable_captioning=enable_captioning,
+            caption_media=caption_media,
         )
 
     def index_video(
@@ -1192,7 +1192,7 @@ class LanceDBBackend(StorageBackend):
         profile: Optional[str] = None,
         frame_interval_seconds: float = 5.0,
         max_frames: int = 8,
-        enable_captioning: bool = True,
+        caption_media: bool = True,
     ) -> Dict[str, Any]:
         """Index a video into a top-level video embedding plus derived assets."""
         return self._indexer.index_video(
@@ -1209,7 +1209,7 @@ class LanceDBBackend(StorageBackend):
             profile=profile,
             frame_interval_seconds=frame_interval_seconds,
             max_frames=max_frames,
-            enable_captioning=enable_captioning,
+            caption_media=caption_media,
         )
 
     def ingest(

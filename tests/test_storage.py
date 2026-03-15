@@ -1158,7 +1158,7 @@ class TestIngestCaptioning(unittest.TestCase):
             path=self.image_path,
             collection="test",
             embed_func=embedder,
-            enable_captioning=True,
+            caption_media=True,
         )
 
         rows = self.backend._embeddings_table.search().where("content_type = 'image'").to_list()
@@ -1171,7 +1171,7 @@ class TestIngestCaptioning(unittest.TestCase):
             path=self.image_path,
             collection="test",
             embed_func=embedder,
-            enable_captioning=True,
+            caption_media=True,
         )
 
         rows = self.backend._embeddings_table.search().where("content_type = 'image'").to_list()
@@ -1202,7 +1202,7 @@ class TestIngestCaptioning(unittest.TestCase):
                 embed_text_func=mock_embed,
                 embed_image_func=embedder,
                 embed_video_func=embedder,
-                enable_captioning=True,
+                caption_media=True,
             )
 
         video_rows = self.backend._embeddings_table.search().where("content_type = 'video'").to_list()

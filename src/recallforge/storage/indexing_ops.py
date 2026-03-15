@@ -736,7 +736,7 @@ class IndexingOps:
                         session_id=session_id,
                         project_id=project_id,
                         profile=profile,
-                        enable_captioning=caption_media,
+                        caption_media=caption_media,
                     )
                     summary["indexed_images"] += 1
                     mark(item_path, "image", "indexed")
@@ -759,7 +759,7 @@ class IndexingOps:
                         session_id=session_id,
                         project_id=project_id,
                         profile=profile,
-                        enable_captioning=caption_media,
+                        caption_media=caption_media,
                     )
                     summary["indexed_videos"] += 1
                     summary["indexed_images"] += video_summary["indexed_frames"]
@@ -920,7 +920,7 @@ class IndexingOps:
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
-        enable_captioning: bool = True,
+        caption_media: bool = True,
     ) -> str:
         """
         Index an image file.
@@ -986,7 +986,7 @@ class IndexingOps:
         )
 
         vector = embed_func(actual_path)
-        image_caption = self._describe_image(embed_func, actual_path, enabled=enable_captioning)
+        image_caption = self._describe_image(embed_func, actual_path, enabled=caption_media)
         self._backend.insert_embedding(
             content_hash=content_hash,
             seq=0,
@@ -1025,7 +1025,7 @@ class IndexingOps:
         profile: Optional[str] = None,
         frame_interval_seconds: float = 5.0,
         max_frames: int = 8,
-        enable_captioning: bool = True,
+        caption_media: bool = True,
     ) -> Dict[str, Any]:
         """Index a video into a top-level video embedding plus derived assets."""
         actual_path = str(Path(path).expanduser().resolve())
@@ -1074,7 +1074,7 @@ class IndexingOps:
             embed_video_func=embed_video_func,
             video_path=actual_path,
             frame_paths=frame_paths,
-            enabled=enable_captioning,
+            enabled=caption_media,
         )
         parts = [part for part in (video_caption, transcript_summary) if part]
         video_body = "\n\n".join(parts)[:4000]
@@ -1143,7 +1143,7 @@ class IndexingOps:
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
-                enable_captioning=enable_captioning,
+                caption_media=caption_media,
             )
             indexed_frames += 1
 

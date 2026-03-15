@@ -47,6 +47,17 @@ def _make_backend(mode="hybrid"):
     b.embed_image.return_value = np.ones(128, dtype=np.float32)
     b.get_info.return_value = _FakeInfo()
     b.set_mode = MagicMock()
+    # REC-116: Model ID methods
+    b.get_model_ids.return_value = {
+        "embedder_model": "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit",
+        "reranker_model": "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit",
+        "captioner_model": "mlx-community/Qwen3.5-0.8B-4bit",
+    }
+    b.set_model_ids = MagicMock(return_value={
+        "embedder_model": "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit",
+        "reranker_model": "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit",
+        "captioner_model": "mlx-community/Qwen3.5-0.8B-4bit",
+    })
     return b
 
 

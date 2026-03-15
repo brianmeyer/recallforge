@@ -473,7 +473,7 @@ async def create_server(
             ),
             Tool(
                 name="set_config",
-                description="Update safe runtime configuration values. Allows changing mode (embed/hybrid) and collection. Does NOT allow changing backend, quantize, or data_dir (those require a server restart).",
+                description="Update safe runtime configuration values. Allows changing mode (embed/hybrid), collection, and model IDs. Does NOT allow changing backend, quantize, or data_dir (those require a server restart).",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -499,6 +499,18 @@ async def create_server(
                         "caption_media": {
                             "type": "boolean",
                             "description": "Enable ingest-time image/video caption generation for BM25 indexing",
+                        },
+                        "embedder_model": {
+                            "type": "string",
+                            "description": "HuggingFace model ID for the embedding model (changing unloads cached model)",
+                        },
+                        "reranker_model": {
+                            "type": "string",
+                            "description": "HuggingFace model ID for the reranker model (changing unloads cached model)",
+                        },
+                        "captioner_model": {
+                            "type": "string",
+                            "description": "HuggingFace model ID for the captioning model (changing unloads cached model)",
                         },
                     },
                 },
@@ -1285,6 +1297,11 @@ async def _handle_get_config(backend, storage, mutable_config: dict) -> list[Tex
     except Exception:
         data_dir = raw_data_dir
 
+    # Get model IDs from backend (REC-116)
+    model_ids = {}
+    if hasattr(backend, "get_model_ids"):
+        model_ids = await _run_blocking(backend.get_model_ids)
+
     config = {
         "version": __version__,
         "backend": info.name,
@@ -1296,6 +1313,12 @@ async def _handle_get_config(backend, storage, mutable_config: dict) -> list[Tex
         "rerank_top_k": mutable_config.get("rerank_top_k", int(os.environ.get("RECALLFORGE_RERANK_TOP_K", "20"))),
         "caption_media": mutable_config.get("caption_media", True),
     }
+    # Add model IDs if available (REC-116)
+    if model_ids:
+        config["embedder_model"] = model_ids.get("embedder_model", "")
+        config["reranker_model"] = model_ids.get("reranker_model", "")
+        config["captioner_model"] = model_ids.get("captioner_model", "")
+
     return [TextContent(type="text", text=json.dumps(config, indent=2))]
 
 
@@ -1307,7 +1330,8 @@ async def _handle_set_config(
 ) -> list[TextContent]:
     """Validate and apply safe runtime configuration changes."""
     _IMMUTABLE = {"backend", "quantize", "data_dir"}
-    _ALLOWED = {"mode", "collection", "max_file_size_mb", "rerank_top_k", "caption_media"}
+    _ALLOWED = {"mode", "collection", "max_file_size_mb", "rerank_top_k", "caption_media",
+                "embedder_model", "reranker_model", "captioner_model"}
 
     # Reject attempts to change immutable fields
     attempted_immutable = set(arguments.keys()) & _IMMUTABLE
@@ -1374,6 +1398,27 @@ async def _handle_set_config(
                 {"provided": caption_media},
             )
         mutable_config["caption_media"] = caption_media
+
+    # Handle model ID changes (REC-116)
+    model_updates = {}
+    for model_key in ("embedder_model", "reranker_model", "captioner_model"):
+        if model_key in arguments:
+            model_val = arguments[model_key]
+            if not isinstance(model_val, str) or not model_val.strip():
+                return _error_response(
+                    "INVALID_INPUT",
+                    f"{model_key} must be a non-empty string",
+                    {"provided": model_val},
+                )
+            model_updates[model_key] = model_val.strip()
+
+    if model_updates and hasattr(backend, "set_model_ids"):
+        await _run_blocking(
+            backend.set_model_ids,
+            embedder_model=model_updates.get("embedder_model"),
+            reranker_model=model_updates.get("reranker_model"),
+            captioner_model=model_updates.get("captioner_model"),
+        )
 
     # Return the updated configuration
     return await _handle_get_config(backend, storage, mutable_config)

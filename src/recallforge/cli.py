@@ -15,7 +15,7 @@ import signal
 import sys
 import threading
 
-from . import __version__, RECALLFORGE_BACKEND, RECALLFORGE_MODE, RECALLFORGE_STORAGE
+from . import __version__
 from .documents import is_document_file
 from .video import is_video_file
 
@@ -569,8 +569,8 @@ def cmd_status(args):
 
 def cmd_collections(args):
     """Manage collections."""
-    from . import get_backend, get_storage
-    
+    from . import get_storage
+
     store_path = args.store_path or os.environ.get("RECALLFORGE_STORE_PATH")
     storage = get_storage(store_path)
     

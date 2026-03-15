@@ -38,6 +38,25 @@ RECALLFORGE_MODE = os.environ.get("RECALLFORGE_MODE", "hybrid")
 RECALLFORGE_MLX_QUANTIZE = os.environ.get("RECALLFORGE_MLX_QUANTIZE", "4bit")
 RECALLFORGE_STORAGE = os.environ.get("RECALLFORGE_STORAGE", "lancedb")
 
+# Central env-var reference used across CLI, server, search, and storage paths.
+# Keep this list in sync with all RECALLFORGE_* lookups in the codebase.
+RECALLFORGE_ENV_VARS = {
+    "RECALLFORGE_BACKEND": "Backend selector: auto | torch | mlx.",
+    "RECALLFORGE_MODE": "Search mode: embed | hybrid.",
+    "RECALLFORGE_MLX_QUANTIZE": "MLX quantization mode: bf16 | 4bit.",
+    "RECALLFORGE_STORAGE": "Storage backend selector (currently lancedb).",
+    "RECALLFORGE_STORE_PATH": "Path to RecallForge data store.",
+    "RECALLFORGE_TRACE": "Enable verbose MCP server trace logging (1=true).",
+    "RECALLFORGE_MCP_MAX_CONCURRENCY": "Maximum concurrent MCP tool executions.",
+    "RECALLFORGE_OVERFETCH_FACTOR": "RRF candidate overfetch multiplier.",
+    "RECALLFORGE_MAX_CANDIDATES": "Hard cap for candidate pool before reranking.",
+    "RECALLFORGE_RERANK_TOP_K": "Number of top RRF candidates sent to reranker.",
+    "RECALLFORGE_DISABLE_MLX": "Force-disable MLX backend detection (1=true).",
+    "RECALLFORGE_BM25_FALLBACK_MAX_ROWS": "Row limit for BM25 fallback recovery path.",
+    "RECALLFORGE_BULK_FLUSH_DOCS": "Batch flush threshold for document table writes.",
+    "RECALLFORGE_BULK_FLUSH_EMBEDDINGS": "Batch flush threshold for embedding table writes.",
+}
+
 import threading
 
 _BACKEND_SINGLETON = None
