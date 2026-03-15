@@ -143,6 +143,7 @@ class HybridResult:
     rrf_rank: int  # Position in RRF output
     rerank_score: float  # Reranker score
     source: str  # Sources that contributed to this result
+    content_type: str = "text"  # Content modality (text, image, video)
     audit: Optional[SearchAudit] = None  # Per-result audit trail
 
 
@@ -389,6 +390,7 @@ class HybridSearcher:
                 rrf_rank=rank,
                 rerank_score=0.5,
                 source=result.source,
+                content_type=getattr(result, 'content_type', 'text'),
             ))
         return hybrid_results
 
@@ -636,10 +638,9 @@ class HybridSearcher:
                 )
         
         # Compensate media candidates for structural BM25 absence.
-        # Images/videos cannot appear in BM25 results (no text body to match),
-        # so they get penalized by RRF for being single-source.  To level the
-        # playing field, scale their RRF score by the ratio of total list
-        # weights to the weights of lists they CAN appear in.
+        # Only apply boost to media that did NOT appear in any BM25/FTS list
+        # (i.e., has no text_body/caption). Captioned media CAN appear in BM25
+        # and should not get an unconditional modality boost.
         if has_bm25:
             total_weight = sum(weights.values())
             bm25_weight = sum(
@@ -647,12 +648,19 @@ class HybridSearcher:
                 if "bm25" in name.lower() or "fts" in name.lower()
             )
             non_bm25_weight = total_weight - bm25_weight
+            bm25_list_names = {
+                name for name in list_names
+                if "bm25" in name.lower() or "fts" in name.lower()
+            }
             if non_bm25_weight > 0 and bm25_weight > 0:
                 media_boost = total_weight / non_bm25_weight
                 for filepath, data in combined.items():
                     if data['content_type'] in ("image", "video"):
-                        data['rrf_score'] *= media_boost
-                        data['media_compensation'] = True
+                        # Only boost if this candidate was NOT found by BM25
+                        in_bm25 = bool(data['sources'].keys() & bm25_list_names)
+                        if not in_bm25:
+                            data['rrf_score'] *= media_boost
+                            data['media_compensation'] = True
 
         # Convert to list and sort
         final_results = []
@@ -874,6 +882,7 @@ class HybridSearcher:
                 rrf_rank=rrf_rank,
                 rerank_score=rerank_score_raw,
                 source=result.source,
+                content_type=getattr(result, 'content_type', 'text'),
                 audit=audit,
             ))
 
@@ -1221,7 +1230,7 @@ def search_batch(
 
     for idx, results in all_results.items():
         weight = batch_queries[idx].weight
-        for result, score in results:
+        for rank, (result, score) in enumerate(results):
             filepath = result.filepath
             if filepath not in merged:
                 merged[filepath] = {
@@ -1232,8 +1241,8 @@ def search_batch(
                     'best_score': 0.0,
                 }
 
-            # RRF contribution
-            merged[filepath]['rrf_score'] += weight / (rrf_k + len(merged) + 1)
+            # RRF contribution: rank-based, not insertion-order-based
+            merged[filepath]['rrf_score'] += weight / (rrf_k + rank + 1)
             merged[filepath]['query_indices'].add(idx)
             merged[filepath]['query_scores'][idx] = score
             merged[filepath]['best_score'] = max(merged[filepath]['best_score'], score)

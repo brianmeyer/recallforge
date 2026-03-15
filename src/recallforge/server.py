@@ -681,9 +681,10 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     profile = arguments.get("profile")
     intent = arguments.get("intent")
     rerank_top_k = arguments.get("rerank_top_k", 20)
+    expand = arguments.get("expand", False)
 
     trace_log("search_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k)
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k, expand=expand)
 
     if input_error:
         return _error_response("INVALID_INPUT", input_error)
@@ -700,6 +701,7 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
         profile=profile,
         intent=intent,
         rerank_top_k=rerank_top_k,
+        expand=expand,
     )
 
     if image_path:
@@ -750,9 +752,10 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
     profile = arguments.get("profile")
     intent = arguments.get("intent")
     rerank_top_k = arguments.get("rerank_top_k", 20)
+    expand = arguments.get("expand", False)
 
     trace_log("explain_results_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k)
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k, expand=expand)
 
     if input_error:
         return _error_response("INVALID_INPUT", input_error)
@@ -769,6 +772,7 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
         profile=profile,
         intent=intent,
         rerank_top_k=rerank_top_k,
+        expand=expand,
     )
 
     if image_path:
