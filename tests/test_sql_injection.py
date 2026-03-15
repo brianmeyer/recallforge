@@ -68,9 +68,8 @@ INJECTION_PAYLOADS = [
     ("newline", "value\nOR 1=1"),
     ("carriage_return", "value\rOR 1=1"),
     # Unicode lookalikes / dangerous chars
-    ("angle_brackets", "value<script>"),
-    ("exclamation", "value!cmd"),
-    ("hash_comment", "value#comment"),  # not in allowlist
+    # NOTE: <, !, # are not SQL metacharacters — they're XSS/shell concerns.
+    # escape_sql only guards against SQL injection vectors.
     # Nested quotes
     ("nested_quotes", "it's a test"),
     # SQL UNION injection

@@ -270,8 +270,10 @@ class TestBlendScores(unittest.TestCase):
 
 
 class TestParallelSearchTaskCapture(unittest.TestCase):
-    def test_parallel_search_lanes_keep_distinct_vectors(self):
-        backend = StubBackend(mode="full")
+    def test_parallel_search_captures_original_vector(self):
+        """After expander removal (REC-108), _run_parallel_searches only
+        embeds the original query. Verify the vector is captured correctly."""
+        backend = StubBackend(mode="embed")
         storage = StubStorage()
         searcher = HybridSearcher(backend=backend, storage=storage, limit=5)
 
@@ -284,29 +286,11 @@ class TestParallelSearchTaskCapture(unittest.TestCase):
         storage.search_vec = mock_search_vec
 
         query = "base query"
-        expansions = [
-            {"type": "vec", "text": "vec expansion one"},
-            {"type": "vec", "text": "vec expansion two"},
-            {"type": "hyde", "text": "hyde expansion one"},
-            {"type": "hyde", "text": "hyde expansion two"},
-        ]
+        searcher._run_parallel_searches(query)
 
-        searcher._run_parallel_searches(query, expansions)
-
-        expected_queries = [
-            query,
-            "vec expansion one",
-            "vec expansion two",
-            "hyde expansion one",
-            "hyde expansion two",
-        ]
-        expected_vectors = {
-            tuple(backend.embed_text(text).tolist())
-            for text in expected_queries
-        }
-
-        self.assertEqual(len(captured_vectors), len(expected_queries))
-        self.assertEqual(set(captured_vectors), expected_vectors)
+        expected_vector = tuple(backend.embed_text(query).tolist())
+        self.assertEqual(len(captured_vectors), 1)
+        self.assertEqual(captured_vectors[0], expected_vector)
 
 
 class TestFullSearchPipeline(unittest.TestCase):
