@@ -470,14 +470,33 @@ def run_search(
     t0 = time.perf_counter()
 
     if gt.query_type == "image" and gt.image_query_path:
-        # Image-as-query: use vector search with image embedding
         image_path = str(CORPUS_DIR / gt.image_query_path)
-        image_vec = backend.embed_image(image_path)
-        results = storage.search_vec(
-            vector=image_vec,
-            collection=collection,
-            limit=limit,
-        )
+
+        if stage_mode == "embed":
+            # Vector-only baseline for image-as-query
+            image_vec = backend.embed_image(image_path)
+            results = storage.search_vec(
+                vector=image_vec,
+                collection=collection,
+                limit=limit,
+            )
+        elif stage_mode in ("rrf", "hybrid"):
+            # Route image query through HybridSearcher pipeline
+            searcher = HybridSearcher(
+                backend=backend,
+                storage=storage,
+                limit=limit,
+                collection=collection,
+            )
+            old_mode = backend.get_mode()
+            backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
+            results = searcher.search_image(image_path)
+            backend.set_mode(old_mode)
+        elif stage_mode == "bm25":
+            # BM25 cannot process image query directly (no query text/captions yet)
+            results = []
+        else:
+            raise ValueError(f"Unknown stage mode: {stage_mode}")
     else:
         # Text query
         if stage_mode == "embed":
@@ -573,12 +592,7 @@ def run_benchmark(
                 print(f"  {stage_name} for {cat_name}: SKIPPED (BM25 can't embed images)")
                 continue
 
-            # Skip RRF/hybrid for image queries (text component can't process image-as-query)
-            if stage_mode in ("rrf", "hybrid") and cat_name == "image_to_text":
-                # For image queries in RRF/hybrid, fall back to vector-only
-                effective_mode = "embed"
-            else:
-                effective_mode = stage_mode
+            effective_mode = stage_mode
 
             sr = StageResult(stage=stage_name, category=cat_name, total_queries=len(queries))
 

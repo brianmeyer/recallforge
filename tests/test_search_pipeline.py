@@ -395,6 +395,39 @@ class TestFullSearchPipeline(unittest.TestCase):
         self.assertEqual(len(filepaths), len(set(filepaths)))
 
 
+class TestImageQueryHybridPipeline(unittest.TestCase):
+    """Image query path should use the same fusion/rerank pipeline as text."""
+
+    def test_search_image_runs_rrf_and_reranker(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.88, 0.66])
+        vec_results = [
+            _make_search_result("doc1.md", 0.9, "vec"),
+            _make_search_result("doc2.md", 0.8, "vec"),
+        ]
+        storage = StubStorage(fts_results=[], vec_results=vec_results)
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=2)
+
+        results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(len(results), 2)
+        backend.rerank.assert_called_once()
+        # No BM25 branch is included for image queries yet
+        self.assertEqual(results[0].source, "original_vec")
+        self.assertTrue(all(isinstance(r, HybridResult) for r in results))
+
+    def test_search_image_embed_mode_skips_reranker(self):
+        backend = StubBackend(mode="embed")
+        backend.rerank = MagicMock()
+        storage = StubStorage(vec_results=[_make_search_result("doc.md", 0.9, "vec")])
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1)
+
+        results = searcher.search_image("/tmp/query.png")
+
+        backend.rerank.assert_not_called()
+        self.assertEqual(len(results), 1)
+
+
 class TestHybridQueryConvenience(unittest.TestCase):
     """Tests for the hybrid_query() convenience function."""
 

@@ -186,22 +186,48 @@ class HybridSearcher:
             profile=self.profile,
         )
 
-    def search_image(self, image_path: str) -> List[HybridResult]:
-        """Run image-query search through the vector path."""
+    def _embed_image_cached(self, image_path: str):
+        """Embed an image with cache lookup keyed by content hash."""
         # Key by file content hash so cache survives path renames but busts on edits.
         try:
             with open(image_path, "rb") as fh:
                 file_hash = sha256(fh.read()).hexdigest()
         except OSError:
             file_hash = image_path  # fall back to path string if unreadable
+
         cache_key = self.cache.make_key("image", file_hash)
         vector = self.cache.get(cache_key)
         if vector is not None:
             logger.debug("Embedding cache hit for image (key=%s…)", cache_key[:8])
-        else:
-            vector = self.backend.embed_image(image_path)
-            self.cache.put(cache_key, vector)
-        return self._search_vector(vector)
+            return vector
+
+        vector = self.backend.embed_image(image_path)
+        self.cache.put(cache_key, vector)
+        return vector
+
+    def search_image(self, image_path: str) -> List[HybridResult]:
+        """Run image-query search through hybrid pipeline (RRF + optional rerank)."""
+        # Image query always contributes vector candidates.
+        vector = self._embed_image_cached(image_path)
+        all_results: Dict[str, List[SearchResult]] = {
+            "original_vec": self.storage.search_vec(
+                vector.tolist() if hasattr(vector, 'tolist') else list(vector),
+                limit=self.fts_probe_limit,
+                collection=self.collection,
+                content_type=self.content_type,
+                user_id=self.user_id,
+                session_id=self.session_id,
+                project_id=self.project_id,
+                profile=self.profile,
+            )
+        }
+
+        # For now we do not have ingest-time image captions wired for query-side BM25.
+        # Gracefully skip BM25 branch for image queries until REC-122 lands.
+        candidates = self._reciprocal_rank_fusion(all_results)
+        rerank_query = f"image_query:{image_path}"
+        rerank_scores = self._rerank_candidates(candidates, rerank_query)
+        return self._blend_scores(candidates, rerank_scores)
 
     def search_video(self, video_path: str) -> List[HybridResult]:
         """Run raw-video query search through the vector path.
