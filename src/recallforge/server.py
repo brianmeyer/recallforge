@@ -1518,13 +1518,20 @@ async def _handle_delete_collection(arguments: dict, storage) -> list[TextConten
 async def _initialize_runtime(mode: Optional[str] = None):
     """Create backend+storage and preload models once for process lifetime."""
     resolved_mode = mode or os.environ.get("RECALLFORGE_MODE", "hybrid")
+    # Ensure env var matches resolved mode so warmup_backend() is consistent
+    os.environ["RECALLFORGE_MODE"] = resolved_mode
     store_path = os.environ.get("RECALLFORGE_STORE_PATH")
 
     print(f"RecallForge v{__version__}", file=sys.stderr)
     print(f"Warming up models (mode={resolved_mode})...", file=sys.stderr)
 
-    backend = warmup_backend()
-    print("All models warmed up and resident.", file=sys.stderr)
+    try:
+        backend = warmup_backend()
+        print("All models warmed up and resident.", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Model warm-up failed: {e}", file=sys.stderr)
+        print("Models will load on first use (slower first query).", file=sys.stderr)
+        backend = get_backend()
 
     storage = get_storage(store_path)
     server = await create_server(backend=backend, storage=storage, mode=resolved_mode)
@@ -1562,7 +1569,7 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
         from starlette.applications import Starlette
         from starlette.responses import JSONResponse, Response
         from starlette.routing import Mount, Route
-    except Exception as exc:
+    except ImportError as exc:
         raise RuntimeError(
             "HTTP mode requires mcp SSE + starlette dependencies. "
             "Install optional server extras (e.g., recallforge[server])."
@@ -1570,7 +1577,7 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
 
     try:
         import uvicorn
-    except Exception as exc:
+    except ImportError as exc:
         raise RuntimeError(
             "HTTP mode requires uvicorn. Install optional server extras "
             "(e.g., recallforge[server])."
@@ -1587,12 +1594,19 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
         uptime = 0
         if _http_start_time is not None:
             uptime = int(max(0, time.time() - _http_start_time))
+        embedder_ok = bool(info.embedder_loaded)
+        reranker_ok = bool(getattr(info, "reranker_loaded", False))
+        is_hybrid = resolved_mode == "hybrid"
+        all_loaded = embedder_ok and (not is_hybrid or reranker_ok)
         return JSONResponse(
             {
-                "status": "ok",
-                "models_loaded": bool(info.embedder_loaded),
+                "status": "ok" if all_loaded else "degraded",
+                "models_loaded": all_loaded,
+                "embedder_loaded": embedder_ok,
+                "reranker_loaded": reranker_ok,
                 "uptime_seconds": uptime,
-            }
+            },
+            status_code=200 if all_loaded else 503,
         )
 
     async def handle_sse(request):

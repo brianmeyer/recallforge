@@ -38,8 +38,11 @@ RECALLFORGE_MODE = os.environ.get("RECALLFORGE_MODE", "hybrid")
 RECALLFORGE_MLX_QUANTIZE = os.environ.get("RECALLFORGE_MLX_QUANTIZE", "4bit")
 RECALLFORGE_STORAGE = os.environ.get("RECALLFORGE_STORAGE", "lancedb")
 
+import threading
+
 _BACKEND_SINGLETON = None
 _BACKEND_SINGLETON_CONFIG: Optional[Tuple[str, str, str]] = None
+_BACKEND_LOCK = threading.Lock()
 
 
 def _resolve_backend_config() -> tuple[str, str, str]:
@@ -73,8 +76,15 @@ def get_backend():
 
     backend_type, mode, quantization = _resolve_backend_config()
 
-    if _BACKEND_SINGLETON is not None and _BACKEND_SINGLETON_CONFIG == (backend_type, mode, quantization):
-        return _BACKEND_SINGLETON
+    with _BACKEND_LOCK:
+        if _BACKEND_SINGLETON is not None and _BACKEND_SINGLETON_CONFIG == (backend_type, mode, quantization):
+            return _BACKEND_SINGLETON
+        return _create_backend_locked(backend_type, mode, quantization)
+
+
+def _create_backend_locked(backend_type: str, mode: str, quantization: str):
+    """Create backend while holding _BACKEND_LOCK. Called by get_backend()."""
+    global _BACKEND_SINGLETON, _BACKEND_SINGLETON_CONFIG
 
     if mode not in ("embed", "hybrid"):
         raise ValueError(f"Invalid mode: {mode}. Must be 'embed' or 'hybrid'")
