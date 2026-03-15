@@ -1054,7 +1054,15 @@ class MLXBackend(ModelBackend):
         cache = _make_cache(num_layers)
 
         if has_vision:
-            # VL path: merge vision features with text embeddings
+            # VL path: merge vision features with text embeddings.
+            # Must use direct yes/no logit comparison instead of the derived
+            # weight projection.  The derived projection (lm_head[yes] - lm_head[no])
+            # is a linear shortcut that assumes text-only hidden-state distributions.
+            # Vision features shift the distribution, making the shortcut unreliable.
+            if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
+                raise RuntimeError(
+                    "yes/no token ids are unavailable; cannot score VL reranker inputs"
+                )
             try:
                 emb_features = self._reranker_model.get_input_embeddings(
                     input_ids, pixel_values,
@@ -1062,10 +1070,21 @@ class MLXBackend(ModelBackend):
                     video_grid_thw=video_grid_thw,
                 )
                 inputs_embeds = emb_features.to_dict()["inputs_embeds"]
-                qwen_model = self._reranker_model.language_model.model
-                hidden = qwen_model(None, inputs_embeds=inputs_embeds, cache=cache).astype(mx.float32)
-                last_hidden = hidden[:, -1, :]
-                logits = self._apply_reranker_linear(last_hidden)
+                # language_model.__call__ accesses inputs.shape for mask validation,
+                # so pass a dummy input_ids matching the sequence length to avoid
+                # NoneType.shape crash when inputs_embeds is the real input.
+                dummy_ids = mx.zeros((1, inputs_embeds.shape[1]), dtype=mx.int32)
+                lm_out = self._reranker_model.language_model(
+                    dummy_ids, inputs_embeds=inputs_embeds, cache=cache,
+                )
+                full_logits = self._to_mx_array(
+                    getattr(lm_out, "logits", lm_out)
+                ).astype(mx.float32)
+                last_logits = full_logits[:, -1, :]
+                logits = (
+                    last_logits[:, self._reranker_yes_token_id]
+                    - last_logits[:, self._reranker_no_token_id]
+                ).reshape(-1, 1)
             except Exception as e:
                 logger.warning(f"[MLXBackend] VL reranking failed, falling back to text-only: {e}")
                 # Fall back to text-only path

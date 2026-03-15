@@ -380,11 +380,30 @@ class HybridSearcher:
         candidates: List[SearchResult],
         query: str,
     ) -> Dict[str, float]:
-        """Rerank candidates with cross-encoder."""
+        """Rerank candidates with cross-encoder.
+        
+        When results contain media (image/video) candidates, reranking is
+        skipped entirely.  The VL reranker's score distribution differs
+        from text scores, creating an asymmetric advantage: text candidates
+        get boosted while media candidates cannot.  This pushes relevant
+        images/videos below irrelevant text.  Skipping the reranker for
+        mixed result sets preserves the vector/RRF ranking, which is the
+        only signal that works reliably across modalities.
+        
+        Text-only result sets are reranked normally.
+        """
         if not candidates:
             return {}
         
         if not self.backend.needs_reranker():
+            return {c.filepath: 0.5 for c in candidates}
+        
+        # If any candidate is media, skip reranking to avoid cross-modal
+        # calibration bias.  Return uniform scores so RRF ranking is preserved.
+        has_media = any(
+            c.content_type in ("image", "video") for c in candidates
+        )
+        if has_media:
             return {c.filepath: 0.5 for c in candidates}
         
         chunks = [self._select_best_chunk(c) for c in candidates]
@@ -446,7 +465,7 @@ class HybridSearcher:
                 
                 blended = rrf_weight * rrf_score + (1 - rrf_weight) * rerank_score
             else:
-                # Embed mode: use RRF scores directly (rerank_scores are uniform)
+                # Embed mode or media-skipped: use RRF scores directly
                 blended = rrf_score
             
             hybrid_results.append(HybridResult(
