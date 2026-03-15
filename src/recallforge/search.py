@@ -315,6 +315,10 @@ class HybridSearcher:
             for i, name in enumerate(list_names):
                 weights[name] = 2.0 if i < 2 else 1.0
         
+        # Track which lists exist so we can compensate media candidates
+        # that structurally cannot appear in text-based lists (BM25).
+        has_bm25 = any("bm25" in name.lower() or "fts" in name.lower() for name in list_names)
+
         for list_name, results in all_results.items():
             weight = weights.get(list_name, 1.0)
             for rank, result in enumerate(results):
@@ -325,6 +329,7 @@ class HybridSearcher:
                         'rrf_score': 0.0,
                         'sources': set(),
                         'best_rank': float('inf'),
+                        'content_type': result.content_type,
                     }
                 
                 combined[filepath]['rrf_score'] += weight / (k + rank + 1)
@@ -334,6 +339,24 @@ class HybridSearcher:
                     rank
                 )
         
+        # Compensate media candidates for structural BM25 absence.
+        # Images/videos cannot appear in BM25 results (no text body to match),
+        # so they get penalized by RRF for being single-source.  To level the
+        # playing field, scale their RRF score by the ratio of total list
+        # weights to the weights of lists they CAN appear in.
+        if has_bm25:
+            total_weight = sum(weights.values())
+            bm25_weight = sum(
+                w for name, w in weights.items()
+                if "bm25" in name.lower() or "fts" in name.lower()
+            )
+            non_bm25_weight = total_weight - bm25_weight
+            if non_bm25_weight > 0 and bm25_weight > 0:
+                media_boost = total_weight / non_bm25_weight
+                for filepath, data in combined.items():
+                    if data['content_type'] in ("image", "video"):
+                        data['rrf_score'] *= media_boost
+
         # Convert to list and sort
         final_results = []
         for filepath, data in combined.items():
@@ -380,30 +403,11 @@ class HybridSearcher:
         candidates: List[SearchResult],
         query: str,
     ) -> Dict[str, float]:
-        """Rerank candidates with cross-encoder.
-        
-        When results contain media (image/video) candidates, reranking is
-        skipped entirely.  The VL reranker's score distribution differs
-        from text scores, creating an asymmetric advantage: text candidates
-        get boosted while media candidates cannot.  This pushes relevant
-        images/videos below irrelevant text.  Skipping the reranker for
-        mixed result sets preserves the vector/RRF ranking, which is the
-        only signal that works reliably across modalities.
-        
-        Text-only result sets are reranked normally.
-        """
+        """Rerank candidates with cross-encoder."""
         if not candidates:
             return {}
         
         if not self.backend.needs_reranker():
-            return {c.filepath: 0.5 for c in candidates}
-        
-        # If any candidate is media, skip reranking to avoid cross-modal
-        # calibration bias.  Return uniform scores so RRF ranking is preserved.
-        has_media = any(
-            c.content_type in ("image", "video") for c in candidates
-        )
-        if has_media:
             return {c.filepath: 0.5 for c in candidates}
         
         chunks = [self._select_best_chunk(c) for c in candidates]
@@ -445,7 +449,26 @@ class HybridSearcher:
             len(unique_rerank_scores) == 1 and 0.5 not in unique_rerank_scores
         )
         
-        rerank_norm = _normalize(rerank_scores, neutral=0.5)
+        # Normalize reranker scores per-modality so text and media scores
+        # are on the same 0-1 scale independently.  The VL reranker produces
+        # valid discrimination within each modality but the raw score ranges
+        # differ (text: 0.03-0.18, VL: 0.07-0.12).  Cross-modality min-max
+        # would let text dominate.
+        result_types = {r.filepath: r.content_type for r in rrf_results}
+        text_rerank = {
+            fp: s for fp, s in rerank_scores.items()
+            if result_types.get(fp, "text") not in ("image", "video")
+        }
+        media_rerank = {
+            fp: s for fp, s in rerank_scores.items()
+            if result_types.get(fp, "text") in ("image", "video")
+        }
+        text_rerank_norm = _normalize(text_rerank, neutral=0.5)
+        media_rerank_norm = _normalize(media_rerank, neutral=0.5)
+        # Merge into single dict
+        rerank_norm = {}
+        rerank_norm.update(text_rerank_norm)
+        rerank_norm.update(media_rerank_norm)
 
         for rank, result in enumerate(rrf_results):
             rrf_rank = rank + 1
@@ -465,7 +488,7 @@ class HybridSearcher:
                 
                 blended = rrf_weight * rrf_score + (1 - rrf_weight) * rerank_score
             else:
-                # Embed mode or media-skipped: use RRF scores directly
+                # Embed mode: use RRF scores directly (rerank_scores are uniform)
                 blended = rrf_score
             
             hybrid_results.append(HybridResult(
