@@ -416,5 +416,195 @@ class TestN1LookupOptimization(unittest.TestCase):
         self.assertFalse(get_content_called, "get_content() should not be called when text_body is available")
 
 
+class TestIntentAwareQuerySteering(unittest.TestCase):
+    """Test intent-aware query steering in RRF fusion."""
+
+    def test_exact_lookup_boosts_fts_weight(self):
+        """exact_lookup intent should boost FTS weight and lower vector weight."""
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, intent="exact_lookup")
+
+        # Create results for FTS and vector
+        fts_result = _make_search_result("doc1.md", 0.9, source="fts")
+        vec_result = _make_search_result("doc2.md", 0.85, source="vec")
+
+        all_results = {
+            "original_fts": [fts_result],
+            "original_vec": [vec_result],
+        }
+
+        fused = searcher._reciprocal_rank_fusion(all_results)
+
+        # With exact_lookup: FTS weight=2.5, vector weight=0.8
+        # FTS score contribution: 2.5 / (60 + 0 + 1) = 2.5/61 ≈ 0.041
+        # Vec score contribution: 0.8 / (60 + 0 + 1) = 0.8/61 ≈ 0.013
+        # FTS doc should have higher combined score
+        fts_doc = next((r for r in fused if r.filepath == "doc1.md"), None)
+        vec_doc = next((r for r in fused if r.filepath == "doc2.md"), None)
+
+        self.assertIsNotNone(fts_doc)
+        self.assertIsNotNone(vec_doc)
+        self.assertGreater(fts_doc.score, vec_doc.score,
+                           "exact_lookup: FTS result should score higher than vector result")
+
+    def test_semantic_boosts_vector_weight(self):
+        """semantic intent should boost vector weight and lower FTS weight."""
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, intent="semantic")
+
+        # Create results for FTS and vector
+        fts_result = _make_search_result("doc1.md", 0.9, source="fts")
+        vec_result = _make_search_result("doc2.md", 0.85, source="vec")
+
+        all_results = {
+            "original_fts": [fts_result],
+            "original_vec": [vec_result],
+        }
+
+        fused = searcher._reciprocal_rank_fusion(all_results)
+
+        # With semantic: FTS weight=0.8, vector weight=2.5
+        # FTS score contribution: 0.8 / (60 + 0 + 1) = 0.8/61 ≈ 0.013
+        # Vec score contribution: 2.5 / (60 + 0 + 1) = 2.5/61 ≈ 0.041
+        # Vector doc should have higher combined score
+        fts_doc = next((r for r in fused if r.filepath == "doc1.md"), None)
+        vec_doc = next((r for r in fused if r.filepath == "doc2.md"), None)
+
+        self.assertIsNotNone(fts_doc)
+        self.assertIsNotNone(vec_doc)
+        self.assertGreater(vec_doc.score, fts_doc.score,
+                           "semantic: vector result should score higher than FTS result")
+
+    def test_broad_equal_weights(self):
+        """broad intent should use equal weights for all sources."""
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, intent="broad")
+
+        # Create results for FTS and vector at same rank
+        fts_result = _make_search_result("doc1.md", 0.9, source="fts")
+        vec_result = _make_search_result("doc2.md", 0.85, source="vec")
+
+        all_results = {
+            "original_fts": [fts_result],
+            "original_vec": [vec_result],
+        }
+
+        fused = searcher._reciprocal_rank_fusion(all_results)
+
+        # With broad: both weights=1.0
+        # Both have same rank (0), so scores should be equal
+        fts_doc = next((r for r in fused if r.filepath == "doc1.md"), None)
+        vec_doc = next((r for r in fused if r.filepath == "doc2.md"), None)
+
+        self.assertIsNotNone(fts_doc)
+        self.assertIsNotNone(vec_doc)
+        # Both have equal RRF contribution: 1.0 / (60 + 0 + 1)
+        self.assertAlmostEqual(fts_doc.score, vec_doc.score, places=5,
+                              msg="broad: FTS and vector results should have equal scores")
+
+    def test_none_intent_uses_default_weights(self):
+        """None intent (default) should use the existing weight behavior."""
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, intent=None)
+
+        # Create results for FTS and vector
+        fts_result = _make_search_result("doc1.md", 0.9, source="fts")
+        vec_result = _make_search_result("doc2.md", 0.85, source="vec")
+
+        all_results = {
+            "original_fts": [fts_result],
+            "original_vec": [vec_result],
+        }
+
+        fused = searcher._reciprocal_rank_fusion(all_results)
+
+        # Default weights: first 2 lists = 2.0, rest = 1.0
+        # With 2 sources, both get weight 2.0
+        fts_doc = next((r for r in fused if r.filepath == "doc1.md"), None)
+        vec_doc = next((r for r in fused if r.filepath == "doc2.md"), None)
+
+        self.assertIsNotNone(fts_doc)
+        self.assertIsNotNone(vec_doc)
+        # Both have weight 2.0, same rank → equal scores
+        self.assertAlmostEqual(fts_doc.score, vec_doc.score, places=5,
+                              msg="None intent: should use default weights")
+
+    def test_intent_weight_applied_to_rrf_calculation(self):
+        """Verify intent weights are correctly applied in RRF score calculation."""
+        from recallforge.search import INTENT_WEIGHTS
+
+        backend = StubBackend()
+        storage = StubStorage()
+
+        # Test each intent
+        for intent_name, weights in INTENT_WEIGHTS.items():
+            searcher = HybridSearcher(backend=backend, storage=storage, intent=intent_name)
+
+            # Create results
+            fts_result = _make_search_result("doc_fts.md", 0.9, source="fts")
+            vec_result = _make_search_result("doc_vec.md", 0.85, source="vec")
+
+            all_results = {
+                "original_fts": [fts_result],
+                "original_vec": [vec_result],
+            }
+
+            fused = searcher._reciprocal_rank_fusion(all_results)
+
+            # Verify weights are applied correctly
+            fts_doc = next((r for r in fused if r.filepath == "doc_fts.md"), None)
+            vec_doc = next((r for r in fused if r.filepath == "doc_vec.md"), None)
+
+            self.assertIsNotNone(fts_doc, f"Missing FTS doc for intent={intent_name}")
+            self.assertIsNotNone(vec_doc, f"Missing vector doc for intent={intent_name}")
+
+            # Calculate expected scores
+            k = 60
+            expected_fts = weights["original_fts"] / (k + 0 + 1)
+            expected_vec = weights["original_vec"] / (k + 0 + 1)
+
+            self.assertAlmostEqual(fts_doc.score, expected_fts, places=5,
+                                   msg=f"FTS score mismatch for intent={intent_name}")
+            self.assertAlmostEqual(vec_doc.score, expected_vec, places=5,
+                                   msg=f"Vector score mismatch for intent={intent_name}")
+
+    def test_intent_in_full_search_pipeline(self):
+        """Intent should affect final search results order."""
+        # Setup FTS-heavy results (doc1.md ranks high in FTS, low in vector)
+        fts_results = [
+            _make_search_result("doc1.md", 0.95, source="fts"),  # High FTS rank
+            _make_search_result("doc2.md", 0.60, source="fts"),  # Lower FTS rank
+        ]
+        vec_results = [
+            _make_search_result("doc2.md", 0.95, source="vec"),  # High vector rank
+            _make_search_result("doc1.md", 0.60, source="vec"),  # Lower vector rank
+        ]
+
+        # exact_lookup: should favor doc1 (higher FTS score)
+        backend = StubBackend(mode="embed")  # embed mode to skip reranking
+        storage = StubStorage(fts_results=fts_results, vec_results=vec_results)
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=2, intent="exact_lookup")
+        results = searcher.search("test query")
+
+        # doc1 should rank higher with exact_lookup (boosts FTS)
+        doc1_rank = next(i for i, r in enumerate(results) if r.filepath == "doc1.md")
+        doc2_rank = next(i for i, r in enumerate(results) if r.filepath == "doc2.md")
+        self.assertLess(doc1_rank, doc2_rank,
+                        "exact_lookup: doc1 (FTS-heavy) should rank before doc2 (vector-heavy)")
+
+        # semantic: should favor doc2 (higher vector score)
+        searcher_semantic = HybridSearcher(backend=backend, storage=storage, limit=2, intent="semantic")
+        results_semantic = searcher_semantic.search("test query")
+
+        doc1_rank_sem = next(i for i, r in enumerate(results_semantic) if r.filepath == "doc1.md")
+        doc2_rank_sem = next(i for i, r in enumerate(results_semantic) if r.filepath == "doc2.md")
+        self.assertLess(doc2_rank_sem, doc1_rank_sem,
+                        "semantic: doc2 (vector-heavy) should rank before doc1 (FTS-heavy)")
+
+
 if __name__ == "__main__":
     unittest.main()

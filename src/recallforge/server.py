@@ -163,6 +163,7 @@ async def create_server(
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
                         "profile": {"type": "string", "description": "Optional profile namespace filter"},
+                        "intent": {"type": "string", "enum": ["exact_lookup", "semantic", "broad"], "description": "Optional intent for query steering: exact_lookup (boost BM25), semantic (boost vector), broad (equal weights)"},
                     },
                 },
             ),
@@ -351,6 +352,29 @@ async def create_server(
                 },
             ),
             Tool(
+                name="rename_collection",
+                description="Rename a collection atomically (updates all documents and embeddings)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "old_name": {"type": "string", "description": "Current collection name"},
+                        "new_name": {"type": "string", "description": "New collection name"},
+                    },
+                    "required": ["old_name", "new_name"],
+                },
+            ),
+            Tool(
+                name="delete_collection",
+                description="Delete all data for a collection (documents, embeddings, and orphaned content)",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Collection name to delete"},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            Tool(
                 name="batch",
                 description="Execute multiple RecallForge operations in a single call",
                 inputSchema={
@@ -462,6 +486,10 @@ async def _dispatch_tool(
         return await _handle_list_collections(arguments, storage)
     elif name == "list_namespaces":
         return await _handle_list_namespaces(arguments, storage)
+    elif name == "rename_collection":
+        return await _handle_rename_collection(arguments, storage)
+    elif name == "delete_collection":
+        return await _handle_delete_collection(arguments, storage)
     elif name == "get_config":
         return await _handle_get_config(backend, storage, mutable_config or {})
     elif name == "set_config":
@@ -555,9 +583,10 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     session_id = arguments.get("session_id")
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
+    intent = arguments.get("intent")
 
     trace_log("search_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent)
 
     if input_error:
         return _error_response("INVALID_INPUT", input_error)
@@ -572,6 +601,7 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        intent=intent,
     )
 
     if image_path:
@@ -1157,6 +1187,56 @@ async def _handle_list_namespaces(arguments: dict, storage) -> list[TextContent]
         "namespaces": namespaces,
     }
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_rename_collection(arguments: dict, storage) -> list[TextContent]:
+    """Handle rename_collection."""
+    old_name = arguments.get("old_name", "")
+    new_name = arguments.get("new_name", "")
+
+    trace_log("rename_collection_start", old_name=old_name, new_name=new_name)
+
+    if not old_name or not new_name:
+        return _error_response("INVALID_INPUT", "old_name and new_name are required")
+
+    if old_name == new_name:
+        return _error_response("INVALID_INPUT", "old_name and new_name must be different")
+
+    try:
+        result = await _run_blocking(
+            storage.rename_collection,
+            old_name=old_name,
+            new_name=new_name,
+        )
+        trace_log("rename_collection_done", old_name=old_name, new_name=new_name,
+                  embeddings_updated=result.get("embeddings_updated", 0),
+                  documents_updated=result.get("documents_updated", 0))
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    except Exception as e:
+        return _error_response("BACKEND_ERROR", str(e), {"exception_type": type(e).__name__})
+
+
+async def _handle_delete_collection(arguments: dict, storage) -> list[TextContent]:
+    """Handle delete_collection."""
+    name = arguments.get("name", "")
+
+    trace_log("delete_collection_start", name=name)
+
+    if not name:
+        return _error_response("INVALID_INPUT", "name is required")
+
+    try:
+        result = await _run_blocking(
+            storage.delete_collection,
+            name=name,
+        )
+        trace_log("delete_collection_done", name=name,
+                  embeddings_deleted=result.get("embeddings_deleted", 0),
+                  documents_deleted=result.get("documents_deleted", 0),
+                  orphans_cleaned=result.get("orphans_cleaned", 0))
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    except Exception as e:
+        return _error_response("BACKEND_ERROR", str(e), {"exception_type": type(e).__name__})
 
 
 async def main() -> None:

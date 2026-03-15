@@ -5,6 +5,12 @@ Combines BM25, vector search, and reranking with tiered modes:
 - embed: Embedder only (fastest, lowest memory)
 - hybrid: Embedder + Reranker
 
+Intent-aware query steering:
+- exact_lookup: Boost BM25 weight in RRF fusion, lower vector weight
+- semantic: Boost vector weight, lower BM25
+- broad: Equal weights for all sources
+- None: Default behavior (unchanged)
+
 Uses true concurrency with ThreadPoolExecutor for parallel searches.
 """
 
@@ -21,6 +27,14 @@ from .cache import EmbeddingCache
 from .storage.base import StorageBackend, SearchResult
 
 logger = logging.getLogger(__name__)
+
+# Intent-to-weight mappings for RRF fusion
+# Each intent maps source names to weight multipliers
+INTENT_WEIGHTS: Dict[str, Dict[str, float]] = {
+    "exact_lookup": {"original_fts": 2.5, "original_vec": 0.8},
+    "semantic": {"original_fts": 0.8, "original_vec": 2.5},
+    "broad": {"original_fts": 1.0, "original_vec": 1.0},
+}
 
 
 @dataclass
@@ -70,6 +84,7 @@ class HybridSearcher:
         overfetch_factor: int = 10,
         max_candidates: int = 200,
         cache: Optional[EmbeddingCache] = None,
+        intent: Optional[str] = None,
     ):
         """
         Initialize hybrid searcher.
@@ -90,6 +105,7 @@ class HybridSearcher:
             overfetch_factor: Candidate overfetch multiplier before final trim
             max_candidates: Hard cap on candidate pool size
             cache: Optional EmbeddingCache; created with default maxsize if None
+            intent: Optional intent for query steering ("exact_lookup", "semantic", "broad")
         """
         self.backend = backend
         self.storage = storage
@@ -109,6 +125,7 @@ class HybridSearcher:
         self.max_candidates = max(self.limit, env_max_candidates)
         self.candidate_limit = min(self.max_candidates, self.limit * self.overfetch_factor)
         self.cache: EmbeddingCache = cache if cache is not None else EmbeddingCache()
+        self.intent = intent
 
     def _vector_results_to_hybrid(self, results: List[SearchResult]) -> List[HybridResult]:
         """Convert raw vector results into HybridResult objects."""
@@ -283,12 +300,20 @@ class HybridSearcher:
         """Apply RRF (Reciprocal Rank Fusion) to combine results."""
         combined: Dict[str, Dict[str, Any]] = {}
         k = self.rrf_k
-        
-        # Weights: first 2 lists = 2.0, rest = 1.0
-        weights = {}
+
+        # Determine weights based on intent
+        weights: Dict[str, float] = {}
         list_names = list(all_results.keys())
-        for i, name in enumerate(list_names):
-            weights[name] = 2.0 if i < 2 else 1.0
+
+        if self.intent and self.intent in INTENT_WEIGHTS:
+            # Apply intent-specific weights with fallback to 1.0
+            intent_weights = INTENT_WEIGHTS[self.intent]
+            for name in list_names:
+                weights[name] = intent_weights.get(name, 1.0)
+        else:
+            # Default weights: first 2 lists = 2.0, rest = 1.0
+            for i, name in enumerate(list_names):
+                weights[name] = 2.0 if i < 2 else 1.0
         
         for list_name, results in all_results.items():
             weight = weights.get(list_name, 1.0)
@@ -470,6 +495,7 @@ def hybrid_query(
     session_id: Optional[str] = None,
     project_id: Optional[str] = None,
     profile: Optional[str] = None,
+    intent: Optional[str] = None,
 ) -> List[HybridResult]:
     """
     Convenience function for hybrid search.
@@ -485,6 +511,7 @@ def hybrid_query(
         session_id: Optional session namespace filter
         project_id: Optional project namespace filter
         profile: Optional profile namespace filter
+        intent: Optional intent for query steering ("exact_lookup", "semantic", "broad")
 
     Returns:
         List of HybridResult objects
@@ -507,6 +534,7 @@ def hybrid_query(
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        intent=intent,
     )
 
     return searcher.search(query)
@@ -523,6 +551,7 @@ def hybrid_query_image(
     session_id: Optional[str] = None,
     project_id: Optional[str] = None,
     profile: Optional[str] = None,
+    intent: Optional[str] = None,
 ) -> List[HybridResult]:
     """Convenience function for image-query vector search."""
     if backend is None:
@@ -542,6 +571,7 @@ def hybrid_query_image(
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        intent=intent,
     )
     return searcher.search_image(image_path)
 
@@ -557,6 +587,7 @@ def hybrid_query_video(
     session_id: Optional[str] = None,
     project_id: Optional[str] = None,
     profile: Optional[str] = None,
+    intent: Optional[str] = None,
 ) -> List[HybridResult]:
     """Convenience function for raw-video vector search."""
     if backend is None:
@@ -576,5 +607,6 @@ def hybrid_query_video(
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        intent=intent,
     )
     return searcher.search_video(video_path)
