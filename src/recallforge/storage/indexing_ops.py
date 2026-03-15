@@ -905,6 +905,11 @@ class IndexingOps:
         # FTS rebuild happens once at context exit
 
         summary["total_seen"] = len(summary["items"])
+
+        # Unload captioner after ingest batch to reclaim ~0.9 GB
+        if caption_media and hasattr(self._backend, '_unload_captioner'):
+            self._backend._unload_captioner()
+
         trace_log("ingest_done", collection=collection, indexed_text=summary["indexed_text"], indexed_images=summary["indexed_images"])
         return summary
 
