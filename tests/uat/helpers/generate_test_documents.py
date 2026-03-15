@@ -56,19 +56,6 @@ def _write_fake_pdf(path: Path) -> None:
     Uses pypdf's PdfWriter to create a properly-formed PDF with embedded text.
     Falls back to a manual PDF with proper font resources if pypdf write fails.
     """
-    try:
-        from pypdf import PdfWriter
-        from pypdf.generic import (
-            ArrayObject,
-            DictionaryObject,
-            NameObject,
-            NumberObject,
-            TextStringObject,
-            ContentStream,
-        )
-    except ImportError:
-        pass
-
     # Build a minimal but valid PDF manually with proper font resources
     text_line = "Local-first PDF notes for RecallForge MCP ingestion."
     content = f"BT /F1 18 Tf 72 720 Td ({text_line}) Tj ET".encode("ascii")

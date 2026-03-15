@@ -293,6 +293,8 @@ def _extract_pdf_with_pypdf(path: Path, logical_path: str) -> DocumentArtifacts:
             continue
 
         # No text extracted - try to render page as image
+        if temp_dir is None:
+            temp_dir = Path(tempfile.mkdtemp(prefix="recallforge_pdf_"))
         image_path = _render_pdf_page_as_image(path, index, temp_dir)
         if image_path:
             sections.append(

@@ -337,3 +337,11 @@ class StorageBackend(ABC):
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text/image/file/folder inputs."""
         pass
+
+    def rename_collection(self, old_name: str, new_name: str) -> Dict[str, Any]:
+        """Rename a collection. Override in subclass."""
+        raise NotImplementedError("rename_collection not supported by this backend")
+
+    def delete_collection(self, name: str) -> Dict[str, Any]:
+        """Delete all data for a collection. Override in subclass."""
+        raise NotImplementedError("delete_collection not supported by this backend")

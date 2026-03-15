@@ -793,6 +793,14 @@ class LanceDBBackend(StorageBackend):
         if old_name == new_name:
             return {"success": True, "old_name": old_name, "new_name": new_name, "embeddings_updated": 0, "documents_updated": 0}
 
+        # Check if target collection already exists
+        existing_collections = self.list_collections()
+        if new_name in existing_collections:
+            raise ValueError(
+                f"Cannot rename '{old_name}' to '{new_name}': target collection already exists. "
+                f"Delete '{new_name}' first or choose a different name."
+            )
+
         # Flush any pending writes first
         self._flush_pending_writes(force=True)
 

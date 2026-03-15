@@ -1147,6 +1147,13 @@ class IndexingOps:
 
                 # Use image embedding for image sections
                 image_embed = embed_image_func or embed_func
+                if embed_image_func is None:
+                    logger.warning(
+                        "No image embedder provided for PDF page image %s; "
+                        "falling back to text embedder which may produce poor results. "
+                        "Pass embed_image_func for proper vision embedding.",
+                        section.image_path,
+                    )
                 self.index_image(
                     path=section.image_path,
                     collection=collection,
@@ -1159,6 +1166,12 @@ class IndexingOps:
                     project_id=project_id,
                     profile=profile,
                 )
+                # Override content entry to reference source PDF, not temp image.
+                # Temp images are cleaned up after this loop; the embedding vector
+                # persists and is the primary retrieval artifact.
+                from recallforge.storage.lancedb_shared import hash_content
+                content_hash = hash_content(f"pdf_page_image:{actual_path}:page:{section.index}")
+                self._backend.insert_content(content_hash, actual_path, content_type="pdf_page_image")
                 indexed_images += 1
             else:
                 # Use text embedding for text sections
