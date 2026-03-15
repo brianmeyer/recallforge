@@ -294,6 +294,7 @@ class StageResult:
     ndcg_sum: float = 0.0
     mrr_sum: float = 0.0
     latencies_ms: list = field(default_factory=list)
+    per_query_results: list = field(default_factory=list)  # Store detailed per-query results with audit trails
 
     @property
     def recall_at_1(self) -> float:
@@ -543,17 +544,31 @@ def run_search(
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
-    # Normalize results to dicts
+    # Normalize results to dicts and capture audit trail
     result_dicts = []
     for r in results:
         if isinstance(r, dict):
             result_dicts.append(r)
         else:
-            result_dicts.append({
+            result = {
                 "filepath": getattr(r, "filepath", getattr(r, "path", "")),
                 "title": getattr(r, "title", ""),
                 "score": getattr(r, "score", 0.0),
-            })
+            }
+            # Capture audit trail if available (HybridResult has audit)
+            audit = getattr(r, "audit", None)
+            if audit is not None:
+                result["audit"] = {
+                    "filepath": audit.filepath,
+                    "content_type": audit.content_type,
+                    "rrf_sources": audit.rrf_sources,
+                    "reranker_raw_score": audit.reranker_raw_score,
+                    "reranker_normalized_score": audit.reranker_normalized_score,
+                    "reranker_scoring_path": audit.reranker_scoring_path,
+                    "blend_weights": audit.blend_weights,
+                    "final_blended_score": audit.final_blended_score,
+                }
+            result_dicts.append(result)
 
     return result_dicts, elapsed_ms
 

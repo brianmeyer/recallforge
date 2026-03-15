@@ -98,20 +98,8 @@ class MLXBackend(ModelBackend):
     _RERANK_DEFAULT_INSTRUCTION = (
         "Given a search query, retrieve relevant candidates that answer the query."
     )
-    _CAPTION_DESCRIPTOR_CANDIDATES = [
-        "a diagram with labeled components and arrows",
-        "a chart or graph with axes and plotted data",
-        "a screenshot of software, code, or UI",
-        "a document page with printed text",
-        "a presentation slide with title and bullets",
-        "a person speaking to camera indoors",
-        "multiple people in a meeting or conversation",
-        "an outdoor scene with buildings or streets",
-        "an outdoor scene with nature, trees, or mountains",
-        "a product photo or object on a plain background",
-        "a close-up portrait photo of a person",
-        "a whiteboard or handwritten notes",
-    ]
+    # Captioning descriptors removed — they produced captions too generic for BM25.
+    # See REC-129 for dedicated captioning model support.
 
     def __init__(
         self,
@@ -623,81 +611,33 @@ class MLXBackend(ModelBackend):
         """Embed a single video."""
         return self.embed_videos([video_path])[0]
 
-    def _ensure_caption_descriptor_embeddings(self) -> np.ndarray:
-        """Build and cache descriptor text embeddings used for caption fallback."""
-        if self._caption_descriptor_embeddings is None:
-            self._caption_descriptor_embeddings = self.embed_texts(
-                self._CAPTION_DESCRIPTOR_CANDIDATES
-            )
-        return self._caption_descriptor_embeddings
-
     def caption_image(self, image_path: str) -> str:
-        """Generate a short one-sentence image caption for BM25 indexing."""
-        prompt = "Describe this image in one sentence for search indexing."
-
-        self._load_embedder()
-
-        # Preferred: use model generation if the loaded checkpoint exposes it.
-        try:
-            from mlx_vlm import generate
-
-            output = generate(
-                self._embedder_model,
-                self._embedder_processor,
-                prompt=prompt,
-                image=image_path,
-                max_tokens=50,
-            )
-            if isinstance(output, str) and output.strip():
-                return re.sub(r"\s+", " ", output).strip()
-            if hasattr(output, "text") and isinstance(output.text, str) and output.text.strip():
-                return re.sub(r"\s+", " ", output.text).strip()
-        except Exception:
-            pass
-
-        # Fallback: descriptor matching over embedding space.
-        image_vec = self.embed_image(image_path)
-        descriptor_vecs = self._ensure_caption_descriptor_embeddings()
-
-        # Vectors are L2-normalized by embed_* methods; dot product = cosine similarity.
-        scores = np.dot(descriptor_vecs, image_vec)
-        top_indices = np.argsort(scores)[::-1][:2]
-
-        top_phrases = [self._CAPTION_DESCRIPTOR_CANDIDATES[i] for i in top_indices]
-        primary = top_phrases[0]
-        secondary = top_phrases[1] if len(top_phrases) > 1 else None
-
-        caption = f"Image appears to show {primary}."
-        if secondary and secondary != primary:
-            caption += f" It may also include elements of {secondary}."
-
-        return re.sub(r"\s+", " ", caption).strip()
+        """Generate a short text caption for an image for BM25 indexing.
+        
+        Currently returns empty string because:
+        - The embedding model (Qwen3-VL-Embedding-2B) cannot generate text
+        - The reranker model (Qwen3-VL-Reranker-2B) is trained for yes/no,
+          not captioning — it produces degenerate output
+        - The previous descriptor-matching fallback (12 hardcoded labels +
+          cosine similarity) produced captions too generic for BM25 to use
+          (e.g., "Image appears to show a screenshot of software, code, or UI")
+        
+        TODO (REC-129): Load a dedicated captioning model (e.g.,
+        Qwen2.5-VL-3B-Instruct-4bit) for real image descriptions.
+        """
+        return ""
 
     def describe_image(self, image_path: str) -> str:
         """Backward-compatible alias for caption_image."""
         return self.caption_image(image_path)
 
     def describe_video(self, video_path: str, frame_paths: Optional[List[str]] = None) -> str:
-        """Describe a video using either provided keyframes or the raw video embedding."""
-        if frame_paths:
-            frame_descriptions: List[str] = []
-            for frame_path in frame_paths[:3]:
-                try:
-                    frame_descriptions.append(self.describe_image(frame_path))
-                except Exception:
-                    continue
-
-            if frame_descriptions:
-                merged = " ".join(frame_descriptions)
-                # Keep 1-3 concise sentences.
-                merged = re.sub(r"\s+", " ", merged).strip()
-                return merged[:420]
-
-        video_vec = self.embed_video(video_path)
-        descriptor_vecs = self._ensure_caption_descriptor_embeddings()
-        scores = np.dot(descriptor_vecs, video_vec)
-        top_indices = np.argsort(scores)[::-1][:2]
-        top_phrases = [self._CAPTION_DESCRIPTOR_CANDIDATES[i] for i in top_indices]
+        """Generate a text description for a video for BM25 indexing.
+        
+        Currently returns empty string — same limitation as caption_image().
+        See REC-129 for dedicated captioning model support.
+        """
+        return ""
         primary = top_phrases[0]
         secondary = top_phrases[1] if len(top_phrases) > 1 else None
 
@@ -1084,12 +1024,19 @@ class MLXBackend(ModelBackend):
         self, prompt: str, num_layers: int,
         image_path: Optional[str] = None,
         video_path: Optional[str] = None,
-    ) -> float:
-        """Run one query-document pair and return sigmoid(score_linear(last_hidden)).
-        
+    ) -> tuple[float, str, float]:
+        """Run one query-document pair and return (score, scoring_path, raw_score_before_sigmoid).
+
         When image_path or video_path is provided, processes the media through
         the VL pipeline so the reranker can cross-encode text against visual content.
+
+        Returns:
+            Tuple of (sigmoid_score, scoring_path, raw_score_before_sigmoid)
         """
+        scoring_path = "unknown"
+        vl_fallback_triggered = False
+        raw_score_before_sigmoid = 0.0
+
         if image_path:
             from PIL import Image as PILImage
             try:
@@ -1105,6 +1052,7 @@ class MLXBackend(ModelBackend):
                     f"[MLXBackend] Failed to load image for reranking: {e}; "
                     "falling back to text-only"
                 )
+                vl_fallback_triggered = True
                 inputs = self._reranker_processor(text=prompt, return_tensors="np")
         elif video_path:
             try:
@@ -1131,6 +1079,7 @@ class MLXBackend(ModelBackend):
                     f"[MLXBackend] Failed to process video for reranking: {e}; "
                     "falling back to text-only"
                 )
+                vl_fallback_triggered = True
                 inputs = self._reranker_processor(text=prompt, return_tensors="np")
         else:
             inputs = self._reranker_processor(text=prompt, return_tensors="np")
@@ -1184,13 +1133,18 @@ class MLXBackend(ModelBackend):
                     last_logits[:, self._reranker_yes_token_id]
                     - last_logits[:, self._reranker_no_token_id]
                 ).reshape(-1, 1)
+                raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+                scoring_path = "vl_image" if has_image else "vl_video"
             except Exception as e:
                 logger.warning(f"[MLXBackend] VL reranking failed, falling back to text-only: {e}")
+                vl_fallback_triggered = True
                 # Fall back to text-only path
                 qwen_model = self._reranker_model.language_model.model
                 hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
                 last_hidden = hidden[:, -1, :]
                 logits = self._apply_reranker_linear(last_hidden)
+                raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+                scoring_path = "fallback_text"
         elif self._reranker_use_direct_logits:
             if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
                 raise RuntimeError("yes/no token ids are unavailable for reranker fallback")
@@ -1201,18 +1155,27 @@ class MLXBackend(ModelBackend):
                 last_logits[:, self._reranker_yes_token_id]
                 - last_logits[:, self._reranker_no_token_id]
             ).reshape(-1, 1)
+            raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+            scoring_path = "text_direct_logits"
         else:
             qwen_model = self._reranker_model.language_model.model
             hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
             last_hidden = hidden[:, -1, :]
             logits = self._apply_reranker_linear(last_hidden)
+            raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+            scoring_path = "text_derived"
 
         probs = 1.0 / (1.0 + mx.exp(-logits))
         mx.eval(probs)
         score = float(np.array(probs).reshape(-1)[0])
         if not np.isfinite(score):
             raise RuntimeError("Reranker produced non-finite score")
-        return score
+
+        # Log reranker path tracing
+        logger.debug("reranker_score path=%s raw_score=%.4f final_score=%.4f vl_fallback=%s",
+                     scoring_path, raw_score_before_sigmoid, score, vl_fallback_triggered)
+
+        return score, scoring_path, raw_score_before_sigmoid
 
     def _load_reranker(self):
         """Lazy-load the MLX reranker model."""
@@ -1270,7 +1233,10 @@ class MLXBackend(ModelBackend):
         logger.info(f"[MLXBackend] Loaded reranker ({self._quantization})")
 
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
-        """Rerank documents for a query."""
+        """Rerank documents for a query.
+
+        Returns list of scores. Scoring path information is logged via logger.debug.
+        """
         if not documents:
             return []
 
@@ -1295,14 +1261,19 @@ class MLXBackend(ModelBackend):
                     query, text, instruction,
                     image_path=image_path, video_path=video_path,
                 )
-                score = self._score_reranker_prompt(
+                score, scoring_path, raw_score = self._score_reranker_prompt(
                     prompt, num_layers,
                     image_path=image_path, video_path=video_path,
                 )
                 scores.append(score)
+                # Log per-document reranker path tracing
+                logger.debug("reranker_doc idx=%d path=%s raw_score=%.4f final_score=%.4f content_type=%s",
+                             idx, scoring_path, raw_score, score, doc.get("content_type", "unknown"))
             except Exception as e:
                 logger.error(f"[MLXBackend] Rerank error at doc {idx}: {e}")
                 scores.append(0.5)
+                logger.debug("reranker_doc idx=%d path=error_fallback raw_score=0.0 final_score=0.5 content_type=%s",
+                             idx, doc.get("content_type", "unknown"))
 
         return scores
 

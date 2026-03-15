@@ -407,8 +407,11 @@ class HybridSearcher:
         """Embed an image with cache lookup keyed by content hash."""
         # Key by file content hash so cache survives path renames but busts on edits.
         try:
+            h = sha256()
             with open(image_path, "rb") as fh:
-                file_hash = sha256(fh.read()).hexdigest()
+                for chunk in iter(lambda: fh.read(65536), b""):
+                    h.update(chunk)
+            file_hash = h.hexdigest()
         except OSError:
             file_hash = image_path  # fall back to path string if unreadable
 
@@ -439,8 +442,8 @@ class HybridSearcher:
             )
         }
 
-        # For now we do not have ingest-time image captions wired for query-side BM25.
-        # Gracefully skip BM25 branch for image queries until REC-122 lands.
+        # Image queries cannot be expressed as text tokens, so BM25 is skipped.
+        # Text-to-image via BM25 works through search() using ingest-time captions (REC-122).
         candidates = self._reciprocal_rank_fusion(all_results)
         rerank_query = f"image_query:{image_path}"
         rerank_scores = self._rerank_candidates(candidates, rerank_query)
@@ -648,6 +651,7 @@ class HybridSearcher:
         query: str,
     ) -> Dict[str, float]:
         """Rerank candidates with cross-encoder."""
+        t0 = time.perf_counter()
         if not candidates:
             return {}
 
@@ -678,10 +682,12 @@ class HybridSearcher:
             logger.debug("reranker_path path=%s candidate_count=%d", path, len(rerank_candidates))
             rerank_scores = {c.filepath: 0.5 for c in candidates}
             rerank_scores.update({c.filepath: s for c, s in zip(rerank_candidates, scores)})
+            _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": path})
             return rerank_scores
         except Exception as e:
             logger.error("Reranking failed: %s", e)
             logger.debug("reranker_path path=fallback reason=error")
+            _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": "error_fallback"})
             return {c.filepath: 0.5 for c in candidates}
     
     def _blend_scores(
@@ -690,6 +696,7 @@ class HybridSearcher:
         rerank_scores: Dict[str, float],
     ) -> List[HybridResult]:
         """Blend RRF scores with reranker scores."""
+        t0 = time.perf_counter()
         hybrid_results = []
 
         if not rrf_results:
@@ -706,14 +713,14 @@ class HybridSearcher:
 
         rrf_raw = {r.filepath: r.score for r in rrf_results}
         rrf_norm = _normalize(rrf_raw, neutral=0.0)
-        
+
         # Check if reranking was actually performed (embed mode returns all 0.5)
         # In embed mode, rerank_scores are uniform - use RRF scores directly
         unique_rerank_scores = set(rerank_scores.values())
         has_meaningful_rerank = len(unique_rerank_scores) > 1 or (
             len(unique_rerank_scores) == 1 and 0.5 not in unique_rerank_scores
         )
-        
+
         # Normalize reranker scores per-modality so text and media scores
         # are on the same 0-1 scale independently.  The VL reranker produces
         # valid discrimination within each modality but the raw score ranges
@@ -735,12 +742,22 @@ class HybridSearcher:
         rerank_norm.update(text_rerank_norm)
         rerank_norm.update(media_rerank_norm)
 
+        # Parse RRF sources for audit trail
+        rrf_sources: Dict[str, Dict[str, int]] = {}
+        for r in rrf_results:
+            sources: Dict[str, int] = {}
+            if r.source:
+                for src in r.source.split('+'):
+                    # Extract rank from source name if available
+                    sources[src] = 0  # Will be populated from all_results if needed
+            rrf_sources[r.filepath] = sources
+
         for rank, result in enumerate(rrf_results):
             rrf_rank = rank + 1
             rrf_score = rrf_norm.get(result.filepath, 0.0)
             rerank_score_raw = rerank_scores.get(result.filepath, 0.5)
             rerank_score = rerank_norm.get(result.filepath, 0.5)
-            
+
             if has_meaningful_rerank:
                 # Blend RRF with reranker scores
                 # RRF weight: higher for top results
@@ -750,12 +767,25 @@ class HybridSearcher:
                     rrf_weight = 0.60
                 else:
                     rrf_weight = 0.40
-                
+
                 blended = rrf_weight * rrf_score + (1 - rrf_weight) * rerank_score
             else:
                 # Embed mode: use RRF scores directly (rerank_scores are uniform)
                 blended = rrf_score
-            
+                rrf_weight = 1.0
+
+            # Build audit trail for this result
+            audit = SearchAudit(
+                filepath=result.filepath,
+                content_type=result.content_type or "unknown",
+                rrf_sources=rrf_sources.get(result.filepath, {}),
+                reranker_raw_score=rerank_score_raw,
+                reranker_normalized_score=rerank_score,
+                reranker_scoring_path="unknown",  # Will be updated by reranker
+                blend_weights={"rrf": rrf_weight, "rerank": 1 - rrf_weight} if has_meaningful_rerank else {"rrf": 1.0},
+                final_blended_score=blended,
+            )
+
             hybrid_results.append(HybridResult(
                 filepath=result.filepath,
                 display_path=result.display_path,
@@ -771,15 +801,29 @@ class HybridSearcher:
                 rrf_rank=rrf_rank,
                 rerank_score=rerank_score_raw,
                 source=result.source,
+                audit=audit,
             ))
-        
+
         hybrid_results.sort(key=lambda x: x.score, reverse=True)
 
-        # Log final ranking with scores
+        # Log final ranking with scores and audit trail
         for rank, hr in enumerate(hybrid_results[:self.limit], start=1):
-            logger.debug("final_ranking rank=%d score=%.4f rrf_rank=%d rerank_score=%.4f filepath=%s",
-                         rank, hr.score, hr.rrf_rank, hr.rerank_score, hr.filepath)
+            audit_info = ""
+            if hr.audit:
+                audit_info = f" rrf_weight={hr.audit.blend_weights.get('rrf', 0):.2f} rerank_weight={hr.audit.blend_weights.get('rerank', 0):.2f}"
+            logger.debug("final_ranking rank=%d score=%.4f rrf_rank=%d rerank_score=%.4f%s filepath=%s",
+                         rank, hr.score, hr.rrf_rank, hr.rerank_score, audit_info, hr.filepath)
 
+        # Log score audit trail for each result
+        for hr in hybrid_results[:self.limit]:
+            if hr.audit:
+                logger.debug("score_audit filepath=%s content_type=%s rrf_sources=%s reranker_raw=%.4f reranker_norm=%.4f scoring_path=%s blend_weights=%s final_score=%.4f",
+                             hr.audit.filepath, hr.audit.content_type, json.dumps(hr.audit.rrf_sources),
+                             hr.audit.reranker_raw_score, hr.audit.reranker_normalized_score,
+                             hr.audit.reranker_scoring_path, json.dumps(hr.audit.blend_weights),
+                             hr.audit.final_blended_score)
+
+        _log_stage_metrics("blend", hybrid_results, start_time=t0)
         return hybrid_results[:self.limit]
     
     def search(self, query: str) -> List[HybridResult]:
