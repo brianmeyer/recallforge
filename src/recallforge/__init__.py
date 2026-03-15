@@ -72,6 +72,14 @@ def _resolve_backend_config() -> tuple[str, str, str]:
     return backend_type, mode, quantization
 
 
+from .backends import (
+    TorchBackend,
+    MLX_AVAILABLE,
+    get_mlx_backend_class,
+    get_mlx_probe_reason,
+)
+
+
 def get_backend():
     """
     Get the appropriate model backend based on configuration.
@@ -84,13 +92,6 @@ def get_backend():
     Returns:
         ModelBackend instance
     """
-    from .backends import (
-        TorchBackend,
-        MLX_AVAILABLE,
-        get_mlx_backend_class,
-        get_mlx_probe_reason,
-    )
-
     global _BACKEND_SINGLETON, _BACKEND_SINGLETON_CONFIG
 
     backend_type, mode, quantization = _resolve_backend_config()
