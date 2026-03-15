@@ -861,6 +861,11 @@ class MLXBackend(ModelBackend):
             pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
             video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
 
+            # Free PyTorch tensors now that we have MLX arrays
+            del inputs, video_inputs
+            import gc as _gc
+            _gc.collect()
+
             try:
                 cache = _make_cache(num_layers)
             except Exception as exc:
@@ -886,6 +891,9 @@ class MLXBackend(ModelBackend):
                 raise MLXEmbeddingError(
                     f"Failed to pool and normalize video embedding for '{path}'."
                 ) from exc
+
+            # Free MLX intermediates before next video
+            del input_ids, pixel_values, video_grid_thw, cache, h
 
             embeddings.append(embedding[0])
 
@@ -1204,6 +1212,7 @@ class MLXBackend(ModelBackend):
                     return_tensors="pt", padding=True,
                     **normalized_kwargs,
                 )
+                del video_inputs  # Free PyTorch video frames
                 inputs = {k: v.numpy() if hasattr(v, 'numpy') else v for k, v in inputs.items()}
             except Exception as e:
                 logger.warning(
