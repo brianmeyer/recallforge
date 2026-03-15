@@ -130,6 +130,15 @@ CORPUS_DOCS = {
     "videos/cooking_tutorial.transcript.json",
     "videos/nature_timelapse.transcript.json",
     "videos/whiteboard_session.transcript.json",
+    # Documents (PDF, DOCX, PPTX)
+    "documents/ai_strategy_report.docx",
+    "documents/project_status_q1.docx",
+    "documents/recallforge_spec.docx",
+    "documents/ai_architecture_deck.pptx",
+    "documents/quarterly_review.pptx",
+    "documents/embedding_research.pdf",
+    "documents/operations_manual.pdf",
+    "documents/edge_deployment_guide.pdf",
 }
 
 # ---------------------------------------------------------------------------
@@ -901,37 +910,37 @@ TEXT_TO_DOCUMENT = [
     GroundTruth(
         query="architecture walkthrough building tour presentation",
         relevant_paths=["videos/architecture_walkthrough.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
         query="coding demonstration software development tutorial",
         relevant_paths=["videos/coding_demo.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
         query="cooking tutorial recipe demonstration video",
         relevant_paths=["videos/cooking_tutorial.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
         query="nature timelapse video forest mountains",
         relevant_paths=["videos/nature_timelapse.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
         query="whiteboard session brainstorming meeting recording",
         relevant_paths=["videos/whiteboard_session.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
         query="video content with transcript about buildings",
         relevant_paths=["videos/architecture_walkthrough.mp4", "videos/architecture_walkthrough.transcript.json"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="easy",
         graded_relevance={"videos/architecture_walkthrough.mp4": 2, "videos/architecture_walkthrough.transcript.json": 2},
     ),
@@ -940,26 +949,26 @@ TEXT_TO_DOCUMENT = [
     GroundTruth(
         query="programming and software engineering video content",
         relevant_paths=["videos/coding_demo.mp4", "videos/whiteboard_session.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="medium",
         graded_relevance={"videos/coding_demo.mp4": 2, "videos/whiteboard_session.mp4": 1},
     ),
     GroundTruth(
         query="food preparation and culinary instruction videos",
         relevant_paths=["videos/cooking_tutorial.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="medium",
     ),
     GroundTruth(
         query="natural environment scenery video footage",
         relevant_paths=["videos/nature_timelapse.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="medium",
     ),
     GroundTruth(
         query="meeting recordings with transcripts for review",
         relevant_paths=["videos/whiteboard_session.mp4", "videos/whiteboard_session.transcript.json"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="medium",
         graded_relevance={"videos/whiteboard_session.mp4": 2, "videos/whiteboard_session.transcript.json": 2},
     ),
@@ -967,7 +976,7 @@ TEXT_TO_DOCUMENT = [
         query="educational video content with searchable transcripts",
         relevant_paths=["videos/cooking_tutorial.mp4", "videos/cooking_tutorial.transcript.json",
                         "videos/coding_demo.mp4", "videos/coding_demo.transcript.json"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="medium",
         graded_relevance={"videos/cooking_tutorial.mp4": 2, "videos/cooking_tutorial.transcript.json": 2,
                          "videos/coding_demo.mp4": 2, "videos/coding_demo.transcript.json": 2},
@@ -975,7 +984,7 @@ TEXT_TO_DOCUMENT = [
     GroundTruth(
         query="visual documentation of outdoor spaces",
         relevant_paths=["videos/nature_timelapse.mp4", "videos/architecture_walkthrough.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="medium",
         graded_relevance={"videos/nature_timelapse.mp4": 2, "videos/architecture_walkthrough.mp4": 1},
     ),
@@ -985,7 +994,7 @@ TEXT_TO_DOCUMENT = [
         query="multimedia content for learning and development",
         relevant_paths=["videos/cooking_tutorial.mp4", "videos/coding_demo.mp4", "videos/whiteboard_session.mp4",
                         "videos/cooking_tutorial.transcript.json", "videos/coding_demo.transcript.json", "videos/whiteboard_session.transcript.json"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="hard",
         graded_relevance={"videos/cooking_tutorial.mp4": 2, "videos/coding_demo.mp4": 2, "videos/whiteboard_session.mp4": 2,
                          "videos/cooking_tutorial.transcript.json": 2, "videos/coding_demo.transcript.json": 2, "videos/whiteboard_session.transcript.json": 2},
@@ -994,7 +1003,7 @@ TEXT_TO_DOCUMENT = [
         query="archived recordings with searchable text content",
         relevant_paths=["videos/architecture_walkthrough.mp4", "videos/architecture_walkthrough.transcript.json",
                         "videos/nature_timelapse.mp4", "videos/nature_timelapse.transcript.json"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="hard",
         graded_relevance={"videos/architecture_walkthrough.mp4": 2, "videos/architecture_walkthrough.transcript.json": 2,
                          "videos/nature_timelapse.mp4": 2, "videos/nature_timelapse.transcript.json": 2},
@@ -1002,7 +1011,7 @@ TEXT_TO_DOCUMENT = [
     GroundTruth(
         query="comprehensive video library with transcripts",
         relevant_paths=["videos/cooking_tutorial.mp4", "videos/coding_demo.mp4", "videos/whiteboard_session.mp4", "videos/architecture_walkthrough.mp4", "videos/nature_timelapse.mp4"],
-        category="text_to_document",
+        category="text_to_video",
         difficulty="hard",
         graded_relevance={"videos/cooking_tutorial.mp4": 2, "videos/coding_demo.mp4": 2, "videos/whiteboard_session.mp4": 2,
                          "videos/architecture_walkthrough.mp4": 2, "videos/nature_timelapse.mp4": 2},
@@ -1093,13 +1102,90 @@ NEGATIVE_CONTROLS = [
     ),
 ]
 
+# ── Text → Document queries ──────────────────────────────────
+TEXT_TO_DOCUMENT_REAL = [
+    GroundTruth(
+        query="enterprise AI strategy roadmap deployment",
+        relevant_paths=["documents/ai_strategy_report.docx"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="retrieval augmented generation RAG productivity",
+        relevant_paths=["documents/ai_strategy_report.docx"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="defense AI studio quarterly milestones sensor fusion",
+        relevant_paths=["documents/project_status_q1.docx"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="$38M portfolio budget burn rate GPU supply chain",
+        relevant_paths=["documents/project_status_q1.docx"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="RecallForge multimodal memory search engine technical specification",
+        relevant_paths=["documents/recallforge_spec.docx"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="Qwen3-VL embedding reranker captioner model stack",
+        relevant_paths=["documents/recallforge_spec.docx", "documents/ai_architecture_deck.pptx"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="multimodal AI architecture presentation slides BM25 vector fusion",
+        relevant_paths=["documents/ai_architecture_deck.pptx"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="defense portfolio business review customer satisfaction",
+        relevant_paths=["documents/quarterly_review.pptx"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="cross-modal embedding unified memory search research paper abstract",
+        relevant_paths=["documents/embedding_research.pdf"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="pip install recallforge configuration environment variables",
+        relevant_paths=["documents/operations_manual.pdf"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="edge AI deployment NVIDIA Jetson quantization pruning",
+        relevant_paths=["documents/edge_deployment_guide.pdf"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="Raspberry Pi Qualcomm Snapdragon Hexagon hardware acceleration",
+        relevant_paths=["documents/edge_deployment_guide.pdf"],
+        category="text_to_document",
+        difficulty="hard",
+    ),
+]
+
 # Combine all queries
 ALL_GROUND_TRUTH = (
     TEXT_TO_TEXT + 
     TEXT_TO_IMAGE + 
     IMAGE_TO_TEXT + 
     MIXED_MODAL + 
-    TEXT_TO_DOCUMENT +
+    TEXT_TO_VIDEO +
+    TEXT_TO_DOCUMENT_REAL +
     HARD_NEGATIVES +
     NEGATIVE_CONTROLS
 )
@@ -1332,6 +1418,7 @@ def ingest_corpus(backend, storage, collection: str, corpus_dir: Path) -> int:
                     collection=collection,
                     embed_text_func=backend.embed_text,
                     embed_image_func=backend.embed_image,
+                    embed_video_func=backend.embed_video,
                     model="benchmark",
                 )
                 indexed += 1
@@ -1342,7 +1429,7 @@ def ingest_corpus(backend, storage, collection: str, corpus_dir: Path) -> int:
             gc.collect()
             try:
                 import mlx.core as mx
-                mx.metal.clear_cache()
+                mx.clear_cache()
             except Exception:
                 pass
         
@@ -1523,7 +1610,7 @@ def run_benchmark(
         gc.collect()
         try:
             import mlx.core as mx
-            mx.metal.clear_cache()
+            mx.clear_cache()
         except Exception:
             pass
 
