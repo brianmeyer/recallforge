@@ -59,6 +59,49 @@ def main():
         default=None,
         help="MLX quantization (default: bf16)",
     )
+    transport_group = serve_parser.add_mutually_exclusive_group()
+    transport_group.add_argument(
+        "--stdio",
+        action="store_true",
+        help="Use stdio transport (default)",
+    )
+    transport_group.add_argument(
+        "--http",
+        action="store_true",
+        help="Use HTTP/SSE transport",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=7433,
+        help="HTTP server port (default: 7433)",
+    )
+    serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP server bind host (default: 127.0.0.1)",
+    )
+
+    # warmup command
+    warmup_parser = subparsers.add_parser("warmup", help="Pre-load models and exit")
+    warmup_parser.add_argument(
+        "--mode", "-m",
+        choices=["embed", "hybrid"],
+        default=None,
+        help="Search mode (default: from RECALLFORGE_MODE env)",
+    )
+    warmup_parser.add_argument(
+        "--backend", "-b",
+        choices=["torch", "mlx", "auto"],
+        default=None,
+        help="Model backend (default: from RECALLFORGE_BACKEND env)",
+    )
+    warmup_parser.add_argument(
+        "--quantize",
+        choices=["bf16", "4bit"],
+        default=None,
+        help="MLX quantization (default: bf16)",
+    )
     
     # index command
     index_parser = subparsers.add_parser("index", help="Index files")
@@ -278,25 +321,46 @@ def main():
         return cmd_collections(args)
     elif args.command == "watch":
         return cmd_watch(args)
+    elif args.command == "warmup":
+        return cmd_warmup(args)
     else:
         parser.print_help()
         return 1
 
 
+def _apply_model_env(args):
+    """Set shared model/storage environment flags from CLI args."""
+    if getattr(args, "mode", None):
+        os.environ["RECALLFORGE_MODE"] = args.mode
+    if getattr(args, "backend", None):
+        os.environ["RECALLFORGE_BACKEND"] = args.backend
+    if getattr(args, "quantize", None):
+        os.environ["RECALLFORGE_MLX_QUANTIZE"] = args.quantize
+    if getattr(args, "store_path", None):
+        os.environ["RECALLFORGE_STORE_PATH"] = args.store_path
+
+
 def cmd_serve(args):
     """Start the MCP server."""
-    # Set environment from CLI args
-    if args.mode:
-        os.environ["RECALLFORGE_MODE"] = args.mode
-    if args.backend:
-        os.environ["RECALLFORGE_BACKEND"] = args.backend
-    if args.quantize:
-        os.environ["RECALLFORGE_MLX_QUANTIZE"] = args.quantize
-    if args.store_path:
-        os.environ["RECALLFORGE_STORE_PATH"] = args.store_path
-    
+    _apply_model_env(args)
+
+    transport = "http" if args.http else "stdio"
+
     from .server import run_server
-    run_server()
+    run_server(
+        transport=transport,
+        port=args.port,
+        host=args.host,
+        mode=args.mode,
+    )
+    return 0
+
+
+def cmd_warmup(args):
+    """Warm models and exit."""
+    _apply_model_env(args)
+    from .server import warmup_models
+    warmup_models()
     return 0
 
 

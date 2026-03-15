@@ -22,7 +22,7 @@ Tiered Search Modes (MLX 4-bit):
 import importlib.util
 import os
 import warnings
-from typing import Optional
+from typing import Optional, Tuple
 
 __version__ = "0.2.0"
 
@@ -37,6 +37,17 @@ RECALLFORGE_BACKEND = os.environ.get("RECALLFORGE_BACKEND", "auto")
 RECALLFORGE_MODE = os.environ.get("RECALLFORGE_MODE", "hybrid")
 RECALLFORGE_MLX_QUANTIZE = os.environ.get("RECALLFORGE_MLX_QUANTIZE", "4bit")
 RECALLFORGE_STORAGE = os.environ.get("RECALLFORGE_STORAGE", "lancedb")
+
+_BACKEND_SINGLETON = None
+_BACKEND_SINGLETON_CONFIG: Optional[Tuple[str, str, str]] = None
+
+
+def _resolve_backend_config() -> tuple[str, str, str]:
+    """Resolve normalized backend selection config from environment."""
+    backend_type = os.environ.get("RECALLFORGE_BACKEND", RECALLFORGE_BACKEND).lower()
+    mode = os.environ.get("RECALLFORGE_MODE", RECALLFORGE_MODE).lower()
+    quantization = os.environ.get("RECALLFORGE_MLX_QUANTIZE", RECALLFORGE_MLX_QUANTIZE)
+    return backend_type, mode, quantization
 
 
 def get_backend():
@@ -58,10 +69,13 @@ def get_backend():
         get_mlx_probe_reason,
     )
 
-    backend_type = os.environ.get("RECALLFORGE_BACKEND", RECALLFORGE_BACKEND).lower()
-    mode = os.environ.get("RECALLFORGE_MODE", RECALLFORGE_MODE).lower()
-    quantization = os.environ.get("RECALLFORGE_MLX_QUANTIZE", RECALLFORGE_MLX_QUANTIZE)
-    
+    global _BACKEND_SINGLETON, _BACKEND_SINGLETON_CONFIG
+
+    backend_type, mode, quantization = _resolve_backend_config()
+
+    if _BACKEND_SINGLETON is not None and _BACKEND_SINGLETON_CONFIG == (backend_type, mode, quantization):
+        return _BACKEND_SINGLETON
+
     if mode not in ("embed", "hybrid"):
         raise ValueError(f"Invalid mode: {mode}. Must be 'embed' or 'hybrid'")
     
@@ -73,27 +87,28 @@ def get_backend():
                 "Use RECALLFORGE_BACKEND=torch to force torch fallback."
             )
         MLXBackend = get_mlx_backend_class()
-        return MLXBackend(
+        backend = MLXBackend(
             mode=mode,
             quantization=quantization,
         )
-    
+
     elif backend_type == "torch":
         if not _has_torch():
             raise ImportError(
                 "PyTorch backend requested but torch is not installed. "
                 "Install with: pip install recallforge[torch]"
             )
-        return TorchBackend(mode=mode)
-    
+        backend = TorchBackend(mode=mode)
+
     elif backend_type == "auto":
         # Auto-detect: prefer MLX on Apple Silicon, else Torch
         import platform
+        backend = None
         if platform.system() == "Darwin" and platform.machine() == "arm64":
             if MLX_AVAILABLE:
                 try:
                     MLXBackend = get_mlx_backend_class()
-                    return MLXBackend(
+                    backend = MLXBackend(
                         mode=mode,
                         quantization=quantization,
                     )
@@ -102,18 +117,30 @@ def get_backend():
                         f"MLX auto-selection failed ({exc}); falling back to torch.",
                         RuntimeWarning,
                     )
-        if not _has_torch():
-            raise ImportError(
-                "No inference backend available. RecallForge requires either MLX or PyTorch.\n\n"
-                "Install a backend for your platform:\n"
-                "  Apple Silicon:  pip install recallforge[mlx]\n"
-                "  NVIDIA GPU:     pip install recallforge[cuda]\n"
-                "  CPU/other:      pip install recallforge[torch]\n"
-            )
-        return TorchBackend(mode=mode)
-    
+        if backend is None:
+            if not _has_torch():
+                raise ImportError(
+                    "No inference backend available. RecallForge requires either MLX or PyTorch.\n\n"
+                    "Install a backend for your platform:\n"
+                    "  Apple Silicon:  pip install recallforge[mlx]\n"
+                    "  NVIDIA GPU:     pip install recallforge[cuda]\n"
+                    "  CPU/other:      pip install recallforge[torch]\n"
+                )
+            backend = TorchBackend(mode=mode)
+
     else:
         raise ValueError(f"Unknown backend: {backend_type}. Use 'torch', 'mlx', or 'auto'")
+
+    _BACKEND_SINGLETON = backend
+    _BACKEND_SINGLETON_CONFIG = (backend_type, mode, quantization)
+    return backend
+
+
+def warmup_backend():
+    """Load backend singleton and warm all configured models."""
+    backend = get_backend()
+    backend.warm_up()
+    return backend
 
 
 def get_storage(store_path: Optional[str] = None):

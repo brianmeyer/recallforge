@@ -14,13 +14,14 @@ import logging
 import os
 import signal
 import sys
+import time
 from typing import Optional, Callable, TypeVar
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
 
-from . import __version__, get_backend, get_storage
+from . import __version__, get_backend, get_storage, warmup_backend
 from .search import HybridSearcher
 
 
@@ -41,6 +42,7 @@ def trace_log(operation: str, **kwargs) -> None:
 _server: Optional[Server] = None
 _shutdown_requested = False
 _tool_semaphore: Optional[asyncio.Semaphore] = None
+_http_start_time: Optional[float] = None
 
 _MAX_TOOL_CONCURRENCY = max(
     1,
@@ -1513,36 +1515,30 @@ async def _handle_delete_collection(arguments: dict, storage) -> list[TextConten
         return _error_response("BACKEND_ERROR", str(e), {"exception_type": type(e).__name__})
 
 
-async def main() -> None:
-    """Main entry point for MCP server."""
-    global _server
-    
-    # Get configuration from environment
-    mode = os.environ.get("RECALLFORGE_MODE", "hybrid")
+async def _initialize_runtime(mode: Optional[str] = None):
+    """Create backend+storage and preload models once for process lifetime."""
+    resolved_mode = mode or os.environ.get("RECALLFORGE_MODE", "hybrid")
     store_path = os.environ.get("RECALLFORGE_STORE_PATH")
-    
-    backend = None
+
+    print(f"RecallForge v{__version__}", file=sys.stderr)
+    print(f"Warming up models (mode={resolved_mode})...", file=sys.stderr)
+
+    backend = warmup_backend()
+    print("All models warmed up and resident.", file=sys.stderr)
+
+    storage = get_storage(store_path)
+    server = await create_server(backend=backend, storage=storage, mode=resolved_mode)
+    return server, backend, storage
+
+
+async def run_stdio_server(mode: Optional[str] = None) -> None:
+    """Run MCP over stdio transport (default, backwards compatible)."""
+    global _server
+
     storage = None
     try:
-        # Initialize backend and storage
-        backend = get_backend()
-        storage = get_storage(store_path)
-
-        # Warm up models
-        print(f"RecallForge v{__version__}", file=sys.stderr)
-        print(f"Warming up models (mode={mode})...", file=sys.stderr)
-        try:
-            backend.warm_up()
-            print("All models warmed up and resident.", file=sys.stderr)
-        except Exception as e:
-            print(f"Warning: Model warm-up failed: {e}", file=sys.stderr)
-            print("Models will load on first use (slower first query).", file=sys.stderr)
-
-        # Create server
-        server = await create_server(backend=backend, storage=storage, mode=mode)
+        server, _, storage = await _initialize_runtime(mode=mode)
         _server = server
-
-        # Run server
         async with stdio_server() as (read_stream, write_stream):
             await server.run(
                 read_stream,
@@ -1557,9 +1553,98 @@ async def main() -> None:
                 print(f"Warning: storage.close() failed during shutdown: {e}", file=sys.stderr)
 
 
-def run_server() -> None:
-    """Entry point for CLI."""
-    asyncio.run(main())
+async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optional[str] = None) -> None:
+    """Run MCP over HTTP/SSE transport with process-persistent models."""
+    global _server, _http_start_time
+
+    try:
+        from mcp.server.sse import SseServerTransport
+        from starlette.applications import Starlette
+        from starlette.responses import JSONResponse, Response
+        from starlette.routing import Mount, Route
+    except Exception as exc:
+        raise RuntimeError(
+            "HTTP mode requires mcp SSE + starlette dependencies. "
+            "Install optional server extras (e.g., recallforge[server])."
+        ) from exc
+
+    try:
+        import uvicorn
+    except Exception as exc:
+        raise RuntimeError(
+            "HTTP mode requires uvicorn. Install optional server extras "
+            "(e.g., recallforge[server])."
+        ) from exc
+
+    server, backend, storage = await _initialize_runtime(mode=mode)
+    _server = server
+    _http_start_time = time.time()
+
+    sse = SseServerTransport("/messages/")
+
+    async def health(_request):
+        info = await _run_blocking(backend.get_info)
+        uptime = 0
+        if _http_start_time is not None:
+            uptime = int(max(0, time.time() - _http_start_time))
+        return JSONResponse(
+            {
+                "status": "ok",
+                "models_loaded": bool(info.embedder_loaded),
+                "uptime_seconds": uptime,
+            }
+        )
+
+    async def handle_sse(request):
+        async with sse.connect_sse(request.scope, request.receive, request._send) as streams:
+            await server.run(streams[0], streams[1], server.create_initialization_options())
+        return Response()
+
+    async def shutdown():
+        if storage is not None:
+            try:
+                await _run_blocking(storage.close)
+            except Exception as e:
+                print(f"Warning: storage.close() failed during shutdown: {e}", file=sys.stderr)
+
+    app = Starlette(
+        routes=[
+            Route("/health", endpoint=health, methods=["GET"]),
+            Route("/sse", endpoint=handle_sse, methods=["GET"]),
+            Mount("/messages/", app=sse.handle_post_message),
+        ],
+        on_shutdown=[shutdown],
+    )
+
+    config = uvicorn.Config(app=app, host=host, port=port, log_level="info")
+    uvicorn_server = uvicorn.Server(config)
+    await uvicorn_server.serve()
+
+
+def warmup_models() -> None:
+    """Pre-load backend singleton models and exit."""
+    backend = warmup_backend()
+    info = backend.get_info()
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "backend": info.name,
+                "embedder_loaded": info.embedder_loaded,
+                "reranker_loaded": info.reranker_loaded,
+                "mode": backend.get_mode(),
+            },
+            indent=2,
+        )
+    )
+
+
+def run_server(transport: str = "stdio", port: int = 7433, host: str = "127.0.0.1", mode: Optional[str] = None) -> None:
+    """CLI entry point for MCP server transports."""
+    if transport == "http":
+        asyncio.run(run_http_server(port=port, host=host, mode=mode))
+    else:
+        asyncio.run(run_stdio_server(mode=mode))
 
 
 if __name__ == "__main__":
