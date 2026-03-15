@@ -45,21 +45,46 @@ One query. Any modality. All local.
 
 ## Performance
 
-4 modalities (text, images, documents, video) unified in a single MLX-optimized local vector space. Sub-60ms search latency. Under 400MB resident memory.
+4 modalities (text, images, documents, video) unified in a single MLX-optimized local vector space. Sub-60ms search latency in embed mode. Under 400MB resident memory.
 
-Measured on Mac mini M4 16GB, MLX 4-bit, embed mode:
+### Pipeline ablation (Mac mini M4 16GB, MLX 4-bit)
+
+Each stage of the pipeline improves retrieval quality. The architecture is the product.
+
+| Stage | R@1 | R@5 | R@10 | MRR | p50 |
+|-------|-----|-----|------|-----|-----|
+| Vector-only | 68.3% | 68.3% | 70.0% | 68.5% | 17ms |
+| BM25-only | 55.0% | 55.0% | 85.0% | 60.0% | 15ms |
+| Vector + BM25 (RRF) | 71.7% | 86.7% | 86.7% | 76.4% | 93ms |
+| **+ Reranker (hybrid mode)** | **83.3%** | **91.7%** | **95.0%** | **86.9%** | 3.9s |
+| + Query expansion (full mode) | 83.3% | 90.0% | 93.3% | 85.7% | 5.7s |
+
+The reranker is the big win: **+22% R@1 over raw embeddings**, pushing R@10 to 95%. Embed mode gives you 17ms searches for speed-sensitive workloads. Hybrid/full mode gives you 83%+ R@1 when quality matters.
+
+*Measured on 200 text documents + 50 images with ground-truth queries. See `benchmarks/` for methodology.*
+
+### Latency & resource usage
 
 | Metric | MLX 4-bit | PyTorch fp16 |
 |--------|-----------|--------------|
-| Warm search p50 | 53ms | 599ms |
-| Warm search p95 | 55ms | — |
+| Warm search p50 (embed) | 53ms | 599ms |
+| Warm search p95 (embed) | 55ms | — |
 | Cold start | 7.6s | ~20s |
 | Peak RSS (embed) | 329MB* | ~4GB |
 | Text indexing | 5.0 docs/sec | — |
 
 *\*MLX maps model weights lazily via memory-mapped files. RSS reflects resident pages, not full model size (~1.7GB on disk for embed mode). Actual memory pressure is low.*
 
-Search quality comes from the multi-stage pipeline (BM25 + vector + RRF fusion + cross-encoder reranking), not raw embedding accuracy alone.
+### COCO 1K retrieval (raw embeddings, no pipeline)
+
+For transparency: raw embedding quality on the standard COCO benchmark (1,000 images, no BM25/reranking/expansion). These numbers reflect the Qwen3-VL-2B embedder alone, not the full pipeline.
+
+| Direction | R@1 | R@5 | R@10 |
+|-----------|-----|-----|------|
+| Text → Image | 24.5% | 42.3% | 49.9% |
+| Image → Text | 34.3% | 42.0% | 44.1% |
+
+*Qwen3-VL is a generative VLM, not a contrastive model like CLIP. The pipeline ablation above shows how BM25 fusion and reranking compensate for this.*
 
 ## Installation
 
