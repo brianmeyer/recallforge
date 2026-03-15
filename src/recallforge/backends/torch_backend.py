@@ -478,9 +478,12 @@ class TorchBackend(ModelBackend):
     def set_mode(self, mode: str) -> None:
         """Set the search mode."""
         if mode == "full":
-            logger.warning(
-                "[TorchBackend] Mode 'full' is deprecated (query expander removed). "
-                "Falling back to 'hybrid'. See REC-108 for details."
+            import warnings
+            warnings.warn(
+                "Mode 'full' is deprecated (query expander removed). "
+                "Falling back to 'hybrid'. See REC-108 for details.",
+                DeprecationWarning,
+                stacklevel=2,
             )
             mode = "hybrid"
         

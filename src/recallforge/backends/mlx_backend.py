@@ -1117,13 +1117,13 @@ class MLXBackend(ModelBackend):
 
     def set_mode(self, mode: str) -> None:
         """Set the search mode."""
-        import logging
-        logger = logging.getLogger(__name__)
-        
         if mode == "full":
-            logger.warning(
-                "[MLXBackend] Mode 'full' is deprecated (query expander removed). "
-                "Falling back to 'hybrid'. See REC-108 for details."
+            import warnings
+            warnings.warn(
+                "Mode 'full' is deprecated (query expander removed). "
+                "Falling back to 'hybrid'. See REC-108 for details.",
+                DeprecationWarning,
+                stacklevel=2,
             )
             mode = "hybrid"
         

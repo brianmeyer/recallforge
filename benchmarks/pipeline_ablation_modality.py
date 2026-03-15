@@ -288,8 +288,10 @@ def main() -> int:
             )
             notes.append("Using real RecallForge backend.")
         else:
+            backend = SyntheticBackend(mode="hybrid")
             notes.append("Using synthetic backend.")
     except Exception as exc:
+        backend = SyntheticBackend(mode="hybrid")
         notes.append(f"Fell back to synthetic: {exc}")
 
     storage = LanceDBBackend(str(store_path))
