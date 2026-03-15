@@ -612,21 +612,26 @@ class MLXBackend(ModelBackend):
         """Embed a single video."""
         return self.embed_videos([video_path])[0]
 
-    # ── Captioning ──────────────────────────────────────────────────────
-    # Uses Qwen3-VL-2B-Instruct (generative VL model) loaded lazily and
-    # separately from the embedding/reranker models.  The key insight is
-    # that mlx_vlm.generate() needs the prompt formatted via the chat
+    # ── Captioning & Generation ─────────────────────────────────────────
+    # Uses Qwen3.5-0.8B (natively multimodal, early-fusion architecture)
+    # loaded lazily and separately from the embedding/reranker models.
+    # Qwen3.5 has vision built into the base model — no separate VL variant
+    # needed.  At 4-bit, it's ~596MB on disk / ~0.9GB in memory.
+    #
+    # This model handles BOTH image captioning and query expansion,
+    # replacing the previous Qwen3-VL-2B-Instruct captioner (1.7GB) and
+    # the rule-based query expander.
+    #
+    # Key: mlx_vlm.generate() needs the prompt formatted via the chat
     # template with {"type":"image"} content blocks so that vision tokens
-    # (<|vision_start|><|image_pad|><|vision_end|>) are injected.
-    # Passing a raw text string skips vision token injection and crashes
-    # with "image features and image tokens do not match".
+    # are injected.  Raw text strings skip vision token injection and crash.
 
-    _CAPTION_MODEL_ID = "mlx-community/Qwen3-VL-2B-Instruct-4bit"
+    _CAPTION_MODEL_ID = "mlx-community/Qwen3.5-0.8B-4bit"
     _CAPTION_MAX_TOKENS = 60
     _CAPTION_PROMPT = "Describe this image in one concise sentence for search indexing. No thinking."
 
     def _load_captioner(self) -> None:
-        """Lazily load the captioning model (Qwen3-VL-2B-Instruct)."""
+        """Lazily load the captioning model (Qwen3.5-0.8B)."""
         if getattr(self, "_captioner_model", None) is not None:
             return
         from mlx_vlm import load as vlm_load
@@ -661,11 +666,11 @@ class MLXBackend(ModelBackend):
         )
 
     def caption_image(self, image_path: str) -> str:
-        """Generate a one-sentence image caption using Qwen3-VL-2B-Instruct.
+        """Generate a one-sentence image caption using Qwen3.5-0.8B.
 
         The captioning model is loaded lazily on first use and kept in memory
         for the duration of the ingest batch.  Call _unload_captioner() after
-        batch completion to reclaim ~1.5 GB.
+        batch completion to reclaim ~0.9 GB.
         """
         try:
             self._load_captioner()
@@ -713,6 +718,34 @@ class MLXBackend(ModelBackend):
                 continue
 
         return " ".join(parts).strip()[:420] if parts else ""
+
+    def generate_text(self, prompt: str, max_tokens: int = 60) -> str:
+        """Generate text using the captioner model (Qwen3.5-0.8B).
+
+        Used for query expansion and other lightweight generation tasks.
+        Text-only — no image input.
+        """
+        try:
+            self._load_captioner()
+            from mlx_vlm import generate as vlm_generate
+
+            messages = [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+            ]}]
+            formatted = self._captioner_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            output = vlm_generate(
+                self._captioner_model,
+                self._captioner_processor,
+                prompt=formatted,
+                max_tokens=max_tokens,
+            )
+            text = output.text if hasattr(output, "text") else str(output)
+            return text.strip()
+        except Exception as exc:
+            logger.warning("generate_text failed: %s", exc)
+            return ""
 
     def embed_videos(self, video_paths: List[str]) -> np.ndarray:
         """
