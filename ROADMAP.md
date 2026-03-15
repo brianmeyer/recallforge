@@ -2,7 +2,7 @@
 
 *Local multimodal memory for AI agents — where retrieval meets intelligence.*
 
-**Current version:** v0.1.0  
+**Current version:** v0.2.0  
 **Status:** Active development (solo/small team)
 
 This roadmap is honest about where RecallForge is, where it's going, and what's explicitly not planned. We prioritize depth over breadth, local-first over cloud-everything, and correctness over speed.
@@ -50,6 +50,12 @@ This roadmap is honest about where RecallForge is, where it's going, and what's 
 - **Multi-get batch retrieval** — Retrieve multiple documents by glob pattern or doc ID in a single call.
 
 ### Agent Patterns
+- **REC-111: Cross-modal search mode** — Skip reranker/BM25 for image results. Benchmark shows reranker drops text→image R@1 from 30% to 0%. Content-type-aware pipeline routing.
+- **REC-112: `search_batch`** — Parallel multi-query with RRF merge. Single MCP call, multiple queries, fused results. Reduces round trips for agentic patterns.
+- **REC-113: `search_iterative`** — Server-side multi-round retrieval. Strategies: refine (query refinement per round), expand (parallel variants), multi_query (decompose complex queries). Inspired by NVIDIA NeMo agentic retrieval (Apache 2.0).
+- **REC-114: `explain_results`** — Per-document relevance explanations (BM25/vector/reranker score breakdown). Transparency for agentic retrieval.
+- **REC-115: Semantic query cache** — Embedding-similarity cache (threshold 0.95) for cross-session acceleration.
+- **REC-116: Model backend swappability** — Configurable embedding models with MRL dimension truncation, model registry, migration tooling. Current Qwen3-VL stack stays default.
 - **Conversation history memory** — Built-in support for thread-aware retrieval with automatic turn-based indexing.
 - **Entity extraction & memory** — Automatic named entity recognition and entity-centric retrieval paths.
 
