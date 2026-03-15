@@ -9,9 +9,11 @@ Model IDs:
 - MLX 4-bit: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit, arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
 """
 
+import gc
 import os
 import logging
 import importlib.util
+import threading
 import warnings
 import re
 from typing import List, Dict, Any, Optional
@@ -126,6 +128,7 @@ class MLXBackend(ModelBackend):
 
         self._mode = mode
         self._quantization = quantization
+        self._model_lock = threading.Lock()
 
         # Lazy-loaded models
         self._embedder_model = None
@@ -1459,38 +1462,42 @@ class MLXBackend(ModelBackend):
         Returns:
             Dict with the updated model IDs
         """
-        changed = []
-        if embedder_model is not None and embedder_model != self.EMBEDDER_MODEL:
-            self.EMBEDDER_MODEL = embedder_model
-            self._embedder_model = None
-            self._embedder_processor = None
-            self._embedder_num_layers = None
-            self._embed_text_max_tokens = None
-            self._embed_warmed = False
-            changed.append("embedder")
+        with self._model_lock:
+            changed = []
+            if embedder_model is not None and embedder_model != self.EMBEDDER_MODEL:
+                self.EMBEDDER_MODEL = embedder_model
+                old = self._embedder_model
+                self._embedder_model = None
+                self._embedder_processor = None
+                self._embedder_num_layers = None
+                self._embed_text_max_tokens = None
+                self._embed_warmed = False
+                del old
+                changed.append("embedder")
 
-        if reranker_model is not None and reranker_model != self.RERANKER_MODEL:
-            self.RERANKER_MODEL = reranker_model
-            self._reranker_model = None
-            self._reranker_processor = None
-            self._reranker_score_linear = None
-            self._reranker_score_weight = None
-            self._reranker_score_bias = None
-            self._reranker_yes_token_id = None
-            self._reranker_no_token_id = None
-            self._reranker_use_direct_logits = False
-            changed.append("reranker")
+            if reranker_model is not None and reranker_model != self.RERANKER_MODEL:
+                self.RERANKER_MODEL = reranker_model
+                old = self._reranker_model
+                self._reranker_model = None
+                self._reranker_processor = None
+                self._reranker_score_linear = None
+                self._reranker_score_weight = None
+                self._reranker_score_bias = None
+                self._reranker_yes_token_id = None
+                self._reranker_no_token_id = None
+                self._reranker_use_direct_logits = False
+                del old
+                changed.append("reranker")
 
-        if captioner_model is not None and captioner_model != self.CAPTION_MODEL:
-            self.CAPTION_MODEL = captioner_model
-            self._captioner_model = None
-            self._captioner_processor = None
-            changed.append("captioner")
+            if captioner_model is not None and captioner_model != self.CAPTION_MODEL:
+                self.CAPTION_MODEL = captioner_model
+                self._unload_captioner()
+                changed.append("captioner")
 
-        if changed:
-            logger.info(
-                "[MLXBackend] Model IDs changed: %s. Cached models cleared.",
-                ", ".join(changed)
-            )
+            if changed:
+                gc.collect()
+                logger.info(
+                    "model_swap changed=%s", ", ".join(changed)
+                )
 
         return self.get_model_ids()
