@@ -346,13 +346,34 @@ class HybridSearcher:
         return final_results[:self.candidate_limit]
     
     def _select_best_chunk(self, result: SearchResult) -> Dict[str, Any]:
-        """Select the best chunk from a document for reranking."""
-        return {
+        """Select the best chunk from a document for reranking.
+        
+        For image results, includes the image_path so the reranker
+        can use its vision-language capabilities instead of scoring
+        an empty text string.
+        """
+        chunk: Dict[str, Any] = {
             'text': result.body or result.context or "",
             'filepath': result.filepath,
             'content_type': result.content_type,
             'hash': result.hash,
         }
+        # For image/video content, resolve the actual file path for VL reranking
+        if result.content_type in ("image", "video") and result.filepath:
+            # filepath may be recallforge://collection/path or absolute
+            raw = result.filepath
+            if raw.startswith("recallforge://"):
+                # Strip scheme + collection prefix
+                parts = raw.split("/", 3)
+                raw = "/" + parts[-1] if len(parts) > 3 else raw
+            from pathlib import Path
+            p = Path(raw)
+            if p.is_file():
+                if result.content_type == "image":
+                    chunk['image_path'] = str(p)
+                elif result.content_type == "video":
+                    chunk['video_path'] = str(p)
+        return chunk
     
     def _rerank_candidates(
         self,

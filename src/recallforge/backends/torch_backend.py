@@ -408,14 +408,21 @@ class TorchBackend(ModelBackend):
         
         self._load_reranker()
         
-        doc_texts = [
-            d.get("text", "") or d.get("text_body", "") or ""
-            for d in documents
-        ]
+        doc_entries = []
+        for d in documents:
+            text = d.get("text", "") or d.get("text_body", "") or ""
+            image_path = d.get("image_path")
+            video_path = d.get("video_path")
+            if image_path:
+                doc_entries.append({"text": text, "image": image_path})
+            elif video_path:
+                doc_entries.append({"text": text, "video": video_path})
+            else:
+                doc_entries.append({"text": text})
         
         inputs = {
             "query": {"text": query},
-            "documents": [{"text": t} for t in doc_texts],
+            "documents": doc_entries,
             "instruction": "Given a search query, retrieve relevant candidates that answer the query.",
         }
         

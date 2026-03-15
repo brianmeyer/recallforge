@@ -28,8 +28,8 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 1.0,
         "mrr": 1.0,
-        "p50_ms": 72.6,
-        "p95_ms": 79.9,
+        "p50_ms": 71.9,
+        "p95_ms": 78.3,
         "total_queries": 15
       },
       "text_to_image": {
@@ -38,8 +38,8 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 0.6744,
         "mrr": 0.5676,
-        "p50_ms": 71.5,
-        "p95_ms": 74.9,
+        "p50_ms": 70.4,
+        "p95_ms": 76.2,
         "total_queries": 10
       },
       "image_to_text": {
@@ -48,8 +48,8 @@
         "recall_at_10": 0.8333,
         "ndcg_at_10": 0.4924,
         "mrr": 0.375,
-        "p50_ms": 2824.5,
-        "p95_ms": 2830.8,
+        "p50_ms": 2831.7,
+        "p95_ms": 2840.5,
         "total_queries": 6
       },
       "mixed_modal": {
@@ -58,8 +58,8 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 0.937,
         "mrr": 1.0,
-        "p50_ms": 71.4,
-        "p95_ms": 77.4,
+        "p50_ms": 72.3,
+        "p95_ms": 75.8,
         "total_queries": 7
       }
     },
@@ -70,8 +70,8 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 1.0,
         "mrr": 1.0,
-        "p50_ms": 5.6,
-        "p95_ms": 9.9,
+        "p50_ms": 5.3,
+        "p95_ms": 9.4,
         "total_queries": 15
       },
       "text_to_image": {
@@ -80,8 +80,8 @@
         "recall_at_10": 0.0,
         "ndcg_at_10": 0.0,
         "mrr": 0.0,
-        "p50_ms": 5.3,
-        "p95_ms": 7.5,
+        "p50_ms": 5.2,
+        "p95_ms": 7.6,
         "total_queries": 10
       },
       "image_to_text": {
@@ -100,8 +100,8 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 0.9286,
         "mrr": 0.9048,
-        "p50_ms": 5.1,
-        "p95_ms": 8.0,
+        "p50_ms": 5.6,
+        "p95_ms": 8.8,
         "total_queries": 7
       }
     },
@@ -112,8 +112,8 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 1.0,
         "mrr": 1.0,
-        "p50_ms": 93.9,
-        "p95_ms": 101.4,
+        "p50_ms": 95.3,
+        "p95_ms": 100.0,
         "total_queries": 15
       },
       "text_to_image": {
@@ -122,8 +122,8 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 0.4489,
         "mrr": 0.2769,
-        "p50_ms": 95.2,
-        "p95_ms": 96.3,
+        "p50_ms": 100.7,
+        "p95_ms": 233.1,
         "total_queries": 10
       },
       "image_to_text": {
@@ -132,8 +132,8 @@
         "recall_at_10": 0.8333,
         "ndcg_at_10": 0.4924,
         "mrr": 0.375,
-        "p50_ms": 2821.3,
-        "p95_ms": 2853.2,
+        "p50_ms": 3161.8,
+        "p95_ms": 3582.1,
         "total_queries": 6
       },
       "mixed_modal": {
@@ -142,8 +142,8 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 0.8884,
         "mrr": 1.0,
-        "p50_ms": 98.5,
-        "p95_ms": 104.2,
+        "p50_ms": 116.1,
+        "p95_ms": 157.4,
         "total_queries": 7
       }
     },
@@ -154,18 +154,18 @@
         "recall_at_10": 1.0,
         "ndcg_at_10": 1.0,
         "mrr": 1.0,
-        "p50_ms": 4568.8,
-        "p95_ms": 7825.0,
+        "p50_ms": 4730.9,
+        "p95_ms": 11202.6,
         "total_queries": 15
       },
       "text_to_image": {
         "recall_at_1": 0.0,
         "recall_at_5": 0.9,
         "recall_at_10": 1.0,
-        "ndcg_at_10": 0.4635,
-        "mrr": 0.2926,
-        "p50_ms": 4479.1,
-        "p95_ms": 4581.9,
+        "ndcg_at_10": 0.4687,
+        "mrr": 0.2992,
+        "p50_ms": 4685.0,
+        "p95_ms": 4968.2,
         "total_queries": 10
       },
       "image_to_text": {
@@ -174,18 +174,18 @@
         "recall_at_10": 0.8333,
         "ndcg_at_10": 0.4924,
         "mrr": 0.375,
-        "p50_ms": 2820.7,
-        "p95_ms": 6790.2,
+        "p50_ms": 2821.9,
+        "p95_ms": 4116.6,
         "total_queries": 6
       },
       "mixed_modal": {
         "recall_at_1": 0.8571,
         "recall_at_5": 1.0,
         "recall_at_10": 1.0,
-        "ndcg_at_10": 0.8629,
+        "ndcg_at_10": 0.8654,
         "mrr": 0.9286,
-        "p50_ms": 4443.8,
-        "p95_ms": 4520.7,
+        "p50_ms": 4717.1,
+        "p95_ms": 4851.9,
         "total_queries": 7
       }
     }

@@ -885,8 +885,30 @@ class MLXBackend(ModelBackend):
 
         raise RuntimeError("Unable to locate reranker score head (score_linear/lm_head)")
 
-    def _format_reranker_prompt(self, query: str, document: str, instruction: str) -> str:
-        """Format a query-document pair as chat input for reranking."""
+    def _format_reranker_prompt(
+        self, query: str, document: str, instruction: str,
+        image_path: Optional[str] = None,
+        video_path: Optional[str] = None,
+    ) -> str:
+        """Format a query-document pair as chat input for reranking.
+        
+        When image_path or video_path is provided, the media is included
+        as a vision input so the VL reranker can cross-encode the text query
+        against the actual visual content.
+        """
+        doc_content: list = []
+        doc_content.append({"type": "text", "text": "\n<Document>:"})
+        if image_path:
+            doc_content.append({"type": "image", "image": f"file://{image_path}"})
+            if document:
+                doc_content.append({"type": "text", "text": document})
+        elif video_path:
+            doc_content.append({"type": "video", "video": f"file://{video_path}"})
+            if document:
+                doc_content.append({"type": "text", "text": document})
+        else:
+            doc_content.append({"type": "text", "text": document or "NULL"})
+
         messages = [
             {
                 "role": "system",
@@ -898,8 +920,7 @@ class MLXBackend(ModelBackend):
                     {"type": "text", "text": f"<Instruct>: {instruction}"},
                     {"type": "text", "text": "<Query>:"},
                     {"type": "text", "text": query or "NULL"},
-                    {"type": "text", "text": "\n<Document>:"},
-                    {"type": "text", "text": document or "NULL"},
+                    *doc_content,
                 ],
             },
         ]
@@ -960,13 +981,99 @@ class MLXBackend(ModelBackend):
 
         return logits
 
-    def _score_reranker_prompt(self, prompt: str, num_layers: int) -> float:
-        """Run one query-document pair and return sigmoid(score_linear(last_hidden))."""
-        inputs = self._reranker_processor(text=prompt, return_tensors="np")
+    def _score_reranker_prompt(
+        self, prompt: str, num_layers: int,
+        image_path: Optional[str] = None,
+        video_path: Optional[str] = None,
+    ) -> float:
+        """Run one query-document pair and return sigmoid(score_linear(last_hidden)).
+        
+        When image_path or video_path is provided, processes the media through
+        the VL pipeline so the reranker can cross-encode text against visual content.
+        """
+        if image_path:
+            from PIL import Image as PILImage
+            try:
+                img = PILImage.open(image_path).convert("RGB")
+                # VL processor requires PyTorch tensors for image inputs
+                inputs = self._reranker_processor(
+                    text=prompt, images=[img], return_tensors="pt",
+                )
+                # Convert to numpy for MLX compatibility
+                inputs = {k: v.numpy() if hasattr(v, 'numpy') else v for k, v in inputs.items()}
+            except Exception as e:
+                logger.warning(
+                    f"[MLXBackend] Failed to load image for reranking: {e}; "
+                    "falling back to text-only"
+                )
+                inputs = self._reranker_processor(text=prompt, return_tensors="np")
+        elif video_path:
+            try:
+                from qwen_vl_utils import process_vision_info
+                messages = [{"role": "user", "content": [
+                    {"type": "video", "video": video_path},
+                    {"type": "text", "text": prompt},
+                ]}]
+                _, video_inputs, video_kwargs = process_vision_info(
+                    [messages], return_video_kwargs=True,
+                )
+                normalized_kwargs = dict(video_kwargs or {})
+                fps = normalized_kwargs.get("fps")
+                if isinstance(fps, list):
+                    normalized_kwargs["fps"] = fps[0] if fps else None
+                inputs = self._reranker_processor(
+                    text=[prompt], videos=video_inputs,
+                    return_tensors="pt", padding=True,
+                    **normalized_kwargs,
+                )
+                inputs = {k: v.numpy() if hasattr(v, 'numpy') else v for k, v in inputs.items()}
+            except Exception as e:
+                logger.warning(
+                    f"[MLXBackend] Failed to process video for reranking: {e}; "
+                    "falling back to text-only"
+                )
+                inputs = self._reranker_processor(text=prompt, return_tensors="np")
+        else:
+            inputs = self._reranker_processor(text=prompt, return_tensors="np")
         input_ids = mx.array(inputs["input_ids"])
 
+        # Check for vision inputs (image or video reranking)
+        has_image = "pixel_values" in inputs and "image_grid_thw" in inputs
+        has_video = "pixel_values_videos" in inputs and "video_grid_thw" in inputs
+        has_vision = has_image or has_video
+        pixel_values = None
+        image_grid_thw = None
+        video_grid_thw = None
+        if has_image:
+            pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
+            image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
+        elif has_video:
+            pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
+            video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
+
         cache = _make_cache(num_layers)
-        if self._reranker_use_direct_logits:
+
+        if has_vision:
+            # VL path: merge vision features with text embeddings
+            try:
+                emb_features = self._reranker_model.get_input_embeddings(
+                    input_ids, pixel_values,
+                    image_grid_thw=image_grid_thw,
+                    video_grid_thw=video_grid_thw,
+                )
+                inputs_embeds = emb_features.to_dict()["inputs_embeds"]
+                qwen_model = self._reranker_model.language_model.model
+                hidden = qwen_model(None, inputs_embeds=inputs_embeds, cache=cache).astype(mx.float32)
+                last_hidden = hidden[:, -1, :]
+                logits = self._apply_reranker_linear(last_hidden)
+            except Exception as e:
+                logger.warning(f"[MLXBackend] VL reranking failed, falling back to text-only: {e}")
+                # Fall back to text-only path
+                qwen_model = self._reranker_model.language_model.model
+                hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
+                last_hidden = hidden[:, -1, :]
+                logits = self._apply_reranker_linear(last_hidden)
+        elif self._reranker_use_direct_logits:
             if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
                 raise RuntimeError("yes/no token ids are unavailable for reranker fallback")
             lm_out = self._reranker_model.language_model(input_ids, cache=cache)
@@ -1064,8 +1171,16 @@ class MLXBackend(ModelBackend):
         for idx, doc in enumerate(documents):
             try:
                 text = doc.get("text", "") or doc.get("text_body", "") or ""
-                prompt = self._format_reranker_prompt(query, text, instruction)
-                score = self._score_reranker_prompt(prompt, num_layers)
+                image_path = doc.get("image_path")
+                video_path = doc.get("video_path")
+                prompt = self._format_reranker_prompt(
+                    query, text, instruction,
+                    image_path=image_path, video_path=video_path,
+                )
+                score = self._score_reranker_prompt(
+                    prompt, num_layers,
+                    image_path=image_path, video_path=video_path,
+                )
                 scores.append(score)
             except Exception as e:
                 logger.error(f"[MLXBackend] Rerank error at doc {idx}: {e}")
