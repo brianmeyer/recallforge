@@ -440,6 +440,28 @@ async def create_server(
                 },
             ),
             Tool(
+                name="explain_results",
+                description="Explain WHY each search result was returned and ranked. Returns detailed provenance including RRF source ranks, reranker scores, blend weights, and media compensation for each result.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                        "image_path": {"type": "string", "description": "Optional image query path (mutually exclusive with query)"},
+                        "video_path": {"type": "string", "description": "Optional video query path (mutually exclusive with query/image_path)"},
+                        "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
+                        "intent": {"type": "string", "enum": ["exact_lookup", "semantic", "broad"], "description": "Optional intent for query steering: exact_lookup (boost BM25), semantic (boost vector), broad (equal weights)"},
+                        "rerank_top_k": {"type": "integer", "description": "Maximum number of top RRF candidates to rerank", "default": 20, "minimum": 0},
+                        "expand": {"type": "boolean", "description": "Enable VL-aware query expansion", "default": False},
+                    },
+                },
+            ),
+            Tool(
                 name="get_config",
                 description="Get current server configuration including version, backend, mode, quantization, data directory, default collection, and max file size",
                 inputSchema={
@@ -518,6 +540,8 @@ async def _dispatch_tool(
             arguments.setdefault("caption_media", mutable_config["caption_media"])
     if name == "search":
         return await _handle_search(arguments, backend, storage)
+    elif name == "explain_results":
+        return await _handle_explain_results(arguments, backend, storage)
     elif name == "search_fts":
         return await _handle_search_fts(arguments, storage)
     elif name == "search_vec":
@@ -695,6 +719,99 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
             }
             for r in results
         ],
+    }
+
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_explain_results(arguments: dict, backend, storage) -> list[TextContent]:
+    """Handle explain_results - returns detailed scoring provenance for each result."""
+    query, image_path, video_path, input_error = _resolve_query_inputs(arguments)
+    limit = arguments.get("limit", 10)
+    collection = arguments.get("collection")
+    content_type = arguments.get("content_type")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+    intent = arguments.get("intent")
+    rerank_top_k = arguments.get("rerank_top_k", 20)
+
+    trace_log("explain_results_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k)
+
+    if input_error:
+        return _error_response("INVALID_INPUT", input_error)
+
+    searcher = HybridSearcher(
+        backend=backend,
+        storage=storage,
+        limit=limit,
+        collection=collection,
+        content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+        intent=intent,
+        rerank_top_k=rerank_top_k,
+    )
+
+    if image_path:
+        results = await _run_blocking(searcher.search_image, image_path)
+    elif video_path:
+        results = await _run_blocking(searcher.search_video, video_path)
+    else:
+        results = await _run_blocking(searcher.search, query)
+
+    trace_log("explain_results_done", query=(query or image_path or video_path or "")[:50], count=len(results))
+
+    # Build detailed explanation for each result
+    explained_results = []
+    for r in results:
+        explanation = {
+            "filepath": r.filepath,
+            "title": r.title,
+            "final_score": round(r.score, 4),
+            "content_type": r.content_type if hasattr(r, 'content_type') else "text",
+            "source": r.source,
+        }
+        
+        if r.audit:
+            explanation["provenance"] = {
+                "rrf": {
+                    "sources": r.audit.rrf_sources,  # {source_name: rank}
+                    "rrf_score": round(r.audit.rrf_score, 6),
+                    "media_compensation_applied": r.audit.media_compensation_applied,
+                },
+                "reranker": {
+                    "raw_score": round(r.audit.reranker_raw_score, 6),
+                    "normalized_score": round(r.audit.reranker_normalized_score, 6),
+                    "scoring_path": r.audit.reranker_scoring_path,  # text, vl_image, vl_video, etc.
+                },
+                "blend": {
+                    "weights": r.audit.blend_weights,  # {"rrf": 0.75, "rerank": 0.25}
+                    "final_blended_score": round(r.audit.final_blended_score, 6),
+                },
+            }
+        else:
+            explanation["provenance"] = {
+                "note": "Audit trail not available - result may be from vector-only path"
+            }
+        
+        explanation["rrf_rank"] = r.rrf_rank
+        explanation["rerank_score"] = round(r.rerank_score, 4)
+        explanation["snippet"] = (r.body or "")[:500] if r.body else None
+        
+        explained_results.append(explanation)
+
+    output = {
+        "query": query,
+        "image_path": image_path,
+        "video_path": video_path,
+        "mode": backend.get_mode(),
+        "count": len(results),
+        "results": explained_results,
     }
 
     return [TextContent(type="text", text=json.dumps(output, indent=2))]

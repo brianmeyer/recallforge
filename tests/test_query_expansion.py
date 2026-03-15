@@ -9,7 +9,7 @@ from recallforge.search import (
     _is_visual_query,
     _generate_text_variants,
     _generate_visual_description,
-    VISUAL_QUERY_INDICATORS,
+    _VISUAL_PHRASE_INDICATORS,
     HybridSearcher,
 )
 
@@ -22,9 +22,7 @@ class TestVisualQueryDetection:
         "image of a neural network",
         "photo of the team",
         "picture of the architecture",
-        "chart showing revenue",
         "screenshot of the error",
-        "visual representation of data",
         "whiteboard from the meeting",
         "that photo of the event",
         "the diagram in the document",
@@ -47,8 +45,8 @@ class TestVisualQueryDetection:
 
     def test_visual_indicators_list_not_empty(self):
         """Visual indicators list should be populated."""
-        assert len(VISUAL_QUERY_INDICATORS) > 0
-        assert all(isinstance(ind, str) for ind in VISUAL_QUERY_INDICATORS)
+        assert len(_VISUAL_PHRASE_INDICATORS) > 0
+        assert all(isinstance(ind, str) for ind in _VISUAL_PHRASE_INDICATORS)
 
 
 class TestTextVariantGeneration:
@@ -209,43 +207,36 @@ class TestQueryExpansionIntegration:
 
     def test_visual_indicators_comprehensive(self):
         """Visual indicators should cover common visual query patterns."""
-        visual_queries = [
-            "show me",
-            "show",
-            "image of",
-            "photo of",
-            "picture of",
-            "diagram",
-            "chart",
-            "graph",
-            "screenshot",
-            "visual",
-            "illustration",
-            "drawing",
-            "figure",
-            "table",
-            "map",
-            "portrait",
-            "landscape",
-            "scene",
-            "whiteboard",
-            "sketch",
-            "mockup",
-            "wireframe",
-            "architecture diagram",
-            "flow chart",
-            "mind map",
-            "infographic",
-            "that photo",
-            "that image",
-            "the diagram",
-            "the chart",
-            "the picture",
-            "the screenshot",
+        # Phrase indicators (exact substring match)
+        phrase_queries = [
+            "show me", "image of", "photo of", "picture of",
+            "architecture diagram", "flow chart", "mind map",
+            "that photo", "that image", "the diagram", "the chart",
+            "the picture", "the screenshot",
+        ]
+        # Word indicators (word-boundary match)
+        word_queries = [
+            "diagram", "screenshot", "illustration", "drawing",
+            "infographic", "wireframe", "mockup", "sketch",
+            "whiteboard", "portrait",
         ]
 
-        for query in visual_queries:
+        for query in phrase_queries + word_queries:
             assert _is_visual_query(query), f"Should detect: {query}"
+
+    def test_visual_false_positive_rejection(self):
+        """Ambiguous words should NOT trigger visual detection as substrings."""
+        non_visual = [
+            "mapreduce tuning guide",
+            "how to show results in terminal",
+            "tableau dashboard setup",
+            "graph database indexing",
+            "figure out the budget",
+            "landscape of AI startups",
+            "scene understanding in NLP",
+        ]
+        for query in non_visual:
+            assert not _is_visual_query(query), f"Should NOT detect: {query}"
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -111,15 +112,17 @@ class SearchAudit:
     content_type: str
 
     # RRF provenance
-    rrf_sources: Dict[str, int] = field(default_factory=dict)  # source_name -> rank
+    rrf_sources: Dict[str, int] = field(default_factory=dict)  # source_name -> rank in that source list
+    rrf_score: float = 0.0  # Final RRF score after fusion
 
     # Reranker provenance
     reranker_raw_score: float = 0.5
     reranker_normalized_score: float = 0.5
-    reranker_scoring_path: str = "unknown"  # text_derived, text_direct_logits, vl_image, vl_video, fallback_text
+    reranker_scoring_path: str = "unknown"  # text, vl_image, vl_video, or fallback
 
     # Blend provenance
     blend_weights: Dict[str, float] = field(default_factory=dict)  # rrf_weight, rerank_weight
+    media_compensation_applied: bool = False  # Whether media boost was applied in RRF
     final_blended_score: float = 0.0
 
 
@@ -143,21 +146,37 @@ class HybridResult:
     audit: Optional[SearchAudit] = None  # Per-result audit trail
 
 
-# Visual query indicators - phrases that suggest visual content
-VISUAL_QUERY_INDICATORS = [
-    "show me", "show", "image of", "photo of", "picture of", "diagram",
-    "chart", "graph", "screenshot", "visual", "illustration", "drawing",
-    "figure", "table", "map", "portrait", "landscape", "scene",
-    "whiteboard", "sketch", "mockup", "wireframe", "architecture diagram",
-    "flow chart", "mind map", "infographic", "that photo", "that image",
-    "the diagram", "the chart", "the picture", "the screenshot",
+# Visual query indicators - multi-word phrases checked first (high precision),
+# then single-word tokens checked with word-boundary matching to avoid false
+# positives like "mapreduce" matching "map" or "tableau" matching "table".
+_VISUAL_PHRASE_INDICATORS = [
+    "show me", "image of", "photo of", "picture of", "architecture diagram",
+    "flow chart", "mind map", "that photo", "that image", "the diagram",
+    "the chart", "the picture", "the screenshot",
 ]
+_VISUAL_WORD_INDICATORS = [
+    "diagram", "screenshot", "illustration", "drawing", "infographic",
+    "wireframe", "mockup", "sketch", "whiteboard", "portrait",
+]
+# Deliberately excluded: "show", "chart", "graph", "table", "map", "figure",
+# "landscape", "scene", "visual" — too many false positives as substrings.
+
+_VISUAL_WORD_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in _VISUAL_WORD_INDICATORS) + r")\b",
+    re.IGNORECASE,
+)
 
 
 def _is_visual_query(query: str) -> bool:
-    """Check if query implies visual content."""
+    """Check if query implies visual content.
+
+    Uses phrase matching first (high precision), then word-boundary matching
+    for single tokens to avoid false positives like 'mapreduce' or 'tableau'.
+    """
     query_lower = query.lower()
-    return any(indicator in query_lower for indicator in VISUAL_QUERY_INDICATORS)
+    if any(phrase in query_lower for phrase in _VISUAL_PHRASE_INDICATORS):
+        return True
+    return bool(_VISUAL_WORD_PATTERN.search(query))
 
 
 def _generate_text_variants(query: str, backend: ModelBackend) -> List[str]:
@@ -214,9 +233,12 @@ def _generate_visual_description(query: str) -> str:
 
     # Remove visual indicators to get the core subject
     core_query = query_lower
-    for indicator in VISUAL_QUERY_INDICATORS:
-        core_query = core_query.replace(indicator, "")
-    core_query = core_query.strip().strip("of").strip()
+    for phrase in _VISUAL_PHRASE_INDICATORS:
+        core_query = core_query.replace(phrase, "")
+    for word in _VISUAL_WORD_INDICATORS:
+        core_query = re.sub(r"\b" + re.escape(word) + r"\b", "", core_query)
+    # Strip leading prepositions as whole words (not char-strip which corrupts terms)
+    core_query = re.sub(r"^\s*(of|a|an|the|with|for|in)\b\s*", "", core_query.strip()).strip()
 
     if not core_query:
         return query_lower
@@ -444,10 +466,10 @@ class HybridSearcher:
 
         # Image queries cannot be expressed as text tokens, so BM25 is skipped.
         # Text-to-image via BM25 works through search() using ingest-time captions (REC-122).
-        candidates = self._reciprocal_rank_fusion(all_results)
+        candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_query = f"image_query:{image_path}"
-        rerank_scores = self._rerank_candidates(candidates, rerank_query)
-        return self._blend_scores(candidates, rerank_scores)
+        rerank_scores, reranker_path = self._rerank_candidates(candidates, rerank_query)
+        return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 
     def search_video(self, video_path: str) -> List[HybridResult]:
         """Run raw-video query search through the vector path.
@@ -539,8 +561,13 @@ class HybridSearcher:
     def _reciprocal_rank_fusion(
         self,
         all_results: Dict[str, List[SearchResult]],
-    ) -> List[SearchResult]:
-        """Apply RRF (Reciprocal Rank Fusion) to combine results."""
+    ) -> tuple[List[SearchResult], Dict[str, Dict[str, Any]]]:
+        """Apply RRF (Reciprocal Rank Fusion) to combine results.
+        
+        Returns:
+            Tuple of (fused_results, rrf_audit_info) where rrf_audit_info maps
+            filepath to {sources: {name: rank}, rrf_score: float, media_compensation: bool}.
+        """
         combined: Dict[str, Dict[str, Any]] = {}
         k = self.rrf_k
 
@@ -549,14 +576,29 @@ class HybridSearcher:
         list_names = list(all_results.keys())
 
         if self.intent and self.intent in INTENT_WEIGHTS:
-            # Apply intent-specific weights with fallback to 1.0
+            # Apply intent-specific weights. Expansion sources (e.g.
+            # original_vec_exp1) inherit the weight of their parent source
+            # so that intent steering remains stable regardless of expansion.
             intent_weights = INTENT_WEIGHTS[self.intent]
             for name in list_names:
-                weights[name] = intent_weights.get(name, 1.0)
+                if name in intent_weights:
+                    weights[name] = intent_weights[name]
+                else:
+                    # Derive parent name by stripping _expN suffix
+                    parent = re.sub(r"_exp\d+$", "", name)
+                    parent_weight = intent_weights.get(parent, 1.0)
+                    # Expansion variants get reduced weight (0.5x parent)
+                    # to avoid diluting the primary signal
+                    weights[name] = parent_weight * 0.5
         else:
-            # Default weights: first 2 lists = 2.0, rest = 1.0
-            for i, name in enumerate(list_names):
-                weights[name] = 2.0 if i < 2 else 1.0
+            # Default weights: original sources = 2.0, expansions = 1.0
+            for name in list_names:
+                if re.search(r"_exp\d+$", name):
+                    parent = re.sub(r"_exp\d+$", "", name)
+                    parent_weight = weights.get(parent, 2.0)
+                    weights[name] = parent_weight * 0.5
+                else:
+                    weights[name] = 2.0
 
         # Log blend weights applied
         for name, weight in weights.items():
@@ -574,13 +616,14 @@ class HybridSearcher:
                     combined[filepath] = {
                         'result': result,
                         'rrf_score': 0.0,
-                        'sources': set(),
+                        'sources': {},  # source_name -> rank
                         'best_rank': float('inf'),
                         'content_type': result.content_type,
+                        'media_compensation': False,
                     }
                 
                 combined[filepath]['rrf_score'] += weight / (k + rank + 1)
-                combined[filepath]['sources'].add(list_name)
+                combined[filepath]['sources'][list_name] = rank  # Track rank per source
                 combined[filepath]['best_rank'] = min(
                     combined[filepath]['best_rank'],
                     rank
@@ -603,17 +646,29 @@ class HybridSearcher:
                 for filepath, data in combined.items():
                     if data['content_type'] in ("image", "video"):
                         data['rrf_score'] *= media_boost
+                        data['media_compensation'] = True
 
         # Convert to list and sort
         final_results = []
         for filepath, data in combined.items():
             result = data['result']
             result.score = data['rrf_score']
-            result.source = '+'.join(sorted(data['sources']))
+            result.source = '+'.join(sorted(data['sources'].keys()))
             final_results.append(result)
         
         final_results.sort(key=lambda x: x.score, reverse=True)
-        return final_results[:self.candidate_limit]
+        
+        # Build audit info for each result
+        rrf_audit_info: Dict[str, Dict[str, Any]] = {}
+        for filepath, data in combined.items():
+            rrf_audit_info[filepath] = {
+                'sources': data['sources'],  # {source_name: rank}
+                'rrf_score': data['rrf_score'],
+                'media_compensation': data['media_compensation'],
+                'weights': dict(weights),  # Capture the weights used
+            }
+        
+        return final_results[:self.candidate_limit], rrf_audit_info
     
     def _select_best_chunk(self, result: SearchResult) -> Dict[str, Any]:
         """Select the best chunk from a document for reranking.
@@ -649,14 +704,51 @@ class HybridSearcher:
         self,
         candidates: List[SearchResult],
         query: str,
-    ) -> Dict[str, float]:
-        """Rerank candidates with cross-encoder."""
+    ) -> tuple[Dict[str, float], str]:
+        """Rerank candidates with cross-encoder.
+        
+        Returns:
+            Tuple of (scores_dict, scoring_path) where scoring_path is one of:
+            'text', 'vl_image', 'vl_video', 'fallback', or 'skipped'.
+        """
         t0 = time.perf_counter()
         if not candidates:
-            return {}
+            return {}, "skipped"
 
         if not self.backend.needs_reranker():
             logger.debug("reranker_path path=skipped reason=no_reranker_needed")
+            return {c.filepath: 0.5 for c in candidates}, "text"
+
+        rerank_limit = min(len(candidates), self.rerank_top_k)
+        if rerank_limit <= 0:
+            return {c.filepath: 0.5 for c in candidates}, "skipped"
+
+        candidates_by_rrf = sorted(candidates, key=lambda c: c.score, reverse=True)
+        rerank_candidates = candidates_by_rrf[:rerank_limit]
+        chunks = [self._select_best_chunk(c) for c in rerank_candidates]
+
+        # Determine reranker scoring path
+        has_image = any(c.get('image_path') for c in chunks)
+        has_video = any(c.get('video_path') for c in chunks)
+        if has_image:
+            path = "vl_image"
+        elif has_video:
+            path = "vl_video"
+        else:
+            path = "text"
+
+        try:
+            scores = self.backend.rerank(query, chunks)
+            logger.debug("reranker_path path=%s candidate_count=%d", path, len(rerank_candidates))
+            rerank_scores = {c.filepath: 0.5 for c in candidates}
+            rerank_scores.update({c.filepath: s for c, s in zip(rerank_candidates, scores)})
+            _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": path})
+            return rerank_scores, path
+        except Exception as e:
+            logger.error("Reranking failed: %s", e)
+            logger.debug("reranker_path path=fallback reason=error")
+            _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": "error_fallback"})
+            return {c.filepath: 0.5 for c in candidates}, "fallback"
             return {c.filepath: 0.5 for c in candidates}
 
         rerank_limit = min(len(candidates), self.rerank_top_k)
@@ -694,8 +786,17 @@ class HybridSearcher:
         self,
         rrf_results: List[SearchResult],
         rerank_scores: Dict[str, float],
+        rrf_audit_info: Optional[Dict[str, Dict[str, Any]]] = None,
+        reranker_path: str = "unknown",
     ) -> List[HybridResult]:
-        """Blend RRF scores with reranker scores."""
+        """Blend RRF scores with reranker scores.
+        
+        Args:
+            rrf_results: RRF-fused results from _reciprocal_rank_fusion
+            rerank_scores: Raw reranker scores per filepath
+            rrf_audit_info: Audit info from _reciprocal_rank_fusion with sources, weights, etc.
+            reranker_path: The scoring path used (text, vl_image, vl_video, etc.)
+        """
         t0 = time.perf_counter()
         hybrid_results = []
 
@@ -742,16 +843,6 @@ class HybridSearcher:
         rerank_norm.update(text_rerank_norm)
         rerank_norm.update(media_rerank_norm)
 
-        # Parse RRF sources for audit trail
-        rrf_sources: Dict[str, Dict[str, int]] = {}
-        for r in rrf_results:
-            sources: Dict[str, int] = {}
-            if r.source:
-                for src in r.source.split('+'):
-                    # Extract rank from source name if available
-                    sources[src] = 0  # Will be populated from all_results if needed
-            rrf_sources[r.filepath] = sources
-
         for rank, result in enumerate(rrf_results):
             rrf_rank = rank + 1
             rrf_score = rrf_norm.get(result.filepath, 0.0)
@@ -774,15 +865,23 @@ class HybridSearcher:
                 blended = rrf_score
                 rrf_weight = 1.0
 
+            # Get audit info from RRF step if available
+            audit_info = rrf_audit_info.get(result.filepath, {}) if rrf_audit_info else {}
+            rrf_sources = audit_info.get('sources', {})
+            media_compensation = audit_info.get('media_compensation', False)
+            rrf_raw_score = audit_info.get('rrf_score', result.score)
+
             # Build audit trail for this result
             audit = SearchAudit(
                 filepath=result.filepath,
                 content_type=result.content_type or "unknown",
-                rrf_sources=rrf_sources.get(result.filepath, {}),
+                rrf_sources=rrf_sources,
+                rrf_score=rrf_raw_score,
                 reranker_raw_score=rerank_score_raw,
                 reranker_normalized_score=rerank_score,
-                reranker_scoring_path="unknown",  # Will be updated by reranker
+                reranker_scoring_path=reranker_path,
                 blend_weights={"rrf": rrf_weight, "rerank": 1 - rrf_weight} if has_meaningful_rerank else {"rrf": 1.0},
+                media_compensation_applied=media_compensation,
                 final_blended_score=blended,
             )
 
@@ -880,15 +979,15 @@ class HybridSearcher:
             logger.debug("candidate_count stage=parallel source=%s count=%d", source, len(results))
 
         # Step 4: RRF fusion across all branches (original + expansions)
-        candidates = self._reciprocal_rank_fusion(all_results)
+        candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         logger.debug("candidate_count stage=rrf count=%d", len(candidates))
 
         # Step 5: Reranking (hybrid mode) - use original query for reranking
-        rerank_scores = self._rerank_candidates(candidates, query)
+        rerank_scores, reranker_path = self._rerank_candidates(candidates, query)
         logger.debug("candidate_count stage=reranker count=%d", len(rerank_scores))
 
         # Step 6: Blend scores
-        final_results = self._blend_scores(candidates, rerank_scores)
+        final_results = self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
         logger.debug("final_ranking count=%d top_score=%.4f", len(final_results),
                      final_results[0].score if final_results else 0.0)
 

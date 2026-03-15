@@ -515,7 +515,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
 
         # Both should be present
         text_doc = next((r for r in fused if r.filepath == "text1.md"), None)
@@ -544,7 +544,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
 
         vid_doc = next((r for r in fused if r.filepath == "video1.mp4"), None)
         self.assertIsNotNone(vid_doc)
@@ -564,7 +564,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
 
         text_doc = fused[0]
         # Text appears in both lists, so score = 2.0/61 + 2.0/61 = 0.0656
@@ -590,7 +590,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
         img_doc = next(r for r in fused if r.filepath == "image1.jpg")
 
         # Image only in vec, so it gets boosted by media_boost.
@@ -610,7 +610,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
         img_doc = fused[0]
 
         # No BM25 present, so no media boost

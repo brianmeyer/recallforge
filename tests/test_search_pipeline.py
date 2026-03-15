@@ -180,7 +180,7 @@ class TestRRFFusion(unittest.TestCase):
         r1 = _make_search_result("shared.md", 0.9, "fts")
         r2 = _make_search_result("shared.md", 0.8, "vec")
         all_results = {"original_fts": [r1], "original_vec": [r2]}
-        fused = searcher._reciprocal_rank_fusion(all_results)
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
         filepaths = [r.filepath for r in fused]
         self.assertEqual(len(filepaths), len(set(filepaths)))
 
@@ -193,18 +193,18 @@ class TestRRFFusion(unittest.TestCase):
             "fts": [r_top, r_low],
             "vec": [r_top, r_low],
         }
-        fused = searcher._reciprocal_rank_fusion(all_results)
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
         self.assertEqual(fused[0].filepath, "top.md")
 
     def test_rrf_empty_lists(self):
         searcher = self._make_searcher()
-        fused = searcher._reciprocal_rank_fusion({})
+        fused, audit_info = searcher._reciprocal_rank_fusion({})
         self.assertEqual(fused, [])
 
     def test_rrf_scores_positive(self):
         searcher = self._make_searcher()
         results = [_make_search_result(f"file{i}.md", 0.9 - i * 0.1) for i in range(5)]
-        fused = searcher._reciprocal_rank_fusion({"list": results})
+        fused, audit_info = searcher._reciprocal_rank_fusion({"list": results})
         for r in fused:
             self.assertGreater(r.score, 0)
 
@@ -234,7 +234,7 @@ class TestRerankCandidates(unittest.TestCase):
             _make_search_result("a.md", 0.9),
             _make_search_result("b.md", 0.8),
         ]
-        scores = searcher._rerank_candidates(candidates, "test query")
+        scores, path = searcher._rerank_candidates(candidates, "test query")
         self.assertIn("a.md", scores)
         self.assertIn("b.md", scores)
         for s in scores.values():
@@ -251,7 +251,7 @@ class TestRerankCandidates(unittest.TestCase):
             _make_search_result("d.md", 0.65),
         ]
 
-        scores = searcher._rerank_candidates(candidates, "query")
+        scores, path = searcher._rerank_candidates(candidates, "query")
 
         backend.rerank.assert_called_once()
         rerank_docs = backend.rerank.call_args[0][1]
@@ -267,7 +267,7 @@ class TestRerankCandidates(unittest.TestCase):
         searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=0)
         candidates = [_make_search_result("doc.md", 0.9)]
 
-        scores = searcher._rerank_candidates(candidates, "query")
+        scores, path = searcher._rerank_candidates(candidates, "query")
 
         backend.rerank.assert_not_called()
         self.assertEqual(scores["doc.md"], 0.5)
@@ -276,7 +276,7 @@ class TestRerankCandidates(unittest.TestCase):
         backend = StubBackend(mode="embed")
         searcher = HybridSearcher(backend=backend, storage=StubStorage())
         candidates = [_make_search_result("doc.md", 0.9)]
-        scores = searcher._rerank_candidates(candidates, "query")
+        scores, path = searcher._rerank_candidates(candidates, "query")
         # embed mode: backend.needs_reranker() == False → default 0.5
         self.assertAlmostEqual(scores.get("doc.md", 0), 0.5)
 
@@ -506,7 +506,7 @@ class TestIntentAwareQuerySteering(unittest.TestCase):
             "original_vec": [vec_result],
         }
 
-        fused = searcher._reciprocal_rank_fusion(all_results)
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
 
         # With exact_lookup: FTS weight=2.5, vector weight=0.8
         # FTS score contribution: 2.5 / (60 + 0 + 1) = 2.5/61 ≈ 0.041
@@ -535,7 +535,7 @@ class TestIntentAwareQuerySteering(unittest.TestCase):
             "original_vec": [vec_result],
         }
 
-        fused = searcher._reciprocal_rank_fusion(all_results)
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
 
         # With semantic: FTS weight=0.8, vector weight=2.5
         # FTS score contribution: 0.8 / (60 + 0 + 1) = 0.8/61 ≈ 0.013
@@ -564,7 +564,7 @@ class TestIntentAwareQuerySteering(unittest.TestCase):
             "original_vec": [vec_result],
         }
 
-        fused = searcher._reciprocal_rank_fusion(all_results)
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
 
         # With broad: both weights=1.0
         # Both have same rank (0), so scores should be equal
@@ -592,7 +592,7 @@ class TestIntentAwareQuerySteering(unittest.TestCase):
             "original_vec": [vec_result],
         }
 
-        fused = searcher._reciprocal_rank_fusion(all_results)
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
 
         # Default weights: first 2 lists = 2.0, rest = 1.0
         # With 2 sources, both get weight 2.0
@@ -625,7 +625,7 @@ class TestIntentAwareQuerySteering(unittest.TestCase):
                 "original_vec": [vec_result],
             }
 
-            fused = searcher._reciprocal_rank_fusion(all_results)
+            fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
 
             # Verify weights are applied correctly
             fts_doc = next((r for r in fused if r.filepath == "doc_fts.md"), None)
