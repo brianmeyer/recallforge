@@ -7,7 +7,6 @@ Supports bf16 and 4-bit quantization (4-bit default, ~2GB memory).
 Model IDs:
 - MLX BF16: arthurcollet/Qwen3-VL-Embedding-2B-mlx, arthurcollet/Qwen3-VL-Reranker-2B-mlx
 - MLX 4-bit: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit, arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-- Expander: bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit (native MLX), torch fallback for bf16
 """
 
 import os
@@ -51,15 +50,6 @@ def _load_mlx_core():
         mx = _mx
     return mx
 
-# Optional torch import for expander fallback
-_torch_available = False
-try:
-    import torch
-    _torch_available = True
-except ImportError:
-    pass
-
-
 def _make_cache(num_layers):
     """Create KVCache objects for each transformer layer."""
     try:
@@ -87,7 +77,7 @@ class MLXBackend(ModelBackend):
     MLX-based model backend for Apple Silicon.
 
     Default path for macOS arm64. Uses 4-bit quantization (~2GB)
-    for embedder and reranker. Query expander falls back to torch.
+    for embedder and reranker.
     """
 
     # Chat template for embedding queries
@@ -110,7 +100,7 @@ class MLXBackend(ModelBackend):
 
     def __init__(
         self,
-        mode: str = "full",
+        mode: str = "hybrid",
         quantization: str = "4bit",
     ):
         if not MLX_AVAILABLE:
@@ -138,8 +128,6 @@ class MLXBackend(ModelBackend):
         self._reranker_yes_token_id = None
         self._reranker_no_token_id = None
         self._reranker_use_direct_logits = False
-        self._expander = None
-        self._expander_tokenizer = None
         self._embedder_num_layers = None
         self._embed_text_max_tokens = None
         self._embed_warmed = False
@@ -151,12 +139,6 @@ class MLXBackend(ModelBackend):
         else:
             self.EMBEDDER_MODEL = "arthurcollet/Qwen3-VL-Embedding-2B-mlx"
             self.RERANKER_MODEL = "arthurcollet/Qwen3-VL-Reranker-2B-mlx"
-        if quantization == "4bit":
-            self.EXPANDER_MODEL = "bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit"
-        else:
-            # bf16: fall back to torch since no MLX bf16 expander exists yet
-            self.EXPANDER_MODEL = "tobil/qmd-query-expansion-qwen3.5-2B"
-        self._expander_is_mlx = quantization == "4bit"
 
     # =========================================================================
     # Embedder
@@ -1092,158 +1074,6 @@ class MLXBackend(ModelBackend):
         return scores
 
     # =========================================================================
-    # Query Expander
-    # =========================================================================
-
-    def _load_expander(self):
-        """Load expander — native MLX for 4-bit, torch fallback for bf16."""
-        if self._expander is not None:
-            return
-
-        if self._expander_is_mlx:
-            self._load_expander_mlx()
-        else:
-            self._load_expander_torch()
-
-    def _load_expander_mlx(self):
-        """Load the MLX 4-bit query expander natively."""
-        from mlx_lm import load as mlx_lm_load
-
-        if not _check_model_cached(self.EXPANDER_MODEL):
-            logger.info(
-                f"[RecallForge] Downloading expander model "
-                f"({self.EXPANDER_MODEL.split('/')[-1]}, ~700MB)... first run only."
-            )
-        logger.info(f"[MLXBackend] Loading expander: {self.EXPANDER_MODEL}")
-        model, tokenizer = mlx_lm_load(self.EXPANDER_MODEL)
-        self._expander = model
-        self._expander_tokenizer = tokenizer
-        logger.info(f"[MLXBackend] Loaded expander (MLX 4-bit)")
-
-    def _load_expander_torch(self):
-        """Load expander via torch fallback (bf16 mode)."""
-        if not _torch_available:
-            raise ImportError(
-                "PyTorch is required for query expansion in bf16 mode. "
-                "Install with: pip install torch"
-            )
-
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-
-        if not _check_model_cached(self.EXPANDER_MODEL):
-            logger.info(
-                f"[RecallForge] Downloading expander model "
-                f"({self.EXPANDER_MODEL.split('/')[-1]}, ~4GB)... first run only."
-            )
-        logger.info(f"[MLXBackend] Loading expander via torch fallback on {device}")
-
-        self._expander_tokenizer = AutoTokenizer.from_pretrained(self.EXPANDER_MODEL)
-        self._expander = AutoModelForCausalLM.from_pretrained(
-            self.EXPANDER_MODEL,
-            torch_dtype=torch.float16,
-            attn_implementation="eager",
-        ).to(device)
-
-        self._expander.eval()
-        logger.info(f"[MLXBackend] Loaded expander (torch fallback)")
-
-    def _build_expander_prompt(self, query: str) -> str:
-        """Build the query expansion prompt."""
-        return f"""<|im_start|>system
-You are a query expansion assistant. Given a search query, generate 3 variations:
-1. A lexical variant (lex) - keywords and synonyms for BM25/Fuzzy matching
-2. A vector variant (vec) - semantic rephrasing for vector/ANN search
-3. A hypothetical document (hyde) - what a perfect answer would look like
-
-Format as JSON with keys: lex, vec, hyde
-Each value is a string. Keep variations concise (under 20 words each).<|im_end|>
-<|im_start|>user
-Query: {query}<|im_end|>
-<|im_start|>assistant
-{{"""
-
-    def _parse_expansion_json(self, response: str, query: str) -> Dict[str, str]:
-        """Parse JSON expansion from model response."""
-        import json
-
-        json_start = response.find("{")
-        if json_start == -1:
-            return {"lex": query, "vec": query, "hyde": query}
-
-        json_str = response[json_start:]
-        brace_count = 0
-        end_pos = -1
-        for i, c in enumerate(json_str):
-            if c == "{":
-                brace_count += 1
-            elif c == "}":
-                brace_count -= 1
-                if brace_count == 0:
-                    end_pos = i + 1
-                    break
-
-        if end_pos != -1:
-            json_str = json_str[:end_pos]
-
-        try:
-            expansions = json.loads(json_str)
-            return {
-                "lex": expansions.get("lex", query),
-                "vec": expansions.get("vec", query),
-                "hyde": expansions.get("hyde", query),
-            }
-        except (json.JSONDecodeError, TypeError):
-            return {"lex": query, "vec": query, "hyde": query}
-
-    def expand_query(self, query: str) -> Dict[str, str]:
-        """Generate query expansions."""
-        if not self.needs_expander():
-            return {"lex": query, "vec": query, "hyde": query}
-
-        self._load_expander()
-
-        prompt = self._build_expander_prompt(query)
-
-        if self._expander_is_mlx:
-            return self._expand_query_mlx(prompt, query)
-        else:
-            return self._expand_query_torch(prompt, query)
-
-    def _expand_query_mlx(self, prompt: str, query: str) -> Dict[str, str]:
-        """Generate expansions using native MLX."""
-        from mlx_lm import generate as mlx_generate
-
-        response = mlx_generate(
-            self._expander,
-            self._expander_tokenizer,
-            prompt=prompt,
-            max_tokens=256,
-        )
-
-        return self._parse_expansion_json("{" + response, query)
-
-    def _expand_query_torch(self, prompt: str, query: str) -> Dict[str, str]:
-        """Generate expansions using torch fallback."""
-        tokenizer = self._expander_tokenizer
-        model = self._expander
-
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=256,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return self._parse_expansion_json(response, query)
-
-    # =========================================================================
     # Warm-up and Status
     # =========================================================================
 
@@ -1259,18 +1089,10 @@ Query: {query}<|im_end|>
         t1 = time.time()
         logger.info(f"[MLXBackend]   Embedder+compile: {t1 - start:.1f}s")
 
-        last_checkpoint = t1
-
         if self.needs_reranker():
             self._load_reranker()
             t2 = time.time()
             logger.info(f"[MLXBackend]   Reranker: {t2 - t1:.1f}s")
-            last_checkpoint = t2
-
-        if self.needs_expander():
-            self._load_expander()
-            t3 = time.time()
-            logger.info(f"[MLXBackend]   Expander: {t3 - last_checkpoint:.1f}s")
 
         logger.info(f"[MLXBackend] Ready in {time.time() - start:.1f}s")
 
@@ -1281,8 +1103,6 @@ Query: {query}<|im_end|>
             mem += 2000 if self._quantization == "4bit" else 4000
         if self._reranker_model:
             mem += 2000 if self._quantization == "4bit" else 4000
-        if self._expander:
-            mem += 4000
 
         return BackendInfo(
             name="mlx",
@@ -1290,7 +1110,6 @@ Query: {query}<|im_end|>
             dtype=self._quantization,
             embedder_loaded=self._embedder_model is not None,
             reranker_loaded=self._reranker_model is not None,
-            expander_loaded=self._expander is not None,
             memory_allocated_gb=mem / 1000,
             supports_images=True,
             quantization=self._quantization,
@@ -1298,8 +1117,18 @@ Query: {query}<|im_end|>
 
     def set_mode(self, mode: str) -> None:
         """Set the search mode."""
-        if mode not in ("embed", "hybrid", "full"):
-            raise ValueError(f"Invalid mode: {mode}")
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if mode == "full":
+            logger.warning(
+                "[MLXBackend] Mode 'full' is deprecated (query expander removed). "
+                "Falling back to 'hybrid'. See REC-108 for details."
+            )
+            mode = "hybrid"
+        
+        if mode not in ("embed", "hybrid"):
+            raise ValueError(f"Invalid mode: {mode}. Must be 'embed' or 'hybrid'")
         self._mode = mode
 
     def get_mode(self) -> str:

@@ -131,26 +131,14 @@ class TestTorchBackendLive:
         print(f"Rerank scores: {scores}")
     
     @pytest.mark.live
-    def test_expand_query_live(self, backend):
-        """Test query expansion with real model."""
-        if not backend.needs_expander():
-            pytest.skip("Expander not loaded (mode != full)")
-        
-        query = "machine learning algorithms"
-        
-        expansions = backend.expand_query(query)
-        
-        assert expansions is not None
-        assert "lex" in expansions
-        assert "vec" in expansions
-        assert "hyde" in expansions
-        
-        print(f"Expansions for '{query}':")
-        for k, v in expansions.items():
-            print(f"  {k}: {v}")
-        
-        # Each expansion should be different from original (usually)
-        # This might not always be true, so we don't assert
+    def test_full_mode_deprecated(self, backend):
+        """Test that setting mode='full' falls back to 'hybrid' with warning."""
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            backend.set_mode("full")
+            assert len(w) == 1
+            assert "deprecated" in str(w[0].message).lower()
     
     @pytest.mark.live
     def test_backend_info(self, backend):

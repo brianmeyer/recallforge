@@ -38,7 +38,7 @@ def main():
     serve_parser = subparsers.add_parser("serve", help="Start MCP server")
     serve_parser.add_argument(
         "--mode", "-m",
-        choices=["embed", "hybrid", "full"],
+        choices=["embed", "hybrid"],
         default=None,
         help="Search mode (default: from RECALLFORGE_MODE env)",
     )
@@ -116,7 +116,7 @@ def main():
     )
     search_parser.add_argument(
         "--mode", "-m",
-        choices=["embed", "hybrid", "full"],
+        choices=["embed", "hybrid"],
         default=None,
         help="Search mode",
     )
@@ -444,7 +444,6 @@ def cmd_status(args):
     print("Models:")
     print(f"  Embedder:     {'✓' if info.embedder_loaded else '✗'}")
     print(f"  Reranker:     {'✓' if info.reranker_loaded else '✗'}")
-    print(f"  Expander:     {'✓' if info.expander_loaded else '✗'}")
     print(f"  Memory:       {info.memory_allocated_gb:.1f} GB")
     print()
     print("Storage:")

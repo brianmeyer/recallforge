@@ -8,7 +8,7 @@ improves retrieval quality:
 2. BM25-only
 3. Vector + BM25 (RRF)
 4. Vector + BM25 + Reranker
-5. Full pipeline (+ query expansion)
+4 stages only (expander removed in v0.2)
 
 It is designed to be runnable in two modes:
 - synthetic: fast, deterministic, no heavyweight model downloads
@@ -319,7 +319,7 @@ class SyntheticBackend(ModelBackend):
     Dimension is kept at 2048 to match RecallForge storage schema.
     """
 
-    def __init__(self, mode: str = "full", dim: int = 2048):
+    def __init__(self, mode: str = "hybrid", dim: int = 2048):
         self._mode = mode
         self.dim = dim
 
@@ -524,7 +524,7 @@ def print_summary(stage_results: List[BenchmarkResult]) -> None:
         )
 
 
-def try_get_real_backend(backend_name: str, quantization: str, max_mode: str = "full") -> ModelBackend:
+def try_get_real_backend(backend_name: str, quantization: str, max_mode: str = "hybrid") -> ModelBackend:
     os.environ["RECALLFORGE_BACKEND"] = backend_name
     os.environ["RECALLFORGE_MLX_QUANTIZE"] = quantization
     os.environ["RECALLFORGE_MODE"] = max_mode
@@ -573,11 +573,11 @@ def run_benchmark(
             backend = try_get_real_backend(backend_name=backend_name, quantization=quantization, max_mode="embed")
             notes.append("Using real RecallForge backend.")
         else:
-            backend = SyntheticBackend(mode="full")
+            backend = SyntheticBackend(mode="hybrid")
             effective_backend_name = "synthetic"
             notes.append("Using deterministic synthetic backend for fast ablation benchmarking.")
     except Exception as exc:
-        backend = SyntheticBackend(mode="full")
+        backend = SyntheticBackend(mode="hybrid")
         effective_backend_name = "synthetic-fallback"
         notes.append(f"Fell back to synthetic backend because real backend init failed: {exc}")
 
@@ -593,7 +593,6 @@ def run_benchmark(
             run_bm25_only(storage, ground_truth, collection),
             run_hybrid_stage(storage, backend, ground_truth, collection, mode="embed", stage_name="Vector + BM25 (RRF)"),
             run_hybrid_stage(storage, backend, ground_truth, collection, mode="hybrid", stage_name="Vector + BM25 + Reranker"),
-            run_hybrid_stage(storage, backend, ground_truth, collection, mode="full", stage_name="Full pipeline"),
         ]
 
         print_summary(stage_results)

@@ -109,7 +109,6 @@ def _make_searcher(cache=None, maxsize=256):
     backend.embed_image.return_value = np.array([0.4, 0.5, 0.6], dtype=np.float32)
     backend.embed_texts.return_value = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
     backend.needs_reranker.return_value = False
-    backend.needs_expander.return_value = False
 
     storage = MagicMock()
     storage.search_fts.return_value = []
@@ -175,7 +174,6 @@ class TestHybridSearcherCacheIntegration:
         from recallforge.search import HybridSearcher
         backend = MagicMock()
         backend.needs_reranker.return_value = False
-        backend.needs_expander.return_value = False
         storage = MagicMock()
         storage.search_fts.return_value = []
         storage.search_vec.return_value = []

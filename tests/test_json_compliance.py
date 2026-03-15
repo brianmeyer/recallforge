@@ -55,7 +55,6 @@ class _DummyBackend:
             dtype="float32",
             embedder_loaded=True,
             reranker_loaded=False,
-            expander_loaded=False,
             memory_allocated_gb=0.0,
             quantization=None,
         )

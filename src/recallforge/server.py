@@ -138,7 +138,7 @@ async def create_server(
 
     # Mutable runtime config — safe to change without restart
     _mutable_config: dict = {
-        "mode": mode or os.environ.get("RECALLFORGE_MODE", "full"),
+        "mode": mode or os.environ.get("RECALLFORGE_MODE", "hybrid"),
         "collection": "default",
         "max_file_size_mb": 100,
     }
@@ -149,7 +149,7 @@ async def create_server(
         return [
             Tool(
                 name="search",
-                description="Full hybrid search combining BM25, vector search, query expansion (full mode), and reranking (hybrid/full mode)",
+                description="Full hybrid search combining BM25, vector search, and reranking (hybrid mode)",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -382,14 +382,14 @@ async def create_server(
             ),
             Tool(
                 name="set_config",
-                description="Update safe runtime configuration values. Allows changing mode (embed/hybrid/full), collection, and max_file_size_mb. Does NOT allow changing backend, quantize, or data_dir (those require a server restart).",
+                description="Update safe runtime configuration values. Allows changing mode (embed/hybrid) and collection. Does NOT allow changing backend, quantize, or data_dir (those require a server restart).",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "mode": {
                             "type": "string",
-                            "enum": ["embed", "hybrid", "full"],
-                            "description": "Search mode: embed (vector only), hybrid (vector + rerank), full (all models)",
+                            "enum": ["embed", "hybrid"],
+                            "description": "Search mode: embed (vector only), hybrid (vector + rerank)",
                         },
                         "collection": {
                             "type": "string",
@@ -1035,11 +1035,20 @@ async def _handle_set_config(
     # Apply validated changes
     if "mode" in arguments:
         mode_val = arguments["mode"]
-        if mode_val not in ("embed", "hybrid", "full"):
+        # Handle deprecated "full" mode with backward compatibility
+        if mode_val == "full":
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "[RecallForge] Mode 'full' is deprecated (query expander removed). "
+                "Falling back to 'hybrid'. See REC-108 for details."
+            )
+            mode_val = "hybrid"
+        if mode_val not in ("embed", "hybrid"):
             return _error_response(
                 "INVALID_INPUT",
-                f"Invalid mode {mode_val!r}. Must be one of: embed, hybrid, full",
-                {"allowed_values": ["embed", "hybrid", "full"]},
+                f"Invalid mode {mode_val!r}. Must be one of: embed, hybrid",
+                {"allowed_values": ["embed", "hybrid"]},
             )
         mutable_config["mode"] = mode_val
         backend.set_mode(mode_val)
@@ -1087,7 +1096,6 @@ async def _handle_status(backend, storage) -> list[TextContent]:
             "dtype": info.dtype,
             "embedder_loaded": info.embedder_loaded,
             "reranker_loaded": info.reranker_loaded,
-            "expander_loaded": info.expander_loaded,
             "memory_gb": info.memory_allocated_gb,
             "quantization": info.quantization,
             "mode": backend.get_mode(),
@@ -1156,7 +1164,7 @@ async def main() -> None:
     global _server
     
     # Get configuration from environment
-    mode = os.environ.get("RECALLFORGE_MODE", "full")
+    mode = os.environ.get("RECALLFORGE_MODE", "hybrid")
     store_path = os.environ.get("RECALLFORGE_STORE_PATH")
     
     backend = None

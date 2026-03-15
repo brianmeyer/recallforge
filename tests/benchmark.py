@@ -126,16 +126,9 @@ def benchmark_backend(
                 result.reranker_load_time_s = time.time() - start
                 print(f"  Reranker: {result.reranker_load_time_s:.1f}s")
             
-            if backend.needs_expander():
-                start = time.time()
-                backend._load_expander()
-                result.expander_load_time_s = time.time() - start
-                print(f"  Expander: {result.expander_load_time_s:.1f}s")
-            
             result.total_load_time_s = (
                 result.embedder_load_time_s +
-                result.reranker_load_time_s +
-                result.expander_load_time_s
+                result.reranker_load_time_s
             )
             
             # Get memory

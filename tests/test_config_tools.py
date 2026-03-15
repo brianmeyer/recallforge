@@ -36,12 +36,11 @@ class _FakeInfo:
     dtype = "float16"
     embedder_loaded = True
     reranker_loaded = False
-    expander_loaded = False
     memory_allocated_gb = 1.0
     quantization = "4bit"
 
 
-def _make_backend(mode="full"):
+def _make_backend(mode="hybrid"):
     b = MagicMock()
     b.get_mode.return_value = mode
     b.embed_text.return_value = np.ones(128, dtype=np.float32)
@@ -60,7 +59,7 @@ def _make_storage(store_path="/tmp/test-store"):
 
 
 def _mutable_config(**overrides):
-    cfg = {"mode": "full", "collection": "default", "max_file_size_mb": 100}
+    cfg = {"mode": "hybrid", "collection": "default", "max_file_size_mb": 100}
     cfg.update(overrides)
     return cfg
 
@@ -176,12 +175,15 @@ class TestHandleSetConfig(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertEqual(data["mode"], "hybrid")
 
-    async def test_set_mode_full(self):
+    async def test_set_mode_full_deprecated_falls_back_to_hybrid(self):
+        """'full' mode is deprecated and falls back to 'hybrid' with a warning."""
         backend = _make_backend()
         storage = _make_storage()
         cfg = _mutable_config()
-        await _handle_set_config({"mode": "full"}, backend, storage, cfg)
-        self.assertEqual(cfg["mode"], "full")
+        result = await _handle_set_config({"mode": "full"}, backend, storage, cfg)
+        data = json.loads(result[0].text)
+        self.assertEqual(data["mode"], "hybrid")
+        backend.set_mode.assert_called_once_with("hybrid")
 
     async def test_set_mode_invalid(self):
         backend = _make_backend()
@@ -410,7 +412,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("max_file_size_mb", schema["properties"])
         # mode is an enum
         self.assertIn("enum", schema["properties"]["mode"])
-        self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid", "full"])
+        self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid"])
 
     async def test_get_config_via_server_call(self):
         """Integration: get_config round-trip through create_server closure."""

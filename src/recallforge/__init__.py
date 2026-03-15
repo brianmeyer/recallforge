@@ -4,7 +4,6 @@ RecallForge - Cross-Modal Vision-Language Search Engine.
 A powerful semantic search system combining:
 - BM25 full-text search
 - Vector similarity search
-- Query expansion
 - Cross-encoder reranking
 - Image-text cross-modal search
 
@@ -18,7 +17,6 @@ Storage Backends:
 Tiered Search Modes (MLX 4-bit):
 - embed: Embedder only (1 model, ~1.7GB)
 - hybrid: Embedder + Reranker (2 models, ~3.4GB)
-- full: All three models (3 models, ~4.4GB)
 """
 
 import importlib.util
@@ -36,7 +34,7 @@ def _has_torch() -> bool:
 
 # Backend selection via environment
 RECALLFORGE_BACKEND = os.environ.get("RECALLFORGE_BACKEND", "auto")
-RECALLFORGE_MODE = os.environ.get("RECALLFORGE_MODE", "full")
+RECALLFORGE_MODE = os.environ.get("RECALLFORGE_MODE", "hybrid")
 RECALLFORGE_MLX_QUANTIZE = os.environ.get("RECALLFORGE_MLX_QUANTIZE", "4bit")
 RECALLFORGE_STORAGE = os.environ.get("RECALLFORGE_STORAGE", "lancedb")
 
@@ -63,6 +61,15 @@ def get_backend():
     backend_type = os.environ.get("RECALLFORGE_BACKEND", RECALLFORGE_BACKEND).lower()
     mode = os.environ.get("RECALLFORGE_MODE", RECALLFORGE_MODE).lower()
     quantization = os.environ.get("RECALLFORGE_MLX_QUANTIZE", RECALLFORGE_MLX_QUANTIZE)
+    
+    # Handle deprecated "full" mode with backward compatibility
+    if mode == "full":
+        warnings.warn(
+            "[RecallForge] Mode 'full' is deprecated (query expander removed). "
+            "Falling back to 'hybrid'. See REC-108 for details.",
+            DeprecationWarning,
+        )
+        mode = "hybrid"
     
     if backend_type == "mlx":
         if not MLX_AVAILABLE:

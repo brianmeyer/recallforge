@@ -19,7 +19,6 @@ class BackendInfo:
     dtype: str
     embedder_loaded: bool = False
     reranker_loaded: bool = False
-    expander_loaded: bool = False
     memory_allocated_gb: float = 0.0
     supports_images: bool = True
     quantization: Optional[str] = None  # "4bit", "8bit", or None
@@ -33,14 +32,13 @@ class ModelBackend(ABC):
     - embed_text: Embed text strings
     - embed_image: Embed images
     - rerank: Rerank documents
-    - expand_query: Generate query expansions
     - warm_up: Preload all models
     - get_info: Return backend status
     
     Model IDs are defined per backend:
-    - Torch: Qwen/Qwen3-VL-Embedding-2B, Qwen/Qwen3-VL-Reranker-2B, tobil/qmd-query-expansion-qwen3.5-2B
-    - MLX BF16: arthurcollet/Qwen3-VL-Embedding-2B-mlx, arthurcollet/Qwen3-VL-Reranker-2B-mlx, torch expander
-    - MLX 4-bit: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit, arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit, torch expander
+    - Torch: Qwen/Qwen3-VL-Embedding-2B, Qwen/Qwen3-VL-Reranker-2B
+    - MLX BF16: arthurcollet/Qwen3-VL-Embedding-2B-mlx, arthurcollet/Qwen3-VL-Reranker-2B-mlx
+    - MLX 4-bit: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit, arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
     """
     
     @abstractmethod
@@ -136,19 +134,6 @@ class ModelBackend(ABC):
         pass
     
     @abstractmethod
-    def expand_query(self, query: str) -> Dict[str, str]:
-        """
-        Generate query expansions.
-        
-        Args:
-            query: Original search query
-        
-        Returns:
-            Dict with keys: 'lex', 'vec', 'hyde' (each a string expansion)
-        """
-        pass
-    
-    @abstractmethod
     def warm_up(self) -> None:
         """
         Preload all models.
@@ -165,19 +150,31 @@ class ModelBackend(ABC):
         pass
     
     # Mode support: which models are active
-    # Modes: embed (embedder only), hybrid (embedder + reranker), full (all three)
+    # Modes: embed (embedder only), hybrid (embedder + reranker)
     
-    _mode: str = "full"  # Default to full mode
+    _mode: str = "hybrid"  # Default to hybrid mode (backward compat: "full" falls back to "hybrid")
     
     def set_mode(self, mode: str) -> None:
         """
         Set the search mode (tiered model loading).
         
         Args:
-            mode: One of 'embed', 'hybrid', 'full'
+            mode: One of 'embed', 'hybrid'
+                  Note: 'full' is deprecated and falls back to 'hybrid' with a warning.
         """
-        if mode not in ("embed", "hybrid", "full"):
-            raise ValueError(f"Invalid mode: {mode}. Must be 'embed', 'hybrid', or 'full'")
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        if mode == "full":
+            # Backward compatibility: "full" falls back to "hybrid"
+            logger.warning(
+                "[RecallForge] Mode 'full' is deprecated (query expander removed). "
+                "Falling back to 'hybrid'. See REC-108 for details."
+            )
+            mode = "hybrid"
+        
+        if mode not in ("embed", "hybrid"):
+            raise ValueError(f"Invalid mode: {mode}. Must be 'embed' or 'hybrid'")
         self._mode = mode
     
     def get_mode(self) -> str:
@@ -186,8 +183,4 @@ class ModelBackend(ABC):
     
     def needs_reranker(self) -> bool:
         """Check if current mode needs reranker."""
-        return self._mode in ("hybrid", "full")
-    
-    def needs_expander(self) -> bool:
-        """Check if current mode needs query expander."""
-        return self._mode == "full"
+        return self._mode == "hybrid"

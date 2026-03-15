@@ -1,11 +1,9 @@
 """
 search.py - Hybrid Search Pipeline for RecallForge.
 
-Combines BM25, vector search, query expansion, and reranking
-with tiered modes:
+Combines BM25, vector search, and reranking with tiered modes:
 - embed: Embedder only (fastest, lowest memory)
 - hybrid: Embedder + Reranker
-- full: Embedder + Reranker + Query Expander (best quality)
 
 Uses true concurrency with ThreadPoolExecutor for parallel searches.
 """
@@ -49,9 +47,8 @@ class HybridSearcher:
     Full hybrid search pipeline with tiered modes.
 
     Modes:
-    - embed: Embedder only. Vector + FTS, no reranking or expansion.
+    - embed: Embedder only. Vector + FTS, no reranking.
     - hybrid: + Reranker. Cross-encoder refinement.
-    - full: + Query Expander. Lex/vec/hyde expansions.
 
     Uses ThreadPoolExecutor for concurrent searches.
     """
@@ -226,51 +223,13 @@ class HybridSearcher:
             profile=self.profile,
         )
         return self._vector_results_to_hybrid(results)
-    
-    def _expand_query(self, query: str) -> List[Dict[str, str]]:
-        """Expand query into variants (full mode only)."""
-        if not self.backend.needs_expander():
-            return []
-        
-        expansions = self.backend.expand_query(query)
-        return [
-            {"type": "lex", "text": expansions.get("lex", query)},
-            {"type": "vec", "text": expansions.get("vec", query)},
-            {"type": "hyde", "text": expansions.get("hyde", query)},
-        ]
-    
-    def _strong_signal_detected(self, fts_results: List[SearchResult]) -> bool:
-        """Detect if BM25 has strong signal (skip expansion)."""
-        if len(fts_results) < 2:
-            return False
-        top_score = fts_results[0].score
-        second_score = fts_results[1].score
-        return (top_score - second_score) > 0.3
-    
+
     def _run_parallel_searches(
         self,
         query: str,
-        expansions: List[Dict[str, str]],
     ) -> Dict[str, List[SearchResult]]:
-        """Run all searches in parallel with batch embedding optimization."""
+        """Run all searches in parallel."""
         all_results: Dict[str, List[SearchResult]] = {}
-        
-        # Collect all queries for vector search
-        all_vec_queries = [query]
-        if expansions:
-            vec_expansions = [e["text"] for e in expansions if e["type"] == "vec"][:3]
-            hyde_expansions = [e["text"] for e in expansions if e["type"] == "hyde"][:3]
-            all_vec_queries.extend(vec_expansions)
-            all_vec_queries.extend(hyde_expansions)
-        
-        # Batch embed all vector queries
-        vectors_by_query = {}
-        if all_vec_queries:
-            try:
-                all_vectors = self.backend.embed_texts(all_vec_queries)
-                vectors_by_query = {q: v for q, v in zip(all_vec_queries, all_vectors)}
-            except Exception as e:
-                logger.error("Batch embedding failed: %s", e)
         
         # Build search tasks
         search_tasks: List[tuple] = []
@@ -280,11 +239,11 @@ class HybridSearcher:
         # Do NOT duplicate it here.
         
         # Original vector
-        if query in vectors_by_query:
-            vec = vectors_by_query[query]
+        try:
+            vector = self.backend.embed_text(query)
             search_tasks.append((
                 'original_vec',
-                lambda v=vec: self.storage.search_vec(
+                lambda v=vector: self.storage.search_vec(
                     v.tolist() if hasattr(v, 'tolist') else list(v),
                     limit=self.fts_probe_limit,
                     collection=self.collection,
@@ -296,49 +255,8 @@ class HybridSearcher:
                 ),
                 ()
             ))
-
-        # Lexical expansions - BM25 only
-        lex_queries = [e["text"] for e in expansions if e["type"] == "lex"] if expansions else []
-        for i, lex_q in enumerate(lex_queries[:3]):
-            search_tasks.append((f'lex_{i}', self._bm25_search, (lex_q,)))
-
-        # Vector expansions
-        for i, vec_q in enumerate([e["text"] for e in expansions if e["type"] == "vec"][:3] if expansions else []):
-            if vec_q in vectors_by_query:
-                vec = vectors_by_query[vec_q]
-                search_tasks.append((
-                    f'vec_{i}',
-                    lambda v=vec: self.storage.search_vec(
-                        v.tolist() if hasattr(v, 'tolist') else list(v),
-                        limit=self.fts_probe_limit,
-                        collection=self.collection,
-                        content_type=self.content_type,
-                        user_id=self.user_id,
-                        session_id=self.session_id,
-                        project_id=self.project_id,
-                        profile=self.profile,
-                    ),
-                    ()
-                ))
-
-        # Hyde expansions
-        for i, hyde_q in enumerate([e["text"] for e in expansions if e["type"] == "hyde"][:3] if expansions else []):
-            if hyde_q in vectors_by_query:
-                vec = vectors_by_query[hyde_q]
-                search_tasks.append((
-                    f'hyde_{i}',
-                    lambda v=vec: self.storage.search_vec(
-                        v.tolist() if hasattr(v, 'tolist') else list(v),
-                        limit=self.fts_probe_limit,
-                        collection=self.collection,
-                        content_type=self.content_type,
-                        user_id=self.user_id,
-                        session_id=self.session_id,
-                        project_id=self.project_id,
-                        profile=self.profile,
-                    ),
-                    ()
-                ))
+        except Exception as e:
+            logger.error("Embedding failed: %s", e)
         
         # Execute all searches in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -510,10 +428,10 @@ class HybridSearcher:
         Run full hybrid search pipeline.
         
         Steps:
-        1. BM25 probe + query expansion (parallel if full mode)
-        2. All searches in parallel
+        1. BM25 probe
+        2. Vector search
         3. RRF fusion
-        4. Cross-encoder reranking (if hybrid/full)
+        4. Cross-encoder reranking (if hybrid mode)
         5. Score blending
         
         Args:
@@ -525,24 +443,19 @@ class HybridSearcher:
         # Step 1: BM25 probe
         fts_results = self._bm25_probe(query)
         
-        # Step 2: Query expansion (full mode only)
-        expansions = []
-        if self.backend.needs_expander() and not self._strong_signal_detected(fts_results):
-            expansions = self._expand_query(query)
-        
-        # Step 3: Parallel searches
-        all_results = self._run_parallel_searches(query, expansions)
+        # Step 2: Parallel searches
+        all_results = self._run_parallel_searches(query)
         
         # Add original FTS results
         all_results['original_fts'] = fts_results
         
-        # Step 4: RRF fusion
+        # Step 3: RRF fusion
         candidates = self._reciprocal_rank_fusion(all_results)
         
-        # Step 5: Reranking (hybrid/full mode)
+        # Step 4: Reranking (hybrid mode)
         rerank_scores = self._rerank_candidates(candidates, query)
         
-        # Step 6: Blend scores
+        # Step 5: Blend scores
         return self._blend_scores(candidates, rerank_scores)
 
 

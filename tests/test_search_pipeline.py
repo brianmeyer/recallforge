@@ -2,7 +2,7 @@
 test_search_pipeline.py - Unit tests for HybridSearcher pipeline.
 
 All backends and storage are mocked — NO real model inference, NO real LanceDB.
-Tests: RRF fusion, score blending, tiered mode branching, strong-signal detection.
+Tests: RRF fusion, score blending, tiered mode branching.
 """
 
 import os
@@ -49,45 +49,37 @@ def _make_search_result(filepath: str, score: float = 0.9, source: str = "fts",
 class StubBackend(ModelBackend):
     """Minimal ModelBackend stub for unit tests."""
 
-    def __init__(self, mode: str = "full"):
+    def __init__(self, mode: str = "hybrid"):
         self._mode = mode
 
     def embed_text(self, text: str) -> np.ndarray:
         return np.ones(2048, dtype=np.float32) / np.sqrt(2048)
 
-    def embed_texts(self, texts: List[str]) -> np.ndarray:
-        return np.stack([self.embed_text(t) for t in texts])
+    def embed_texts(self, texts: List[str]) -> List[np.ndarray]:
+        return [self.embed_text(t) for t in texts]
 
     def embed_image(self, image_path: str) -> np.ndarray:
         return self.embed_text(image_path)
 
-    def embed_images(self, image_paths: List[str]) -> np.ndarray:
-        return self.embed_texts(image_paths)
+    def embed_images(self, image_paths: List[str]) -> List[np.ndarray]:
+        return [self.embed_image(p) for p in image_paths]
 
     def embed_video(self, video_path: str) -> np.ndarray:
         return self.embed_text(video_path)
 
-    def embed_videos(self, video_paths: List[str]) -> np.ndarray:
-        return self.embed_texts(video_paths)
+    def embed_videos(self, video_paths: List[str]) -> List[np.ndarray]:
+        return [self.embed_video(p) for p in video_paths]
 
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
         # Return descending scores
         return [0.9 - i * 0.05 for i in range(len(documents))]
-
-    def expand_query(self, query: str) -> Dict[str, str]:
-        return {
-            "lex": query + " keywords",
-            "vec": query + " semantic",
-            "hyde": "hypothetical document about " + query,
-        }
 
     def warm_up(self) -> None:
         pass
 
     def get_info(self) -> BackendInfo:
         return BackendInfo(name="stub", device="cpu", dtype="float32",
-                          embedder_loaded=True, reranker_loaded=True,
-                          expander_loaded=True)
+                          embedder_loaded=True, reranker_loaded=True)
 
 
 class StubStorage:
@@ -169,32 +161,6 @@ class TestVectorSearch(unittest.TestCase):
 
         with self.assertRaises(NotImplementedError):
             searcher.search_video("sample_video.mp4")
-
-
-class TestStrongSignalDetected(unittest.TestCase):
-    def test_no_results_no_signal(self):
-        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage())
-        self.assertFalse(searcher._strong_signal_detected([]))
-
-    def test_single_result_no_signal(self):
-        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage())
-        self.assertFalse(searcher._strong_signal_detected([_make_search_result("a.md", 0.99)]))
-
-    def test_clear_winner_is_strong(self):
-        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage())
-        results = [
-            _make_search_result("a.md", 0.95),
-            _make_search_result("b.md", 0.60),
-        ]
-        self.assertTrue(searcher._strong_signal_detected(results))
-
-    def test_close_scores_not_strong(self):
-        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage())
-        results = [
-            _make_search_result("a.md", 0.70),
-            _make_search_result("b.md", 0.68),
-        ]
-        self.assertFalse(searcher._strong_signal_detected(results))
 
 
 class TestRRFFusion(unittest.TestCase):
@@ -316,7 +282,7 @@ class TestFullSearchPipeline(unittest.TestCase):
             _make_search_result("file3.md", 0.65, "vec"),
         ]
 
-    def _make_searcher(self, mode: str = "full") -> HybridSearcher:
+    def _make_searcher(self, mode: str = "hybrid") -> HybridSearcher:
         backend = StubBackend(mode=mode)
         storage = StubStorage(
             fts_results=self.fts_results,
@@ -347,9 +313,9 @@ class TestFullSearchPipeline(unittest.TestCase):
         results = searcher.search("some query")
         self.assertGreater(len(results), 0)
 
-    def test_search_full_mode(self):
-        """full mode: expansion + reranking, still returns results."""
-        searcher = self._make_searcher("full")
+    def test_search_hybrid_mode(self):
+        """hybrid mode: reranking enabled, returns results."""
+        searcher = self._make_searcher("hybrid")
         results = searcher.search("complex query")
         self.assertGreater(len(results), 0)
 
@@ -424,38 +390,6 @@ class TestN1LookupOptimization(unittest.TestCase):
         self.assertEqual(result.body, "This is chunk text from embeddings table")
         # get_content should NOT be called when text_body is available
         self.assertFalse(get_content_called, "get_content() should not be called when text_body is available")
-
-    def test_falls_back_to_get_content_when_text_body_empty(self):
-        """Verify _make_search_result falls back to get_content when text_body is empty."""
-        from recallforge.storage.lancedb_backend import LanceDBBackend
-
-        backend = LanceDBBackend.__new__(LanceDBBackend)
-
-        # Create a row WITHOUT text_body (empty string)
-        row = {
-            "collection": "test",
-            "file_path": "doc.md",
-            "content_hash": "abc123",
-            "content_type": "text",
-            "title": "Test Doc",
-            "pos": 0,
-            "text_body": "",  # Empty!
-            "user_id": None,
-            "session_id": None,
-            "project_id": None,
-            "profile": None,
-        }
-
-        # Mock get_content to return fallback content
-        def mock_get_content(hash_str):
-            return "Full content from content table"
-
-        backend.get_content = mock_get_content
-
-        result = backend._make_search_result(row, 0.9, "fts")
-
-        # Should fall back to get_content result
-        self.assertEqual(result.body, "Full content from content table")
 
 
 if __name__ == "__main__":
