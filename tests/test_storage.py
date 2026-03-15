@@ -1114,7 +1114,7 @@ class CaptioningEmbedder:
     def __call__(self, path: str) -> List[float]:
         return mock_embed(path)
 
-    def describe_image(self, path: str) -> str:
+    def caption_image(self, path: str) -> str:
         return "Neural network diagram with labeled hidden layers."
 
     def describe_video(self, path: str, frame_paths=None) -> str:
@@ -1123,7 +1123,7 @@ class CaptioningEmbedder:
 
 
 class FailingCaptioningEmbedder(CaptioningEmbedder):
-    def describe_image(self, path: str) -> str:
+    def caption_image(self, path: str) -> str:
         raise RuntimeError("caption failed")
 
     def describe_video(self, path: str, frame_paths=None) -> str:
@@ -1208,6 +1208,29 @@ class TestIngestCaptioning(unittest.TestCase):
         video_rows = self.backend._embeddings_table.search().where("content_type = 'video'").to_list()
         self.assertEqual(len(video_rows), 1)
         self.assertIn("Technical explainer video", video_rows[0].get("text_body") or "")
+
+    def test_ingest_caption_media_disabled_skips_image_caption(self):
+        embedder = CaptioningEmbedder()
+        self.backend.ingest(
+            collection="test",
+            text=None,
+            path=None,
+            file_path=self.image_path,
+            folder_path=None,
+            recursive=True,
+            content_types=["image"],
+            include_globs=None,
+            exclude_globs=None,
+            embed_text_func=mock_embed,
+            embed_image_func=embedder,
+            embed_video_func=embedder,
+            model="mock-embedder",
+            caption_media=False,
+        )
+
+        rows = self.backend._embeddings_table.search().where("content_type = 'image'").to_list()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("text_body"), "")
 
 
 if __name__ == "__main__":

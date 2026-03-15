@@ -1143,7 +1143,7 @@ class IndexingOps:
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
-                enable_captioning=caption_media,
+                enable_captioning=enable_captioning,
             )
             indexed_frames += 1
 
