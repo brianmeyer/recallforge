@@ -83,6 +83,7 @@ class HybridSearcher:
         max_workers: int = 8,
         overfetch_factor: int = 10,
         max_candidates: int = 200,
+        rerank_top_k: int = 20,
         cache: Optional[EmbeddingCache] = None,
         intent: Optional[str] = None,
     ):
@@ -104,6 +105,7 @@ class HybridSearcher:
             max_workers: ThreadPoolExecutor workers for parallel searches
             overfetch_factor: Candidate overfetch multiplier before final trim
             max_candidates: Hard cap on candidate pool size
+            rerank_top_k: Maximum number of top RRF candidates to rerank
             cache: Optional EmbeddingCache; created with default maxsize if None
             intent: Optional intent for query steering ("exact_lookup", "semantic", "broad")
         """
@@ -121,9 +123,11 @@ class HybridSearcher:
         self.max_workers = max_workers
         env_overfetch = int(os.environ.get("RECALLFORGE_OVERFETCH_FACTOR", overfetch_factor))
         env_max_candidates = int(os.environ.get("RECALLFORGE_MAX_CANDIDATES", max_candidates))
+        env_rerank_top_k = int(os.environ.get("RECALLFORGE_RERANK_TOP_K", rerank_top_k))
         self.overfetch_factor = max(2, env_overfetch)
         self.max_candidates = max(self.limit, env_max_candidates)
         self.candidate_limit = min(self.max_candidates, self.limit * self.overfetch_factor)
+        self.rerank_top_k = max(0, env_rerank_top_k)
         self.cache: EmbeddingCache = cache if cache is not None else EmbeddingCache()
         self.intent = intent
 
@@ -151,19 +155,6 @@ class HybridSearcher:
 
     def _bm25_probe(self, query: str) -> List[SearchResult]:
         """Run initial BM25 probe."""
-        return self.storage.search_fts(
-            query,
-            limit=self.fts_probe_limit,
-            collection=self.collection,
-            content_type=self.content_type,
-            user_id=self.user_id,
-            session_id=self.session_id,
-            project_id=self.project_id,
-            profile=self.profile,
-        )
-
-    def _bm25_search(self, query: str) -> List[SearchResult]:
-        """Run BM25 search."""
         return self.storage.search_fts(
             query,
             limit=self.fts_probe_limit,
@@ -247,17 +238,23 @@ class HybridSearcher:
     ) -> Dict[str, List[SearchResult]]:
         """Run all searches in parallel."""
         all_results: Dict[str, List[SearchResult]] = {}
-        
+
         # Build search tasks
         search_tasks: List[tuple] = []
-        
+
         # NOTE: original BM25 is run separately via _bm25_probe() in search()
         # and injected into all_results after this method returns.
         # Do NOT duplicate it here.
-        
-        # Original vector
+
+        # Original vector - use cache like _vector_search() does
         try:
-            vector = self.backend.embed_text(query)
+            cache_key = self.cache.make_key("text", query)
+            vector = self.cache.get(cache_key)
+            if vector is not None:
+                logger.debug("Embedding cache hit for text query in parallel search (key=%s…)", cache_key[:8])
+            else:
+                vector = self.backend.embed_text(query)
+                self.cache.put(cache_key, vector)
             search_tasks.append((
                 'original_vec',
                 lambda v=vector: self.storage.search_vec(
@@ -274,14 +271,14 @@ class HybridSearcher:
             ))
         except Exception as e:
             logger.error("Embedding failed: %s", e)
-        
+
         # Execute all searches in parallel
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_key = {
                 executor.submit(func, *args): key
                 for key, func, args in search_tasks
             }
-            
+
             for future in concurrent.futures.as_completed(future_to_key):
                 key = future_to_key[future]
                 try:
@@ -290,7 +287,7 @@ class HybridSearcher:
                 except Exception as e:
                     logger.error("Search task %s failed: %s", key, e)
                     all_results[key] = []
-        
+
         return all_results
     
     def _reciprocal_rank_fusion(
@@ -314,6 +311,10 @@ class HybridSearcher:
             # Default weights: first 2 lists = 2.0, rest = 1.0
             for i, name in enumerate(list_names):
                 weights[name] = 2.0 if i < 2 else 1.0
+
+        # Log blend weights applied
+        for name, weight in weights.items():
+            logger.debug("blend_weight source=%s weight=%.2f intent=%s", name, weight, self.intent or "default")
         
         # Track which lists exist so we can compensate media candidates
         # that structurally cannot appear in text-based lists (BM25).
@@ -406,17 +407,38 @@ class HybridSearcher:
         """Rerank candidates with cross-encoder."""
         if not candidates:
             return {}
-        
+
         if not self.backend.needs_reranker():
+            logger.debug("reranker_path path=skipped reason=no_reranker_needed")
             return {c.filepath: 0.5 for c in candidates}
-        
-        chunks = [self._select_best_chunk(c) for c in candidates]
-        
+
+        rerank_limit = min(len(candidates), self.rerank_top_k)
+        if rerank_limit <= 0:
+            return {c.filepath: 0.5 for c in candidates}
+
+        candidates_by_rrf = sorted(candidates, key=lambda c: c.score, reverse=True)
+        rerank_candidates = candidates_by_rrf[:rerank_limit]
+        chunks = [self._select_best_chunk(c) for c in rerank_candidates]
+
+        # Determine reranker scoring path
+        has_image = any(c.get('image_path') for c in chunks)
+        has_video = any(c.get('video_path') for c in chunks)
+        if has_image:
+            path = "vl_image"
+        elif has_video:
+            path = "vl_video"
+        else:
+            path = "text"
+
         try:
             scores = self.backend.rerank(query, chunks)
-            return {c.filepath: s for c, s in zip(candidates, scores)}
+            logger.debug("reranker_path path=%s candidate_count=%d", path, len(rerank_candidates))
+            rerank_scores = {c.filepath: 0.5 for c in candidates}
+            rerank_scores.update({c.filepath: s for c, s in zip(rerank_candidates, scores)})
+            return rerank_scores
         except Exception as e:
             logger.error("Reranking failed: %s", e)
+            logger.debug("reranker_path path=fallback reason=error")
             return {c.filepath: 0.5 for c in candidates}
     
     def _blend_scores(
@@ -509,42 +531,64 @@ class HybridSearcher:
             ))
         
         hybrid_results.sort(key=lambda x: x.score, reverse=True)
+
+        # Log final ranking with scores
+        for rank, hr in enumerate(hybrid_results[:self.limit], start=1):
+            logger.debug("final_ranking rank=%d score=%.4f rrf_rank=%d rerank_score=%.4f filepath=%s",
+                         rank, hr.score, hr.rrf_rank, hr.rerank_score, hr.filepath)
+
         return hybrid_results[:self.limit]
     
     def search(self, query: str) -> List[HybridResult]:
         """
         Run full hybrid search pipeline.
-        
+
         Steps:
         1. BM25 probe
         2. Vector search
         3. RRF fusion
         4. Cross-encoder reranking (if hybrid mode)
         5. Score blending
-        
+
         Args:
             query: User's search query
-        
+
         Returns:
             List of HybridResult objects (top K)
         """
+        # Log query routing decision
+        logger.debug("query_routing intent=%s collection=%s content_type=%s limit=%d candidate_limit=%d",
+                     self.intent or "default", self.collection or "none", self.content_type or "none",
+                     self.limit, self.candidate_limit)
+
         # Step 1: BM25 probe
         fts_results = self._bm25_probe(query)
-        
+        logger.debug("candidate_count stage=bm25 count=%d", len(fts_results))
+
         # Step 2: Parallel searches
         all_results = self._run_parallel_searches(query)
-        
+
         # Add original FTS results
         all_results['original_fts'] = fts_results
-        
+
+        # Log candidate counts per modality
+        for source, results in all_results.items():
+            logger.debug("candidate_count stage=parallel source=%s count=%d", source, len(results))
+
         # Step 3: RRF fusion
         candidates = self._reciprocal_rank_fusion(all_results)
-        
+        logger.debug("candidate_count stage=rrf count=%d", len(candidates))
+
         # Step 4: Reranking (hybrid mode)
         rerank_scores = self._rerank_candidates(candidates, query)
-        
+        logger.debug("candidate_count stage=reranker count=%d", len(rerank_scores))
+
         # Step 5: Blend scores
-        return self._blend_scores(candidates, rerank_scores)
+        final_results = self._blend_scores(candidates, rerank_scores)
+        logger.debug("final_ranking count=%d top_score=%.4f", len(final_results),
+                     final_results[0].score if final_results else 0.0)
+
+        return final_results
 
 
 def hybrid_query(
