@@ -1136,8 +1136,15 @@ class IndexingOps:
         indexed_sections = 0
         indexed_images = 0
 
+        # Track temp dirs from PDF vision fallback for cleanup
+        _temp_dirs_to_clean: set = set()
+
         for section in artifacts.sections:
             if section.content_type == "image" and section.image_path:
+                # Track the parent temp dir for cleanup after embedding
+                import os
+                _temp_dirs_to_clean.add(os.path.dirname(section.image_path))
+
                 # Use image embedding for image sections
                 image_embed = embed_image_func or embed_func
                 self.index_image(
@@ -1168,6 +1175,12 @@ class IndexingOps:
                     _skip_delete=True,
                 )
                 indexed_sections += 1
+
+        # Clean up temp dirs from PDF page-to-image rendering
+        import shutil
+        for temp_dir in _temp_dirs_to_clean:
+            if temp_dir and "recallforge_pdf_" in temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
         # Ensure FTS rebuild is scheduled even when no sections were indexed,
         # since _delete_path_entries above may have removed stale entries.
