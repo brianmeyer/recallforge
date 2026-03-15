@@ -125,7 +125,7 @@ async def create_server(
     mode: str = None,
 ) -> Server:
     """Create and configure the MCP server."""
-    server = Server("recallforge")
+    server = Server("recallforge", version=__version__)
     
     # Get backend and storage if not provided
     if backend is None:
