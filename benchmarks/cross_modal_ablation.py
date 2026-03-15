@@ -1330,7 +1330,8 @@ def ingest_corpus(backend, storage, collection: str, corpus_dir: Path) -> int:
                 storage.index_video(
                     path=str(video_file),
                     collection=collection,
-                    embed_func=backend.embed_text,
+                    embed_text_func=backend.embed_text,
+                    embed_image_func=backend.embed_image,
                     model="benchmark",
                 )
                 indexed += 1

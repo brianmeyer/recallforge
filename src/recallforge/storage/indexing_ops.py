@@ -906,9 +906,13 @@ class IndexingOps:
 
         summary["total_seen"] = len(summary["items"])
 
-        # Unload captioner after ingest batch to reclaim ~0.9 GB
-        if caption_media and hasattr(self._backend, '_unload_captioner'):
-            self._backend._unload_captioner()
+        # Unload captioner after ingest batch to reclaim ~0.9 GB.
+        # The captioner lives on the model backend (MLXBackend), not the
+        # storage backend (LanceDBBackend). Access it via the bound method.
+        if caption_media and embed_image_func is not None:
+            model_backend = getattr(embed_image_func, '__self__', None)
+            if model_backend is not None and hasattr(model_backend, '_unload_captioner'):
+                model_backend._unload_captioner()
 
         trace_log("ingest_done", collection=collection, indexed_text=summary["indexed_text"], indexed_images=summary["indexed_images"])
         return summary
