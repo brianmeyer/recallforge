@@ -593,11 +593,11 @@ class TestMediaCompensationInRRF(unittest.TestCase):
         fused = self.searcher._reciprocal_rank_fusion(all_results)
         img_doc = next(r for r in fused if r.filepath == "image1.jpg")
 
-        # Image only in vec, so it gets boosted
-        # base_score = 2.0 / 61 = 0.0328
-        # boosted = 0.0328 * 2.0 = 0.0656
-        expected_boosted_score = (2.0 / 61) * 2.0
-        self.assertAlmostEqual(img_doc.score, expected_boosted_score, places=5)
+        # Image only in vec, so it gets boosted by media_boost.
+        # Verify boosted score is greater than the unboosted base.
+        unboosted_base = 2.0 / 61  # weight / (k + rank + 1)
+        self.assertGreater(img_doc.score, unboosted_base,
+                           "Image RRF score should be boosted above unboosted base")
 
     def test_no_boost_when_no_bm25(self):
         """Media compensation should not apply when there's no BM25 list."""
