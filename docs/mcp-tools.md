@@ -26,6 +26,7 @@ Example MCP client config (Claude Desktop):
 
 ### Search
 - `search`
+- `explain_results`
 - `search_fts`
 - `search_vec`
 - `search_batch`
@@ -112,6 +113,85 @@ Example MCP client config (Claude Desktop):
 - `INTERNAL_ERROR`: uncaught exceptions in dispatch/call path.
 
 **Notes:** Best default search tool for agents. Output includes fused/reranked metrics.
+
+---
+
+## explain_results
+
+**Description:** Run the same hybrid search pipeline as `search`, but return detailed relevance provenance for each result so users can understand why it was retrieved and where its final rank came from.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| query | string | Conditionally* | — | Text query |
+| image_path | string | Conditionally* | — | Image query path |
+| video_path | string | Conditionally* | — | Video query path |
+| limit | integer | No | 10 | Max results |
+| collection | string | No | server default collection | Collection filter |
+| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| user_id | string | No | — | User namespace filter |
+| session_id | string | No | — | Session namespace filter |
+| project_id | string | No | — | Project namespace filter |
+| profile | string | No | — | Profile namespace filter |
+| intent | string (`exact_lookup`\|`semantic`\|`broad`) | No | — | Intent steering for RRF weights |
+| rerank_top_k | integer | No | 20 | Max top RRF candidates to rerank (`0` disables reranking) |
+| expand | boolean | No | false | Enable VL-aware query expansion |
+
+\* Exactly one of `query`, `image_path`, or `video_path` must be provided.
+
+**Example Request:**
+```json
+{
+  "query": "whiteboard diagram from last meeting",
+  "limit": 3,
+  "intent": "semantic"
+}
+```
+
+**Example Response:**
+```json
+{
+  "query": "whiteboard diagram from last meeting",
+  "image_path": null,
+  "video_path": null,
+  "mode": "hybrid",
+  "count": 1,
+  "results": [
+    {
+      "filepath": "/notes/meeting.md",
+      "title": "meeting.md",
+      "final_score": 0.8921,
+      "content_type": "text",
+      "source": "original_fts+original_vec",
+      "provenance": {
+        "rrf": {
+          "sources": {"original_fts": 0, "original_vec": 1},
+          "rrf_score": 0.05765,
+          "media_compensation_applied": false
+        },
+        "reranker": {
+          "raw_score": 0.9334,
+          "normalized_score": 0.8123,
+          "scoring_path": "text"
+        },
+        "blend": {
+          "weights": {"rrf": 0.75, "rerank": 0.25},
+          "final_blended_score": 0.8921
+        }
+      },
+      "rrf_rank": 1,
+      "rerank_score": 0.9334,
+      "snippet": "..."
+    }
+  ]
+}
+```
+
+**Notes:**
+- Reuses the same retrieval pipeline as `search`, so explanations reflect the actual ranking path.
+- `provenance.rrf.sources` maps each contributing RRF list to that result’s rank in the list.
+- `provenance.reranker.scoring_path` shows whether the reranker used text or VL scoring.
+- `media_compensation_applied` is `true` for image/video candidates that received RRF compensation because BM25 cannot surface them structurally.
 
 ---
 

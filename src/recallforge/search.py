@@ -152,14 +152,14 @@ class HybridResult:
 _VISUAL_PHRASE_INDICATORS = [
     "show me", "image of", "photo of", "picture of", "architecture diagram",
     "flow chart", "mind map", "that photo", "that image", "the diagram",
-    "the chart", "the picture", "the screenshot",
+    "the chart", "the picture", "the screenshot", "visual representation",
 ]
 _VISUAL_WORD_INDICATORS = [
-    "diagram", "screenshot", "illustration", "drawing", "infographic",
+    "show", "diagram", "chart", "screenshot", "illustration", "drawing", "infographic",
     "wireframe", "mockup", "sketch", "whiteboard", "portrait",
 ]
-# Deliberately excluded: "show", "chart", "graph", "table", "map", "figure",
-# "landscape", "scene", "visual" — too many false positives as substrings.
+# Deliberately excluded: "graph", "table", "map", "figure", "landscape",
+# "scene", "visual" — too many false positives as substrings or common non-visual usage.
 
 _VISUAL_WORD_PATTERN = re.compile(
     r"\b(" + "|".join(re.escape(w) for w in _VISUAL_WORD_INDICATORS) + r")\b",
@@ -173,10 +173,16 @@ def _is_visual_query(query: str) -> bool:
     Uses phrase matching first (high precision), then word-boundary matching
     for single tokens to avoid false positives like 'mapreduce' or 'tableau'.
     """
-    query_lower = query.lower()
+    query_lower = query.lower().strip()
     if any(phrase in query_lower for phrase in _VISUAL_PHRASE_INDICATORS):
         return True
-    return bool(_VISUAL_WORD_PATTERN.search(query))
+    if query_lower == "show":
+        return True
+    if "show" in query_lower.split():
+        # Bare 'show' inside a normal sentence is too ambiguous.
+        safe_query = re.sub(r"\bshow\b", "", query_lower).strip()
+        return bool(safe_query) and bool(_VISUAL_WORD_PATTERN.search(safe_query))
+    return bool(_VISUAL_WORD_PATTERN.search(query_lower))
 
 
 def _generate_text_variants(query: str, backend: ModelBackend) -> List[str]:

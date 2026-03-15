@@ -394,6 +394,10 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         names = await self._get_tool_names()
         self.assertIn("set_config", names)
 
+    async def test_explain_results_registered(self):
+        names = await self._get_tool_names()
+        self.assertIn("explain_results", names)
+
     async def test_all_original_tools_still_present(self):
         names = await self._get_tool_names()
         expected = {
@@ -402,7 +406,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
             "memory_add", "memory_update", "memory_delete",
             "status", "rebuild_fts", "batch",
             "list_collections", "list_namespaces",
-            "get_config", "set_config",
+            "get_config", "set_config", "explain_results",
         }
         missing = expected - set(names)
         self.assertFalse(missing, f"Missing tools: {missing}")
@@ -433,6 +437,20 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         # mode is an enum
         self.assertIn("enum", schema["properties"]["mode"])
         self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid"])
+
+    async def test_explain_results_schema(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        server = await create_server(backend=backend, storage=storage)
+        handler = server.request_handlers[ListToolsRequest]
+        result = await handler(ListToolsRequest(method="tools/list", params=None))
+        tool = next(t for t in result.root.tools if t.name == "explain_results")
+        schema = tool.inputSchema
+        self.assertEqual(schema["type"], "object")
+        self.assertIn("query", schema["properties"])
+        self.assertIn("image_path", schema["properties"])
+        self.assertIn("video_path", schema["properties"])
+        self.assertIn("rerank_top_k", schema["properties"])
 
     async def test_get_config_via_server_call(self):
         """Integration: get_config round-trip through create_server closure."""

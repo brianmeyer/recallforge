@@ -92,6 +92,17 @@ class TestDispatchTool(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertEqual(data.get("removed_vectors"), 1)
 
+    async def test_explain_results_dispatched(self):
+        self.backend.needs_reranker.return_value = False
+        self.storage.search_fts.return_value = []
+        self.storage.search_vec.return_value = []
+        result = await _dispatch_tool(
+            "explain_results", {"query": "test transparency"}, self.backend, self.storage
+        )
+        data = json.loads(result[0].text)
+        self.assertEqual(data.get("query"), "test transparency")
+        self.assertIn("results", data)
+
 
 # ---------------------------------------------------------------------------
 # _handle_batch
