@@ -137,8 +137,12 @@ async def create_server(
         backend.set_mode(mode)
 
     # Mutable runtime config — safe to change without restart
+    _raw_mode = mode or os.environ.get("RECALLFORGE_MODE", "hybrid")
+    # Normalize deprecated "full" mode at startup
+    if _raw_mode == "full":
+        _raw_mode = "hybrid"
     _mutable_config: dict = {
-        "mode": mode or os.environ.get("RECALLFORGE_MODE", "hybrid"),
+        "mode": _raw_mode,
         "collection": "default",
         "max_file_size_mb": 100,
     }
@@ -412,8 +416,8 @@ async def create_server(
                     "properties": {
                         "mode": {
                             "type": "string",
-                            "enum": ["embed", "hybrid"],
-                            "description": "Search mode: embed (vector only), hybrid (vector + rerank)",
+                            "enum": ["embed", "hybrid", "full"],
+                            "description": "Search mode: embed (vector only), hybrid (vector + rerank). 'full' is deprecated and falls back to 'hybrid'.",
                         },
                         "collection": {
                             "type": "string",

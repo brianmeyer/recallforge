@@ -803,7 +803,7 @@ class LanceDBBackend(StorageBackend):
             # Fetch all rows for this collection
             all_rows = list(self._embeddings_table.search()
                 .where(embeddings_filter)
-                .limit(100_000)
+                .limit(10_000_000)
                 .to_list())
 
             embeddings_updated = len(all_rows)
@@ -830,7 +830,7 @@ class LanceDBBackend(StorageBackend):
         try:
             all_doc_rows = list(self._documents_table.search()
                 .where(documents_filter)
-                .limit(100_000)
+                .limit(10_000_000)
                 .to_list())
 
             documents_updated = len(all_doc_rows)
@@ -890,7 +890,7 @@ class LanceDBBackend(StorageBackend):
             rows = list(self._embeddings_table.search()
                 .where(embeddings_filter)
                 .select(["content_hash"])
-                .limit(100_000)
+                .limit(10_000_000)
                 .to_list())
             content_hashes_to_check.update(r["content_hash"] for r in rows)
             embeddings_deleted = len(rows)
@@ -910,7 +910,7 @@ class LanceDBBackend(StorageBackend):
             rows = list(self._documents_table.search()
                 .where(documents_filter)
                 .select(["content_hash"])
-                .limit(100_000)
+                .limit(10_000_000)
                 .to_list())
             content_hashes_to_check.update(r["content_hash"] for r in rows)
             documents_deleted = len(rows)
@@ -1118,6 +1118,7 @@ class LanceDBBackend(StorageBackend):
         path: str,
         collection: str,
         embed_func,
+        embed_image_func=None,
         model: str = "Qwen3-VL-Embedding-2B",
         stored_path: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -1130,6 +1131,7 @@ class LanceDBBackend(StorageBackend):
             path=path,
             collection=collection,
             embed_func=embed_func,
+            embed_image_func=embed_image_func,
             model=model,
             stored_path=stored_path,
             user_id=user_id,

@@ -412,7 +412,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("max_file_size_mb", schema["properties"])
         # mode is an enum
         self.assertIn("enum", schema["properties"]["mode"])
-        self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid"])
+        self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid", "full"])
 
     async def test_get_config_via_server_call(self):
         """Integration: get_config round-trip through create_server closure."""
