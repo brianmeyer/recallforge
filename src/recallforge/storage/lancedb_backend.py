@@ -1232,7 +1232,7 @@ class LanceDBBackend(StorageBackend):
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
         max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
-        enable_captioning: bool = True,
+        caption_media: bool = True,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text/image/file/folder inputs."""
         return self._indexer.ingest(
@@ -1254,7 +1254,7 @@ class LanceDBBackend(StorageBackend):
             project_id=project_id,
             profile=profile,
             max_file_size_mb=max_file_size_mb,
-            enable_captioning=enable_captioning,
+            caption_media=caption_media,
         )
     
     # =========================================================================

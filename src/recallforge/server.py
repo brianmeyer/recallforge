@@ -142,6 +142,7 @@ async def create_server(
         "collection": "default",
         "max_file_size_mb": 100,
         "rerank_top_k": int(os.environ.get("RECALLFORGE_RERANK_TOP_K", "20")),
+        "caption_media": True,
     }
     
     @server.list_tools()
@@ -150,7 +151,7 @@ async def create_server(
         return [
             Tool(
                 name="search",
-                description="Full hybrid search combining BM25, vector search, and reranking (hybrid mode)",
+                description="Full hybrid search combining BM25, vector search, and reranking (hybrid mode). Optional query expansion generates semantic variants for improved cross-modal retrieval.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -166,6 +167,7 @@ async def create_server(
                         "profile": {"type": "string", "description": "Optional profile namespace filter"},
                         "intent": {"type": "string", "enum": ["exact_lookup", "semantic", "broad"], "description": "Optional intent for query steering: exact_lookup (boost BM25), semantic (boost vector), broad (equal weights)"},
                         "rerank_top_k": {"type": "integer", "description": "Maximum number of top RRF candidates to rerank", "default": 20, "minimum": 0},
+                        "expand": {"type": "boolean", "description": "Enable VL-aware query expansion. When true, generates semantic variants for text queries and visual descriptions for image-seeking queries. Each variant runs as a separate retrieval branch in RRF. Default: false (opt-in)", "default": False},
                     },
                 },
             ),
@@ -226,6 +228,7 @@ async def create_server(
                         "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
                         "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"},
                         "max_file_size_mb": {"type": "integer", "description": "Maximum file size in MB (files exceeding this will be skipped)", "default": 100},
+                        "caption_media": {"type": "boolean", "description": "Generate captions for image/video content during ingest", "default": True},
                         "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace"},
                         "project_id": {"type": "string", "description": "Optional project namespace"},
@@ -399,6 +402,44 @@ async def create_server(
                 },
             ),
             Tool(
+                name="search_batch",
+                description="Run multiple search queries in parallel and merge results using RRF fusion. Each query runs independently, then results are deduplicated with best-score-wins.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array",
+                            "description": "List of queries (strings or objects with query/mode/intent/weight)",
+                            "items": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "query": {"type": "string", "description": "Search query text"},
+                                            "mode": {"type": "string", "enum": ["hybrid", "fts", "vec"], "description": "Search mode (default: hybrid)"},
+                                            "intent": {"type": "string", "enum": ["exact_lookup", "semantic", "broad"], "description": "Optional intent steering"},
+                                            "weight": {"type": "number", "description": "Weight for RRF merging (default: 1.0)", "minimum": 0},
+                                        },
+                                        "required": ["query"],
+                                    },
+                                ],
+                            },
+                            "minItems": 1,
+                            "maxItems": 20,
+                        },
+                        "limit": {"type": "integer", "description": "Maximum final results to return", "default": 10},
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
+                    },
+                    "required": ["queries"],
+                },
+            ),
+            Tool(
                 name="get_config",
                 description="Get current server configuration including version, backend, mode, quantization, data directory, default collection, and max file size",
                 inputSchema={
@@ -430,6 +471,10 @@ async def create_server(
                             "type": "number",
                             "description": "Maximum number of top RRF candidates to rerank in search (0 disables reranking)",
                             "minimum": 0,
+                        },
+                        "caption_media": {
+                            "type": "boolean",
+                            "description": "Enable ingest-time image/video caption generation for BM25 indexing",
                         },
                     },
                 },
@@ -469,6 +514,8 @@ async def _dispatch_tool(
             arguments.setdefault("max_file_size_mb", mutable_config["max_file_size_mb"])
         if "rerank_top_k" not in arguments and "rerank_top_k" in mutable_config:
             arguments.setdefault("rerank_top_k", mutable_config["rerank_top_k"])
+        if "caption_media" not in arguments and "caption_media" in mutable_config:
+            arguments.setdefault("caption_media", mutable_config["caption_media"])
     if name == "search":
         return await _handle_search(arguments, backend, storage)
     elif name == "search_fts":
@@ -503,6 +550,8 @@ async def _dispatch_tool(
         return await _handle_get_config(backend, storage, mutable_config or {})
     elif name == "set_config":
         return await _handle_set_config(arguments, backend, storage, mutable_config if mutable_config is not None else {})
+    elif name == "search_batch":
+        return await _handle_search_batch(arguments, backend, storage)
     else:
         raise ValueError(f"Unknown tool: {name}")
 
@@ -767,6 +816,88 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
+async def _handle_search_batch(arguments: dict, backend, storage) -> list[TextContent]:
+    """Handle parallel batch search with RRF merge."""
+    from .search import BatchQuery, search_batch
+
+    queries_raw = arguments.get("queries", [])
+    limit = arguments.get("limit", 10)
+    collection = arguments.get("collection")
+    content_type = arguments.get("content_type")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    trace_log("search_batch_start", query_count=len(queries_raw), limit=limit, collection=collection,
+              content_type=content_type, user_id=user_id, session_id=session_id,
+              project_id=project_id, profile=profile)
+
+    # Validate and normalize queries
+    if not isinstance(queries_raw, list) or len(queries_raw) == 0:
+        return _error_response("INVALID_INPUT", "queries must be a non-empty array")
+
+    if len(queries_raw) > 20:
+        return _error_response("INVALID_INPUT", "queries array must contain at most 20 items")
+
+    # Convert to BatchQuery objects
+    queries = []
+    for i, q in enumerate(queries_raw):
+        if isinstance(q, str):
+            queries.append(BatchQuery(query=q))
+        elif isinstance(q, dict):
+            query_text = q.get("query")
+            if not query_text or not isinstance(query_text, str):
+                return _error_response("INVALID_INPUT", f"queries[{i}].query must be a non-empty string")
+            queries.append(BatchQuery(
+                query=query_text,
+                mode=q.get("mode"),
+                intent=q.get("intent"),
+                weight=q.get("weight", 1.0),
+            ))
+        else:
+            return _error_response("INVALID_INPUT", f"queries[{i}] must be a string or object")
+
+    results = await _run_blocking(
+        search_batch,
+        queries=queries,
+        backend=backend,
+        storage=storage,
+        limit=limit,
+        collection=collection,
+        content_type=content_type,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+    )
+
+    trace_log("search_batch_done", query_count=len(queries), count=len(results))
+
+    output = {
+        "query_count": len(queries),
+        "limit": limit,
+        "count": len(results),
+        "results": [
+            {
+                "filepath": r.filepath,
+                "title": r.title,
+                "score": round(r.score, 4),
+                "source": r.source,
+                "query_scores": {str(k): round(v, 4) for k, v in r.query_scores.items()},
+                "snippet": (r.body or "")[:500] if r.body else None,
+                "user_id": getattr(r, "user_id", None),
+                "session_id": getattr(r, "session_id", None),
+                "project_id": getattr(r, "project_id", None),
+                "profile": getattr(r, "profile", None),
+            }
+            for r in results
+        ],
+    }
+
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
 async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]:
     """Handle unified ingest."""
     text = arguments.get("text")
@@ -779,6 +910,7 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
     max_file_size_mb = arguments.get("max_file_size_mb", 100)
+    caption_media = arguments.get("caption_media", True)
     user_id = arguments.get("user_id")
     session_id = arguments.get("session_id")
     project_id = arguments.get("project_id")
@@ -807,6 +939,7 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
         project_id=project_id,
         profile=profile,
         max_file_size_mb=max_file_size_mb,
+        caption_media=caption_media,
     )
 
     trace_log("ingest_done", collection=collection, indexed_text=output.get("indexed_text", 0), indexed_images=output.get("indexed_images", 0))
@@ -1042,6 +1175,7 @@ async def _handle_get_config(backend, storage, mutable_config: dict) -> list[Tex
         "collection": mutable_config.get("collection", "default"),
         "max_file_size_mb": mutable_config.get("max_file_size_mb", 100),
         "rerank_top_k": mutable_config.get("rerank_top_k", int(os.environ.get("RECALLFORGE_RERANK_TOP_K", "20"))),
+        "caption_media": mutable_config.get("caption_media", True),
     }
     return [TextContent(type="text", text=json.dumps(config, indent=2))]
 
@@ -1054,7 +1188,7 @@ async def _handle_set_config(
 ) -> list[TextContent]:
     """Validate and apply safe runtime configuration changes."""
     _IMMUTABLE = {"backend", "quantize", "data_dir"}
-    _ALLOWED = {"mode", "collection", "max_file_size_mb", "rerank_top_k"}
+    _ALLOWED = {"mode", "collection", "max_file_size_mb", "rerank_top_k", "caption_media"}
 
     # Reject attempts to change immutable fields
     attempted_immutable = set(arguments.keys()) & _IMMUTABLE
@@ -1111,6 +1245,16 @@ async def _handle_set_config(
                 {"provided": rerank_top_k},
             )
         mutable_config["rerank_top_k"] = int(rerank_top_k)
+
+    if "caption_media" in arguments:
+        caption_media = arguments["caption_media"]
+        if not isinstance(caption_media, bool):
+            return _error_response(
+                "INVALID_INPUT",
+                "caption_media must be a boolean",
+                {"provided": caption_media},
+            )
+        mutable_config["caption_media"] = caption_media
 
     # Return the updated configuration
     return await _handle_get_config(backend, storage, mutable_config)

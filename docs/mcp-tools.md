@@ -28,6 +28,7 @@ Example MCP client config (Claude Desktop):
 - `search`
 - `search_fts`
 - `search_vec`
+- `search_batch`
 
 ### Ingest
 - `ingest`
@@ -222,6 +223,91 @@ Example MCP client config (Claude Desktop):
 - `INTERNAL_ERROR`: uncaught exceptions.
 
 **Notes:** Uses only vector similarity, no BM25/reranking.
+
+---
+
+## search_batch
+
+**Description:** Run multiple search queries in parallel and merge results using Reciprocal Rank Fusion (RRF). Each query executes independently in a thread pool, then results are deduplicated with best-score-wins ranking.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| queries | array | Yes | — | List of queries (1-20 items) |
+| limit | integer | No | 10 | Max final results after merge |
+| collection | string | No | server default collection | Collection filter |
+| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| user_id | string | No | — | User namespace filter |
+| session_id | string | No | — | Session namespace filter |
+| project_id | string | No | — | Project namespace filter |
+| profile | string | No | — | Profile namespace filter |
+
+**Query object schema (within `queries` array):**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| query | string | Yes | — | Search query text |
+| mode | string (`hybrid`\|`fts`\|`vec`) | No | hybrid | Search mode for this query |
+| intent | string (`exact_lookup`\|`semantic`\|`broad`) | No | — | Intent steering for hybrid mode |
+| weight | number | No | 1.0 | Weight multiplier for RRF merging (≥0) |
+
+**Example Request:**
+```json
+{
+  "queries": [
+    "deployment checklist",
+    {"query": "runbook", "mode": "fts", "weight": 2.0},
+    {"query": "incident response", "mode": "vec", "intent": "semantic"}
+  ],
+  "limit": 10,
+  "collection": "work"
+}
+```
+
+**Example Response:**
+```json
+{
+  "query_count": 3,
+  "limit": 10,
+  "count": 5,
+  "results": [
+    {
+      "filepath": "/docs/runbook.md",
+      "title": "runbook.md",
+      "score": 0.0847,
+      "source": "0,1",
+      "query_scores": {"0": 0.8921, "1": 0.9102},
+      "snippet": "...",
+      "user_id": null,
+      "session_id": null,
+      "project_id": null,
+      "profile": null
+    },
+    {
+      "filepath": "/docs/deploy.md",
+      "title": "deploy.md",
+      "score": 0.0723,
+      "source": "0",
+      "query_scores": {"0": 0.8456},
+      "snippet": "...",
+      "user_id": null,
+      "session_id": null,
+      "project_id": null,
+      "profile": null
+    }
+  ]
+}
+```
+
+**Errors:**
+- `INVALID_INPUT`: when `queries` is empty, exceeds 20 items, or has invalid query objects.
+- `INTERNAL_ERROR`: uncaught exceptions.
+
+**Notes:**
+- Useful for multi-intent searches where different queries target different aspects of a topic.
+- The `source` field shows which query indices (0-indexed) found each result.
+- The `query_scores` field shows the individual score from each query that matched.
+- Parallel execution reduces latency compared to sequential `search` calls.
+- RRF fusion handles deduplication: same document from multiple queries gets combined score.
 
 ---
 

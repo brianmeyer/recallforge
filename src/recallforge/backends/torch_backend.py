@@ -10,6 +10,7 @@ Model IDs:
 """
 
 import os
+import re
 import sys
 import warnings
 import logging
@@ -292,6 +293,38 @@ class TorchBackend(ModelBackend):
         
         embeddings = self._embedder.process(inputs)
         return self._coerce_embeddings(embeddings)
+
+    def caption_image(self, image_path: str) -> str:
+        """Generate a short one-sentence image caption for BM25 indexing."""
+        self._load_embedder()
+
+        prompt = "Describe this image in one sentence for search indexing."
+
+        try:
+            if hasattr(self._embedder, "caption_image") and callable(self._embedder.caption_image):
+                caption = self._embedder.caption_image(
+                    image_path=image_path,
+                    prompt=prompt,
+                    max_new_tokens=50,
+                )
+                if isinstance(caption, str) and caption.strip():
+                    return re.sub(r"\s+", " ", caption).strip()
+
+            if hasattr(self._embedder, "generate") and callable(self._embedder.generate):
+                generated = self._embedder.generate(
+                    [{"image": image_path, "text": prompt}],
+                    max_new_tokens=50,
+                )
+                if isinstance(generated, str) and generated.strip():
+                    return re.sub(r"\s+", " ", generated).strip()
+                if isinstance(generated, list) and generated:
+                    first = generated[0]
+                    if isinstance(first, str) and first.strip():
+                        return re.sub(r"\s+", " ", first).strip()
+
+            raise RuntimeError("embedder does not expose a supported caption generation API")
+        except Exception as exc:
+            raise RuntimeError(f"caption_image failed for '{image_path}': {exc}") from exc
 
     def embed_video(self, video_path: str) -> np.ndarray:
         """Embed a single video."""

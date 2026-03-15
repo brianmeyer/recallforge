@@ -118,7 +118,11 @@ class ModelBackend(ABC):
         if not vectors:
             return np.empty((0, 0), dtype=np.float32)
         return np.stack(vectors).astype(np.float32)
-    
+
+    def caption_image(self, image_path: str) -> str:
+        """Generate a short caption for an image (optional backend capability)."""
+        raise NotImplementedError("caption_image is not supported by this backend")
+
     @abstractmethod
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
         """

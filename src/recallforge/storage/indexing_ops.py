@@ -663,7 +663,7 @@ class IndexingOps:
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
         max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
-        enable_captioning: bool = True,
+        caption_media: bool = True,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text, file, or folder inputs."""
         content_types = content_types or ["text", "image", "video", "document"]
@@ -736,7 +736,7 @@ class IndexingOps:
                         session_id=session_id,
                         project_id=project_id,
                         profile=profile,
-                        enable_captioning=enable_captioning,
+                        enable_captioning=caption_media,
                     )
                     summary["indexed_images"] += 1
                     mark(item_path, "image", "indexed")
@@ -759,7 +759,7 @@ class IndexingOps:
                         session_id=session_id,
                         project_id=project_id,
                         profile=profile,
-                        enable_captioning=enable_captioning,
+                        enable_captioning=caption_media,
                     )
                     summary["indexed_videos"] += 1
                     summary["indexed_images"] += video_summary["indexed_frames"]
@@ -1143,7 +1143,7 @@ class IndexingOps:
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
-                enable_captioning=enable_captioning,
+                enable_captioning=caption_media,
             )
             indexed_frames += 1
 

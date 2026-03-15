@@ -56,6 +56,127 @@ class HybridResult:
     source: str  # Sources that contributed to this result
 
 
+# Visual query indicators - phrases that suggest visual content
+VISUAL_QUERY_INDICATORS = [
+    "show me", "show", "image of", "photo of", "picture of", "diagram",
+    "chart", "graph", "screenshot", "visual", "illustration", "drawing",
+    "figure", "table", "map", "portrait", "landscape", "scene",
+    "whiteboard", "sketch", "mockup", "wireframe", "architecture diagram",
+    "flow chart", "mind map", "infographic", "that photo", "that image",
+    "the diagram", "the chart", "the picture", "the screenshot",
+]
+
+
+def _is_visual_query(query: str) -> bool:
+    """Check if query implies visual content."""
+    query_lower = query.lower()
+    return any(indicator in query_lower for indicator in VISUAL_QUERY_INDICATORS)
+
+
+def _generate_text_variants(query: str, backend: ModelBackend) -> List[str]:
+    """Generate 1-2 semantic variants of a text query using the VL model.
+
+    Uses the backend's text embedding model to generate variations that
+    capture different phrasings or aspects of the original query.
+    """
+    variants = []
+    query_lower = query.lower().strip()
+
+    # Simple rule-based expansion for common patterns
+    # These are semantic equivalents that might match different document phrasings
+    expansions = {
+        "how to": ["guide for", "steps to", "tutorial on"],
+        "what is": ["definition of", "explaining", "introduction to"],
+        "best way to": ["optimal method for", "recommended approach to"],
+        "difference between": ["comparison of", "vs", "versus"],
+        "example of": ["sample", "instance of", "demonstration of"],
+        "how do": ["how does", "how can", "ways to"],
+    }
+
+    for pattern, alternatives in expansions.items():
+        if pattern in query_lower:
+            for alt in alternatives[:1]:  # Add just one variant per pattern
+                variant = query_lower.replace(pattern, alt, 1)
+                if variant != query_lower:
+                    variants.append(variant)
+                    break
+            if variants:
+                break
+
+    # If no pattern matched, try simple rephrasing
+    if not variants:
+        # Remove question words and rephrase as statement
+        if query_lower.startswith("what ") or query_lower.startswith("how "):
+            # Convert "what is X" -> "X is" or "information about X"
+            words = query_lower.split()
+            if len(words) > 2:
+                variants.append(" ".join(words[2:]))
+                variants.append(f"information about {' '.join(words[2:])}")
+
+    return variants[:2]  # Return at most 2 variants
+
+
+def _generate_visual_description(query: str) -> str:
+    """Generate descriptive text for what the image likely contains.
+
+    For queries that imply visual content, generate a description that
+    describes what the image likely shows. This helps match against
+    image embeddings which encode visual content.
+    """
+    query_lower = query.lower().strip()
+
+    # Remove visual indicators to get the core subject
+    core_query = query_lower
+    for indicator in VISUAL_QUERY_INDICATORS:
+        core_query = core_query.replace(indicator, "")
+    core_query = core_query.strip().strip("of").strip()
+
+    if not core_query:
+        return query_lower
+
+    # Generate a visual description based on the core subject
+    # This describes what the image likely contains
+    descriptions = [
+        f"A photograph or image showing {core_query}",
+        f"Visual representation of {core_query} with details and context",
+        f"Image depicting {core_query} in a clear view",
+    ]
+
+    return descriptions[0]
+
+
+def expand_query(query: str, backend: ModelBackend, expand: bool = False) -> List[str]:
+    """Expand a query into multiple variants for improved retrieval.
+
+    Args:
+        query: Original search query
+        backend: Model backend for generating expansions
+        expand: Whether to enable query expansion (default: False, opt-in)
+
+    Returns:
+        List of query variants. Always includes the original query as first element.
+        Additional variants are generated based on query type:
+        - Text queries: 1-2 semantic variants
+        - Visual queries: descriptive text of what the image likely contains
+    """
+    if not expand or not query or not query.strip():
+        return [query] if query else []
+
+    variants = [query]  # Always keep original
+
+    if _is_visual_query(query):
+        # For visual queries, generate a description of what the image contains
+        visual_desc = _generate_visual_description(query)
+        if visual_desc and visual_desc != query:
+            variants.append(visual_desc)
+    else:
+        # For text queries, generate semantic variants
+        text_variants = _generate_text_variants(query, backend)
+        variants.extend(text_variants)
+
+    return variants
+
+
 class HybridSearcher:
     """
     Full hybrid search pipeline with tiered modes.
@@ -86,6 +207,7 @@ class HybridSearcher:
         rerank_top_k: int = 20,
         cache: Optional[EmbeddingCache] = None,
         intent: Optional[str] = None,
+        expand: bool = False,
     ):
         """
         Initialize hybrid searcher.
@@ -108,6 +230,7 @@ class HybridSearcher:
             rerank_top_k: Maximum number of top RRF candidates to rerank
             cache: Optional EmbeddingCache; created with default maxsize if None
             intent: Optional intent for query steering ("exact_lookup", "semantic", "broad")
+            expand: Whether to enable VL-aware query expansion (default: False, opt-in)
         """
         self.backend = backend
         self.storage = storage
@@ -130,6 +253,7 @@ class HybridSearcher:
         self.rerank_top_k = max(0, env_rerank_top_k)
         self.cache: EmbeddingCache = cache if cache is not None else EmbeddingCache()
         self.intent = intent
+        self.expand = expand
 
     def _vector_results_to_hybrid(self, results: List[SearchResult]) -> List[HybridResult]:
         """Convert raw vector results into HybridResult objects."""
@@ -570,11 +694,12 @@ class HybridSearcher:
         Run full hybrid search pipeline.
 
         Steps:
-        1. BM25 probe
-        2. Vector search
-        3. RRF fusion
-        4. Cross-encoder reranking (if hybrid mode)
-        5. Score blending
+        1. Optional: Expand query into variants (VL-aware)
+        2. BM25 probe (on original query)
+        3. Vector search (on all query variants)
+        4. RRF fusion across all branches
+        5. Cross-encoder reranking (if hybrid mode)
+        6. Score blending
 
         Args:
             query: User's search query
@@ -583,16 +708,32 @@ class HybridSearcher:
             List of HybridResult objects (top K)
         """
         # Log query routing decision
-        logger.debug("query_routing intent=%s collection=%s content_type=%s limit=%d candidate_limit=%d",
+        logger.debug("query_routing intent=%s collection=%s content_type=%s limit=%d candidate_limit=%d expand=%s",
                      self.intent or "default", self.collection or "none", self.content_type or "none",
-                     self.limit, self.candidate_limit)
+                     self.limit, self.candidate_limit, self.expand)
 
-        # Step 1: BM25 probe
+        # Step 1: Expand query if enabled
+        query_variants = expand_query(query, self.backend, expand=self.expand)
+        logger.debug("query_expansion enabled=%s variants=%d", self.expand, len(query_variants))
+
+        # Step 2: BM25 probe (only on original query to avoid noise)
         fts_results = self._bm25_probe(query)
         logger.debug("candidate_count stage=bm25 count=%d", len(fts_results))
 
-        # Step 2: Parallel searches
-        all_results = self._run_parallel_searches(query)
+        # Step 3: Parallel searches across all query variants
+        all_results: Dict[str, List[SearchResult]] = {}
+
+        # Run vector search for each query variant
+        for i, variant in enumerate(query_variants):
+            variant_results = self._run_parallel_searches(variant)
+            # Prefix with variant index to keep them distinct in RRF
+            for key, results in variant_results.items():
+                if i == 0:
+                    # Original query keeps original naming
+                    all_results[key] = results
+                else:
+                    # Expanded variants get prefixed names
+                    all_results[f"{key}_exp{i}"] = results
 
         # Add original FTS results
         all_results['original_fts'] = fts_results
@@ -601,15 +742,15 @@ class HybridSearcher:
         for source, results in all_results.items():
             logger.debug("candidate_count stage=parallel source=%s count=%d", source, len(results))
 
-        # Step 3: RRF fusion
+        # Step 4: RRF fusion across all branches (original + expansions)
         candidates = self._reciprocal_rank_fusion(all_results)
         logger.debug("candidate_count stage=rrf count=%d", len(candidates))
 
-        # Step 4: Reranking (hybrid mode)
+        # Step 5: Reranking (hybrid mode) - use original query for reranking
         rerank_scores = self._rerank_candidates(candidates, query)
         logger.debug("candidate_count stage=reranker count=%d", len(rerank_scores))
 
-        # Step 5: Blend scores
+        # Step 6: Blend scores
         final_results = self._blend_scores(candidates, rerank_scores)
         logger.debug("final_ranking count=%d top_score=%.4f", len(final_results),
                      final_results[0].score if final_results else 0.0)
@@ -629,6 +770,7 @@ def hybrid_query(
     project_id: Optional[str] = None,
     profile: Optional[str] = None,
     intent: Optional[str] = None,
+    expand: bool = False,
 ) -> List[HybridResult]:
     """
     Convenience function for hybrid search.
@@ -645,6 +787,7 @@ def hybrid_query(
         project_id: Optional project namespace filter
         profile: Optional profile namespace filter
         intent: Optional intent for query steering ("exact_lookup", "semantic", "broad")
+        expand: Whether to enable VL-aware query expansion (default: False, opt-in)
 
     Returns:
         List of HybridResult objects
@@ -668,6 +811,7 @@ def hybrid_query(
         project_id=project_id,
         profile=profile,
         intent=intent,
+        expand=expand,
     )
 
     return searcher.search(query)
@@ -743,3 +887,166 @@ def hybrid_query_video(
         intent=intent,
     )
     return searcher.search_video(video_path)
+
+
+@dataclass
+class BatchQuery:
+    """A single query in a batch search request."""
+    query: str
+    mode: Optional[str] = None  # "hybrid" (default), "fts", "vec"
+    intent: Optional[str] = None
+    weight: float = 1.0  # Optional weight for result merging
+
+
+@dataclass
+class BatchSearchResult:
+    """Result from a batch search with per-query provenance."""
+    filepath: str
+    display_path: str
+    title: str
+    context: Optional[str]
+    hash: str
+    docid: str
+    collection: str
+    modified_at: str
+    body_length: int
+    body: Optional[str]
+    score: float  # Best score across queries
+    source: str  # Comma-separated list of query indices that found this result
+    query_scores: Dict[int, float]  # Map of query_index -> score
+
+
+def search_batch(
+    queries: List[Union[str, BatchQuery]],
+    backend: ModelBackend,
+    storage: StorageBackend,
+    limit: int = 10,
+    collection: Optional[str] = None,
+    content_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    profile: Optional[str] = None,
+    max_workers: int = 4,
+    rrf_k: int = 60,
+) -> List[BatchSearchResult]:
+    """
+    Run multiple search queries in parallel and merge results using RRF.
+
+    Each query runs independently in a thread pool, then results are merged
+    using Reciprocal Rank Fusion with best-score-wins deduplication.
+
+    Args:
+        queries: List of query strings or BatchQuery objects
+        backend: Model backend
+        storage: Storage backend
+        limit: Maximum final results to return
+        collection: Optional collection filter
+        content_type: Optional content type filter
+        user_id: Optional user namespace filter
+        session_id: Optional session namespace filter
+        project_id: Optional project namespace filter
+        profile: Optional profile namespace filter
+        max_workers: Maximum parallel threads
+        rrf_k: RRF fusion constant
+
+    Returns:
+        List of BatchSearchResult objects, sorted by best merged score
+    """
+    # Normalize queries to BatchQuery objects
+    batch_queries: List[BatchQuery] = []
+    for q in queries:
+        if isinstance(q, str):
+            batch_queries.append(BatchQuery(query=q))
+        else:
+            batch_queries.append(q)
+
+    if not batch_queries:
+        return []
+
+    def run_single_query(q: BatchQuery) -> List[tuple]:
+        """Run a single query and return (result, score) tuples."""
+        mode = q.mode or "hybrid"
+        searcher = HybridSearcher(
+            backend=backend,
+            storage=storage,
+            limit=limit * 3,  # Overfetch for better merging
+            collection=collection,
+            content_type=content_type,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            intent=q.intent,
+        )
+
+        if mode == "fts":
+            results = searcher._bm25_probe(q.query)
+            # Convert SearchResult to HybridResult-like for consistency
+            return [(r, r.score) for r in results]
+        elif mode == "vec":
+            results = searcher._vector_search(q.query)
+            return [(r, r.score) for r in results]
+        else:  # hybrid
+            results = searcher.search(q.query)
+            return [(r, r.score) for r in results]
+
+    # Run all queries in parallel
+    all_results: Dict[int, List[tuple]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(run_single_query, q): i
+            for i, q in enumerate(batch_queries)
+        }
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                all_results[idx] = future.result(timeout=30)
+            except Exception as e:
+                logger.error("Batch query %d failed: %s", idx, e)
+                all_results[idx] = []
+
+    # Merge results using RRF with best-score-wins
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    for idx, results in all_results.items():
+        weight = batch_queries[idx].weight
+        for result, score in results:
+            filepath = result.filepath
+            if filepath not in merged:
+                merged[filepath] = {
+                    'result': result,
+                    'rrf_score': 0.0,
+                    'query_indices': set(),
+                    'query_scores': {},
+                    'best_score': 0.0,
+                }
+
+            # RRF contribution
+            merged[filepath]['rrf_score'] += weight / (rrf_k + len(merged) + 1)
+            merged[filepath]['query_indices'].add(idx)
+            merged[filepath]['query_scores'][idx] = score
+            merged[filepath]['best_score'] = max(merged[filepath]['best_score'], score)
+
+    # Build final results sorted by RRF score
+    final_results: List[BatchSearchResult] = []
+    for filepath, data in merged.items():
+        result = data['result']
+        final_results.append(BatchSearchResult(
+            filepath=result.filepath,
+            display_path=result.display_path,
+            title=result.title,
+            context=result.context,
+            hash=result.hash,
+            docid=result.docid,
+            collection=result.collection,
+            modified_at=result.modified_at,
+            body_length=result.body_length,
+            body=result.body,
+            score=data['rrf_score'],
+            source=','.join(str(i) for i in sorted(data['query_indices'])),
+            query_scores=data['query_scores'],
+        ))
+
+    final_results.sort(key=lambda x: x.score, reverse=True)
+    return final_results[:limit]

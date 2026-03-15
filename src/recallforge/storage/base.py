@@ -334,6 +334,7 @@ class StorageBackend(ABC):
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        caption_media: bool = True,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text/image/file/folder inputs."""
         pass
