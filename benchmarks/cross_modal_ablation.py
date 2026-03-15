@@ -624,9 +624,30 @@ def run_benchmark(
                     sr.ndcg_sum += ndcg
                     sr.mrr_sum += rr
                     sr.latencies_ms.append(latency)
+                    # Store per-query result with audit trail for post-hoc analysis
+                    sr.per_query_results.append({
+                        "query": gt.query,
+                        "query_type": gt.query_type,
+                        "image_query_path": gt.image_query_path,
+                        "relevant_paths": gt.relevant_paths,
+                        "hit_at_1": h1,
+                        "hit_at_5": h5,
+                        "hit_at_10": h10,
+                        "ndcg": ndcg,
+                        "mrr": rr,
+                        "latency_ms": latency,
+                        "results": results,  # Includes audit trail when available
+                    })
                 except Exception as e:
                     print(f"    ERROR: {gt.query[:50]}... → {e}")
                     sr.latencies_ms.append(0)
+                    sr.per_query_results.append({
+                        "query": gt.query,
+                        "query_type": gt.query_type,
+                        "image_query_path": gt.image_query_path,
+                        "relevant_paths": gt.relevant_paths,
+                        "error": str(e),
+                    })
 
             all_results[stage_name][cat_name] = sr
             print(f"  {stage_name} for {cat_name} ({len(queries)}q)... "
@@ -702,6 +723,7 @@ def run_benchmark(
                 "p50_ms": round(sr.p50_ms, 1),
                 "p95_ms": round(sr.p95_ms, 1),
                 "total_queries": sr.total_queries,
+                "per_query_results": sr.per_query_results,  # Includes audit trails for post-hoc analysis
             }
 
     save_path = output_path or str(
