@@ -925,5 +925,186 @@ class TestListCollectionsAndNamespaces(unittest.TestCase):
         self.assertEqual(result[0]["user_id"], "u1")
 
 
+class TestCollectionManagement(unittest.TestCase):
+    """Tests for rename_collection and delete_collection (REC-65)."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-collections-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _upsert(self, path, text, collection, **ns_kwargs):
+        self.backend.upsert_memory(
+            path=path,
+            text=text,
+            collection=collection,
+            embed_func=mock_embed,
+            model="mock-embedder",
+            **ns_kwargs,
+        )
+
+    # --- rename_collection ---
+
+    def test_rename_collection_empty_names_raises(self):
+        with self.assertRaises(ValueError):
+            self.backend.rename_collection("", "new")
+        with self.assertRaises(ValueError):
+            self.backend.rename_collection("old", "")
+
+    def test_rename_collection_same_name_noop(self):
+        result = self.backend.rename_collection("same", "same")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["embeddings_updated"], 0)
+        self.assertEqual(result["documents_updated"], 0)
+
+    def test_rename_collection_updates_embeddings_and_documents(self):
+        # Create documents in old collection
+        self._upsert("a.md", "Alpha doc in oldcol", "oldcol")
+        self._upsert("b.md", "Beta doc in oldcol", "oldcol")
+        self._upsert("c.md", "Gamma doc in other", "other")  # Different collection
+
+        # Rename oldcol to newcol
+        result = self.backend.rename_collection("oldcol", "newcol")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["old_name"], "oldcol")
+        self.assertEqual(result["new_name"], "newcol")
+        self.assertGreater(result["embeddings_updated"], 0)
+        self.assertGreater(result["documents_updated"], 0)
+
+        # Rebuild FTS index after rename
+        self.backend.rebuild_fts_index()
+
+        # Verify old collection is gone
+        collections = self.backend.list_collections()
+        self.assertNotIn("oldcol", collections)
+        self.assertIn("newcol", collections)
+        self.assertIn("other", collections)
+
+        # Verify documents are now in new collection
+        doc_a = self.backend.find_document("newcol", "a.md")
+        self.assertIsNotNone(doc_a)
+        self.assertEqual(doc_a.collection, "newcol")
+
+        # Verify search works on renamed collection
+        results = self.backend.search_fts("alpha", limit=10, collection="newcol")
+        self.assertEqual(len(results), 1)
+        self.assertIn("newcol/a.md", results[0].display_path)
+
+        # Verify old collection returns no results
+        results_old = self.backend.search_fts("alpha", limit=10, collection="oldcol")
+        self.assertEqual(len(results_old), 0)
+
+    def test_rename_collection_preserves_namespaces(self):
+        self._upsert("x.md", "Namespaced doc", "oldcol", user_id="u1", profile="work")
+
+        result = self.backend.rename_collection("oldcol", "newcol")
+        self.assertTrue(result["success"])
+
+        # Verify namespace fields are preserved
+        rows = self.backend._embeddings_table.search().where(
+            "collection = 'newcol' AND file_path = 'x.md'"
+        ).to_list()
+        self.assertGreater(len(rows), 0)
+        for row in rows:
+            self.assertEqual(row["user_id"], "u1")
+            self.assertEqual(row["profile"], "work")
+
+    # --- delete_collection ---
+
+    def test_delete_collection_empty_name_raises(self):
+        with self.assertRaises(ValueError):
+            self.backend.delete_collection("")
+
+    def test_delete_collection_removes_all_data(self):
+        # Create documents in collection
+        self._upsert("a.md", "Doc A in delcol", "delcol")
+        self._upsert("b.md", "Doc B in delcol", "delcol")
+        self._upsert("c.md", "Doc C in other", "other")  # Different collection
+
+        # Get initial counts
+        initial_embeddings = self.backend.count_embeddings()
+        initial_documents = self.backend.count_documents()
+
+        # Delete the collection
+        result = self.backend.delete_collection("delcol")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["name"], "delcol")
+        self.assertGreater(result["embeddings_deleted"], 0)
+        self.assertGreater(result["documents_deleted"], 0)
+
+        # Verify collection is gone
+        collections = self.backend.list_collections()
+        self.assertNotIn("delcol", collections)
+        self.assertIn("other", collections)
+
+        # Verify documents are gone
+        doc_a = self.backend.find_document("delcol", "a.md")
+        self.assertIsNone(doc_a)
+
+        # Verify other collection is untouched
+        doc_c = self.backend.find_document("other", "c.md")
+        self.assertIsNotNone(doc_c)
+
+    def test_delete_collection_cleans_orphans(self):
+        # Create a document with unique content
+        unique_content = "Unique content for orphan test " + ("x" * 500)
+        self._upsert("orphan.md", unique_content, "orphancol")
+
+        # Get the content hash
+        doc = self.backend.find_document("orphancol", "orphan.md")
+        self.assertIsNotNone(doc)
+        content_hash = doc.content_hash
+
+        # Verify content exists
+        content_before = self.backend.get_content(content_hash)
+        self.assertIsNotNone(content_before)
+
+        # Delete the collection
+        result = self.backend.delete_collection("orphancol")
+        self.assertTrue(result["success"])
+        self.assertGreater(result["orphans_cleaned"], 0)
+
+        # Verify content is cleaned up (orphan removed)
+        content_after = self.backend.get_content(content_hash)
+        self.assertIsNone(content_after)
+
+    def test_delete_collection_preserves_shared_content(self):
+        # Create same content in two collections
+        shared_content = "Shared content " + ("s" * 500)
+        self._upsert("shared.md", shared_content, "colA")
+        self._upsert("shared.md", shared_content, "colB")
+
+        # Get the content hash
+        doc_a = self.backend.find_document("colA", "shared.md")
+        content_hash = doc_a.content_hash
+
+        # Verify content exists
+        self.assertIsNotNone(self.backend.get_content(content_hash))
+
+        # Delete one collection
+        result = self.backend.delete_collection("colA")
+        self.assertTrue(result["success"])
+
+        # Content should still exist (referenced by colB)
+        content_after = self.backend.get_content(content_hash)
+        self.assertIsNotNone(content_after)
+
+        # colB should still have its document
+        doc_b = self.backend.find_document("colB", "shared.md")
+        self.assertIsNotNone(doc_b)
+
+    def test_delete_collection_nonexistent_succeeds(self):
+        # Deleting a non-existent collection should succeed with 0 counts
+        result = self.backend.delete_collection("nonexistent")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["embeddings_deleted"], 0)
+        self.assertEqual(result["documents_deleted"], 0)
+        self.assertEqual(result["orphans_cleaned"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

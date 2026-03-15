@@ -777,6 +777,183 @@ class LanceDBBackend(StorageBackend):
         """Return unique namespace combinations (user_id, session_id, project_id, profile)."""
         return self._search.list_namespaces(collection=collection)
 
+    def rename_collection(
+        self,
+        old_name: str,
+        new_name: str,
+    ) -> Dict[str, Any]:
+        """
+        Rename a collection atomically.
+
+        Updates all rows in both embeddings and documents tables.
+        Returns a summary of the operation.
+        """
+        if not old_name or not new_name:
+            raise ValueError("old_name and new_name are required")
+        if old_name == new_name:
+            return {"success": True, "old_name": old_name, "new_name": new_name, "embeddings_updated": 0, "documents_updated": 0}
+
+        # Flush any pending writes first
+        self._flush_pending_writes(force=True)
+
+        # Update embeddings table
+        embeddings_filter = _safe_filter("collection", old_name)
+        embeddings_updated = 0
+        try:
+            # Fetch all rows for this collection
+            all_rows = list(self._embeddings_table.search()
+                .where(embeddings_filter)
+                .limit(100_000)
+                .to_list())
+
+            embeddings_updated = len(all_rows)
+
+            if all_rows:
+                # Delete all rows for this collection
+                self._embeddings_table.delete(embeddings_filter)
+
+                # Modify and re-insert
+                for row in all_rows:
+                    row["collection"] = new_name
+
+                # Re-insert
+                if all_rows:
+                    self._embeddings_table.add(pa.Table.from_pylist(all_rows, schema=self._build_embeddings_schema()))
+
+        except Exception as e:
+            logger.error(f"rename_collection: failed to update embeddings: {e}")
+            raise
+
+        # Update documents table
+        documents_filter = _safe_filter("collection", old_name)
+        documents_updated = 0
+        try:
+            all_doc_rows = list(self._documents_table.search()
+                .where(documents_filter)
+                .limit(100_000)
+                .to_list())
+
+            documents_updated = len(all_doc_rows)
+
+            if all_doc_rows:
+                # Delete all rows for this collection
+                self._documents_table.delete(documents_filter)
+
+                # Modify and re-insert
+                for row in all_doc_rows:
+                    row["collection"] = new_name
+
+                # Re-insert
+                if all_doc_rows:
+                    self._documents_table.add(pa.Table.from_pylist(all_doc_rows, schema=self._build_documents_schema()))
+
+        except Exception as e:
+            logger.error(f"rename_collection: failed to update documents: {e}")
+            raise
+
+        # Schedule FTS rebuild since we modified embeddings
+        self._schedule_fts_rebuild()
+
+        return {
+            "success": True,
+            "old_name": old_name,
+            "new_name": new_name,
+            "embeddings_updated": embeddings_updated,
+            "documents_updated": documents_updated,
+        }
+
+    def delete_collection(
+        self,
+        name: str,
+    ) -> Dict[str, Any]:
+        """
+        Delete all data for a collection.
+
+        Removes all documents and embeddings for the collection,
+        and cleans up orphaned content entries.
+        """
+        if not name:
+            raise ValueError("name is required")
+
+        # Flush any pending writes first
+        self._flush_pending_writes(force=True)
+
+        # Track content hashes to potentially clean up
+        content_hashes_to_check: set = set()
+
+        # Delete from embeddings table
+        embeddings_deleted = 0
+        try:
+            embeddings_filter = _safe_filter("collection", name)
+
+            # Get content hashes before deletion for orphan cleanup
+            rows = list(self._embeddings_table.search()
+                .where(embeddings_filter)
+                .select(["content_hash"])
+                .limit(100_000)
+                .to_list())
+            content_hashes_to_check.update(r["content_hash"] for r in rows)
+            embeddings_deleted = len(rows)
+
+            # Delete all embeddings for this collection
+            self._embeddings_table.delete(embeddings_filter)
+        except Exception as e:
+            logger.error(f"delete_collection: failed to delete embeddings: {e}")
+            raise
+
+        # Delete from documents table
+        documents_deleted = 0
+        try:
+            documents_filter = _safe_filter("collection", name)
+
+            # Get content hashes before deletion for orphan cleanup
+            rows = list(self._documents_table.search()
+                .where(documents_filter)
+                .select(["content_hash"])
+                .limit(100_000)
+                .to_list())
+            content_hashes_to_check.update(r["content_hash"] for r in rows)
+            documents_deleted = len(rows)
+
+            # Delete all documents for this collection
+            self._documents_table.delete(documents_filter)
+        except Exception as e:
+            logger.error(f"delete_collection: failed to delete documents: {e}")
+            raise
+
+        # Clean up orphaned content entries
+        orphans_cleaned = 0
+        if content_hashes_to_check:
+            for content_hash in content_hashes_to_check:
+                # Check if this content hash is still referenced anywhere
+                try:
+                    embedding_refs = list(self._embeddings_table.search()
+                        .where(_safe_filter("content_hash", content_hash))
+                        .limit(1)
+                        .to_list())
+                    document_refs = list(self._documents_table.search()
+                        .where(_safe_filter("content_hash", content_hash))
+                        .limit(1)
+                        .to_list())
+
+                    if not embedding_refs and not document_refs:
+                        # Orphaned - delete from content table
+                        self._content_table.delete(_safe_filter("hash", content_hash))
+                        orphans_cleaned += 1
+                except Exception as e:
+                    logger.warning(f"delete_collection: failed to check orphan {content_hash[:8]}: {e}")
+
+        # Schedule FTS rebuild
+        self._schedule_fts_rebuild()
+
+        return {
+            "success": True,
+            "name": name,
+            "embeddings_deleted": embeddings_deleted,
+            "documents_deleted": documents_deleted,
+            "orphans_cleaned": orphans_cleaned,
+        }
+
     def _make_search_result(self, row: Dict[str, Any], score: float, source: str) -> Any:
         """Convert LanceDB row to SearchResult."""
         # Lazy initialization for tests that use __new__
