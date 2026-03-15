@@ -84,4 +84,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "live: marks tests as live (deselect with '-m \"not live\"')",
+    "integration: marks tests as integration tests requiring real backend (run with '-m integration')",
 ]

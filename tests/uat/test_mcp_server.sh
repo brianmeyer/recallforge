@@ -2,6 +2,14 @@
 # test_mcp_server.sh - MCP server UAT (contract mode by default).
 # Tests JSON-RPC communication, MCP tools, and graceful shutdown.
 # Set UAT_MCP_LIVE=1 to use real backend/model calls instead of mock backend.
+#
+# NOTE: This bash script is superseded by the comprehensive pytest suite:
+#   tests/uat/test_uat_comprehensive.py
+#
+# Run the new suite with:
+#   python3 -m pytest tests/uat/test_uat_comprehensive.py --tb=short -q
+#
+# This script is retained for backward compatibility.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/helpers/common.sh"
