@@ -1,6 +1,6 @@
 [project]
 name = "recallforge"
-version = "0.1.0"
+version = "0.1.1"
 description = "RecallForge - Cross-Modal Vision-Language Search Engine"
 authors = [{name = "Brian Meyer"}]
 readme = "README.md"
