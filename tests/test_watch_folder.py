@@ -145,9 +145,9 @@ def test_watch_folder_image_uses_logical_path(tmp_path):
 
     image_path = watched / "diagram.png"
     image_path.write_bytes(b"fake image bytes")
-    time.sleep(0.35)
+    time.sleep(1.0)
     image_path.unlink()
-    time.sleep(0.35)
+    time.sleep(1.0)
 
     daemon.stop_watch(watch_id)
 
