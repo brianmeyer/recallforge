@@ -1,4 +1,4 @@
-"""Indexing operations for LanceDB storage backend."""
+"""Indexing operations service for LanceDB storage backend."""
 
 import fnmatch
 import hashlib
@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..documents import extract_document_artifacts, is_document_file
 from ..video import extract_video_artifacts, is_video_file
@@ -23,12 +23,20 @@ from .lancedb_shared import (
     trace_log,
 )
 
+if TYPE_CHECKING:
+    from .lancedb_backend import LanceDBBackend
+
 logger = logging.getLogger("recallforge.storage")
 
 DEFAULT_MAX_FILE_SIZE_MB = 100
 
 
-class LanceDBIndexingMixin:
+class IndexingOps:
+    """Service class for indexing operations."""
+
+    def __init__(self, backend: "LanceDBBackend"):
+        self._backend = backend
+
     def index_document(
         self,
         path: str,
@@ -161,12 +169,12 @@ class LanceDBIndexingMixin:
 
             # Remove prior vectors for this memory path to prevent duplicate chunks.
             try:
-                self._embeddings_table.delete(del_filter)
+                self._backend._embeddings_table.delete(del_filter)
             except Exception as e:
                 logger.warning(f"upsert_memory: failed to delete old vectors for {collection}/{normalized_path}: {e}")
 
-        self.insert_content(content_hash, text, "text")
-        self.insert_document(
+        self._backend.insert_content(content_hash, text, "text")
+        self._backend.insert_document(
             collection, normalized_path, title, content_hash, "text",
             user_id=user_id, session_id=session_id, project_id=project_id, profile=profile
         )
@@ -174,7 +182,7 @@ class LanceDBIndexingMixin:
         chunks = chunk_document(text)
         vectors = self._embed_chunks_batch(chunks, embed_func)
         for i, chunk in enumerate(chunks):
-            self.insert_embedding(
+            self._backend.insert_embedding(
                 content_hash=content_hash,
                 seq=i,
                 pos=chunk["pos"],
@@ -196,7 +204,7 @@ class LanceDBIndexingMixin:
             )
 
         # Schedule debounced FTS rebuild instead of immediate rebuild
-        self._schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
 
         trace_log("upsert_memory_done", path=normalized_path, hash=content_hash[:8], chunks=len(chunks))
         return content_hash
@@ -232,7 +240,7 @@ class LanceDBIndexingMixin:
         removed_vectors = 0
         try:
             removed_vectors = len(
-                self._embeddings_table.search()
+                self._backend._embeddings_table.search()
                 .where(del_filter)
                 .to_list()
             )
@@ -241,14 +249,14 @@ class LanceDBIndexingMixin:
             removed_vectors = 0
 
         try:
-            self._embeddings_table.delete(del_filter)
+            self._backend._embeddings_table.delete(del_filter)
         except Exception as e:
             logger.error(f"delete_memory: failed to delete embeddings for {collection}/{normalized_path}: {e}")
 
-        self.deactivate_document(collection, normalized_path)
+        self._backend.deactivate_document(collection, normalized_path)
 
         # Schedule debounced FTS rebuild
-        self._schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
 
         trace_log("delete_memory_done", path=normalized_path, removed_vectors=removed_vectors)
         return {
@@ -263,7 +271,7 @@ class LanceDBIndexingMixin:
         }
 
     def _video_frames_dir_for_logical_path(self, logical_path: str) -> Path:
-        artifact_root = Path(self._store_path or DEFAULT_INDEX_DIR) / "video_frames"
+        artifact_root = Path(self._backend._store_path or DEFAULT_INDEX_DIR) / "video_frames"
         digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
         return artifact_root / digest
 
@@ -312,7 +320,7 @@ class LanceDBIndexingMixin:
         )
         if include_children:
             self._delete_video_frame_artifacts(normalized_path)
-        self._schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
         return {
             "success": True,
             "path": normalized_path,
@@ -434,12 +442,12 @@ class LanceDBIndexingMixin:
         filter_clause = " AND ".join(filters)
         removed_vectors = 0
         try:
-            removed_vectors = len(self._embeddings_table.search().where(filter_clause).to_list())
+            removed_vectors = len(self._backend._embeddings_table.search().where(filter_clause).to_list())
         except Exception as e:
             logger.debug(f"_delete_path_entries: failed to count rows for {logical_path}: {e}")
 
         try:
-            self._embeddings_table.delete(filter_clause)
+            self._backend._embeddings_table.delete(filter_clause)
         except Exception as e:
             logger.debug(f"_delete_path_entries: failed to delete embeddings for {logical_path}: {e}")
 
@@ -458,7 +466,7 @@ class LanceDBIndexingMixin:
             doc_filters.append(_safe_filter("content_type", content_type))
 
         try:
-            self._documents_table.update(
+            self._backend._documents_table.update(
                 where=" AND ".join(doc_filters),
                 values={"active": 0, "updated_at": int(time.time() * 1000)},
             )
@@ -513,7 +521,7 @@ class LanceDBIndexingMixin:
             skipped_details.append({"path": item_path, "reason": reason})
 
         # Use bulk mode to defer FTS rebuilds until the end
-        with self.bulk_mode():
+        with self._backend.bulk_mode():
             for file_path in self._iter_folder_files(root, recursive):
                 rel = file_path.relative_to(root).as_posix()
                 if include and not any(fnmatch.fnmatch(rel, pattern) for pattern in include):
@@ -772,7 +780,7 @@ class LanceDBIndexingMixin:
                 mark(item_path, item_type, "error", str(e))
 
         # Use bulk mode to defer FTS rebuilds until the end
-        with self.bulk_mode():
+        with self._backend.bulk_mode():
             if text is not None:
                 if "text" not in allowed:
                     summary["skipped"] += 1
@@ -902,8 +910,8 @@ class LanceDBIndexingMixin:
             content_type="image",
         )
 
-        self.insert_content(content_hash, actual_path, content_type="image")
-        self.insert_document(
+        self._backend.insert_content(content_hash, actual_path, content_type="image")
+        self._backend.insert_document(
             collection=collection,
             file_path=logical_path,
             title=resolved_title,
@@ -918,7 +926,7 @@ class LanceDBIndexingMixin:
         )
 
         vector = embed_func(actual_path)
-        self.insert_embedding(
+        self._backend.insert_embedding(
             content_hash=content_hash,
             seq=0,
             pos=0,
@@ -936,7 +944,7 @@ class LanceDBIndexingMixin:
         )
 
         # Schedule debounced FTS rebuild
-        self._schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
 
         trace_log("index_image_done", path=logical_path, hash=content_hash[:8])
         return content_hash
@@ -963,7 +971,7 @@ class LanceDBIndexingMixin:
         resolved_title = os.path.splitext(os.path.basename(logical_path))[0]
         video_embed = embed_video_func or embed_image_func
 
-        artifact_root = Path(self._store_path or DEFAULT_INDEX_DIR) / "video_frames"
+        artifact_root = Path(self._backend._store_path or DEFAULT_INDEX_DIR) / "video_frames"
         digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
         output_dir = artifact_root / digest
 
@@ -1011,8 +1019,8 @@ class LanceDBIndexingMixin:
         indexed_video_embeddings = 0
         try:
             vector = video_embed(actual_path)
-            self.insert_content(content_hash, actual_path, content_type="video")
-            self.insert_document(
+            self._backend.insert_content(content_hash, actual_path, content_type="video")
+            self._backend.insert_document(
                 collection=collection,
                 file_path=logical_path,
                 title=resolved_title,
@@ -1025,7 +1033,7 @@ class LanceDBIndexingMixin:
                 project_id=project_id,
                 profile=profile,
             )
-            self.insert_embedding(
+            self._backend.insert_embedding(
                 content_hash=content_hash,
                 seq=0,
                 pos=0,
@@ -1141,7 +1149,7 @@ class LanceDBIndexingMixin:
         # Ensure FTS rebuild is scheduled even when no sections were indexed,
         # since _delete_path_entries above may have removed stale entries.
         if indexed_sections == 0:
-            self._schedule_fts_rebuild()
+            self._backend._fts.schedule_fts_rebuild()
 
         return {
             "success": True,

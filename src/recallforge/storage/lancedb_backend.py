@@ -51,9 +51,9 @@ from .lancedb_shared import (
     logger,
     trace_log,
 )
-from .fts import LanceDBFTSMixin
-from .search_ops import LanceDBSearchMixin
-from .indexing import LanceDBIndexingMixin
+from .fts_manager import FTSManager
+from .search_ops import SearchOps
+from .indexing_ops import IndexingOps
 
 
 # =============================================================================
@@ -64,20 +64,10 @@ DEFAULT_MAX_FILE_SIZE_MB = 100
 
 
 # =============================================================================
-# Helper Functions
-# =============================================================================
-
-# =============================================================================
-# Chunking
-# =============================================================================
-
-
-
-# =============================================================================
 # LanceDB Backend Implementation
 # =============================================================================
 
-class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, StorageBackend):
+class LanceDBBackend(StorageBackend):
     """
     LanceDB-based storage backend.
     
@@ -117,6 +107,11 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
             100,
             int(os.environ.get("RECALLFORGE_BM25_FALLBACK_MAX_ROWS", "5000")),
         )
+        
+        # Initialize composed service objects (must be done here for tests that use __new__)
+        self._fts = FTSManager(self)
+        self._search = SearchOps(self)
+        self._indexer = IndexingOps(self)
     
     def initialize(self, store_path: Optional[str] = None) -> None:
         """Initialize the LanceDB database."""
@@ -266,7 +261,7 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
         """Close the database connection."""
         # Flush any pending FTS rebuild before closing
         if self._fts_needs_rebuild or self._fts_rebuild_pending > 0:
-            self._do_fts_rebuild()
+            self._fts.do_fts_rebuild()
         
         self._conn = None
         self._embeddings_table = None
@@ -622,8 +617,363 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
             return False
     
     # =========================================================================
-    # Search Operations
+    # Search Operations - Delegated to SearchOps
     # =========================================================================
+    
+    def search_fts(
+        self,
+        query: str,
+        limit: int = 20,
+        collection: Optional[str] = None,
+        content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
+    ) -> List[Any]:
+        """Full-text search using LanceDB Tantivy."""
+        return self._search.search_fts(
+            query=query,
+            limit=limit,
+            collection=collection,
+            content_type=content_type,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile
+        )
+    
+    def search_vec(
+        self,
+        vector: List[float],
+        limit: int = 20,
+        collection: Optional[str] = None,
+        content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
+    ) -> List[Any]:
+        """Vector similarity search."""
+        return self._search.search_vec(
+            vector=vector,
+            limit=limit,
+            collection=collection,
+            content_type=content_type,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile
+        )
+    
+    def list_collections(
+        self,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> List[str]:
+        """Return sorted list of unique collection names, with optional namespace filters."""
+        return self._search.list_collections(
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile
+        )
+    
+    def list_namespaces(
+        self,
+        collection: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        """Return unique namespace combinations (user_id, session_id, project_id, profile)."""
+        return self._search.list_namespaces(collection=collection)
+
+    def _make_search_result(self, row: Dict[str, Any], score: float, source: str) -> Any:
+        """Convert LanceDB row to SearchResult."""
+        # Lazy initialization for tests that use __new__
+        if not hasattr(self, '_search') or self._search is None:
+            from .search_ops import SearchOps
+            self._search = SearchOps(self)
+        return self._search._make_search_result(row, score, source)
+    
+    # =========================================================================
+    # FTS Operations - Delegated to FTSManager
+    # =========================================================================
+    
+    def bulk_mode(self):
+        """Context manager to defer FTS rebuilds during bulk operations."""
+        return self._fts.bulk_mode()
+
+    def _schedule_fts_rebuild(self) -> None:
+        """Schedule a debounced FTS rebuild."""
+        self._fts.schedule_fts_rebuild()
+
+    def _do_fts_rebuild(self) -> None:
+        """Execute the actual FTS rebuild with rate limiting."""
+        self._fts.do_fts_rebuild()
+    
+    def ensure_fts_index(self, force_rebuild: bool = False) -> None:
+        """Ensure the FTS index exists."""
+        self._fts.ensure_fts_index(force_rebuild=force_rebuild)
+    
+    def rebuild_fts_index(self) -> None:
+        """Rebuild the FTS index."""
+        self._fts.rebuild_fts_index()
+    
+    # =========================================================================
+    # Indexing Operations - Delegated to IndexingOps
+    # =========================================================================
+    
+    def upsert_memory(
+        self,
+        path: str,
+        text: str,
+        collection: str,
+        embed_func,
+        model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+        _skip_delete: bool = False,
+    ) -> str:
+        """Create or update a text memory, replacing old vectors for this path."""
+        return self._indexer.upsert_memory(
+            path=path,
+            text=text,
+            collection=collection,
+            embed_func=embed_func,
+            model=model,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            importance=importance,
+            ttl_seconds=ttl_seconds,
+            tags=tags,
+            _skip_delete=_skip_delete,
+        )
+    
+    def delete_memory(
+        self,
+        path: str,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Deactivate a memory and remove all associated vectors."""
+        return self._indexer.delete_memory(
+            path=path,
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+    
+    def delete_path(
+        self,
+        path: str,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        include_children: bool = False,
+    ) -> Dict[str, Any]:
+        """Delete a logical path and optionally all derived child assets."""
+        return self._indexer.delete_path(
+            path=path,
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            include_children=include_children,
+        )
+    
+    def index_folder(
+        self,
+        folder_path: str,
+        collection: str,
+        recursive: bool,
+        include_globs: Optional[List[str]],
+        exclude_globs: Optional[List[str]],
+        embed_func,
+        model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
+    ) -> Dict[str, Any]:
+        """Index text files from a folder and return summary counts."""
+        return self._indexer.index_folder(
+            folder_path=folder_path,
+            collection=collection,
+            recursive=recursive,
+            include_globs=include_globs,
+            exclude_globs=exclude_globs,
+            embed_func=embed_func,
+            model=model,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            max_file_size_mb=max_file_size_mb,
+        )
+    
+    def index_document(
+        self,
+        path: str,
+        text: str,
+        collection: str,
+        model: str,
+        embed_func,
+        content_type: str = "text"
+    ) -> str:
+        """Full document indexing pipeline for text content."""
+        return self._indexer.index_document(
+            path=path,
+            text=text,
+            collection=collection,
+            model=model,
+            embed_func=embed_func,
+            content_type=content_type,
+        )
+
+    def index_document_file(
+        self,
+        path: str,
+        collection: str,
+        embed_func,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Extract and index a document file into structured text assets."""
+        return self._indexer.index_document_file(
+            path=path,
+            collection=collection,
+            embed_func=embed_func,
+            model=model,
+            stored_path=stored_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+    
+    def index_image(
+        self,
+        path: str,
+        collection: str,
+        embed_func,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        title: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> str:
+        """Index an image file."""
+        return self._indexer.index_image(
+            path=path,
+            collection=collection,
+            embed_func=embed_func,
+            model=model,
+            stored_path=stored_path,
+            title=title,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+
+    def index_video(
+        self,
+        path: str,
+        collection: str,
+        embed_text_func,
+        embed_image_func,
+        embed_video_func=None,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        frame_interval_seconds: float = 5.0,
+        max_frames: int = 8,
+    ) -> Dict[str, Any]:
+        """Index a video into a top-level video embedding plus derived assets."""
+        return self._indexer.index_video(
+            path=path,
+            collection=collection,
+            embed_text_func=embed_text_func,
+            embed_image_func=embed_image_func,
+            embed_video_func=embed_video_func,
+            model=model,
+            stored_path=stored_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            frame_interval_seconds=frame_interval_seconds,
+            max_frames=max_frames,
+        )
+
+    def ingest(
+        self,
+        collection: str,
+        text: Optional[str],
+        path: Optional[str],
+        file_path: Optional[str],
+        folder_path: Optional[str],
+        recursive: bool,
+        content_types: List[str],
+        include_globs: Optional[List[str]],
+        exclude_globs: Optional[List[str]],
+        embed_text_func,
+        embed_image_func,
+        embed_video_func,
+        model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
+    ) -> Dict[str, Any]:
+        """Unified multimodal ingest for text/image/file/folder inputs."""
+        return self._indexer.ingest(
+            collection=collection,
+            text=text,
+            path=path,
+            file_path=file_path,
+            folder_path=folder_path,
+            recursive=recursive,
+            content_types=content_types,
+            include_globs=include_globs,
+            exclude_globs=exclude_globs,
+            embed_text_func=embed_text_func,
+            embed_image_func=embed_image_func,
+            embed_video_func=embed_video_func,
+            model=model,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            max_file_size_mb=max_file_size_mb,
+        )
     
     # =========================================================================
     # Cache Operations
@@ -673,5 +1023,3 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
             return self._documents_table.count_rows()
         except Exception:
             return 0
-
-
