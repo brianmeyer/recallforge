@@ -26,7 +26,7 @@ import numpy as np
 from PIL import Image
 
 # Add recallforge to path
-sys.path.insert(0, "/Users/brianmeyer/recallforge/src")
+# Assumes recallforge is installed (pip install -e ".[mlx]")
 
 from recallforge import get_backend
 
@@ -35,7 +35,7 @@ from recallforge import get_backend
 COCO_ROOT = Path("/tmp/recallforge-bench/coco")
 ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
-RESULTS_DIR = Path("/Users/brianmeyer/recallforge/benchmarks/results")
+RESULTS_DIR = Path(__file__).parent / "results"
 NUM_IMAGES = 1000
 BATCH_SIZE = 4  # Image batch size for embedding (reduced for memory)
 TEXT_BATCH_SIZE = 32  # Text batch size for embedding (reduced for memory)

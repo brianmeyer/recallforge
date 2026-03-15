@@ -722,10 +722,14 @@ class LanceDBIndexingMixin:
                         project_id=project_id,
                         profile=profile,
                     )
-                    summary["indexed_documents"] += 1
-                    summary["indexed_document_sections"] += document_summary["indexed_sections"]
-                    summary["indexed_text"] += document_summary["indexed_sections"]
-                    mark(item_path, "document", "indexed")
+                    if document_summary.get("indexed_sections", 0) == 0:
+                        summary["skipped"] += 1
+                        mark(item_path, "document", "skipped", reason="empty_content")
+                    else:
+                        summary["indexed_documents"] += 1
+                        summary["indexed_document_sections"] += document_summary["indexed_sections"]
+                        summary["indexed_text"] += document_summary["indexed_sections"]
+                        mark(item_path, "document", "indexed")
                     return
 
                 if "text" not in allowed:
@@ -1133,6 +1137,11 @@ class LanceDBIndexingMixin:
                 _skip_delete=True,
             )
             indexed_sections += 1
+
+        # Ensure FTS rebuild is scheduled even when no sections were indexed,
+        # since _delete_path_entries above may have removed stale entries.
+        if indexed_sections == 0:
+            self._schedule_fts_rebuild()
 
         return {
             "success": True,
