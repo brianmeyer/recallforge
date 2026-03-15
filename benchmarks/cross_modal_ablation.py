@@ -151,8 +151,9 @@ class GroundTruth:
     query: str
     relevant_paths: List[str]  # paths relative to corpus
     category: str
-    query_type: str = "text"  # "text" or "image"
+    query_type: str = "text"  # "text", "image", or "video"
     image_query_path: Optional[str] = None  # for image-as-query
+    video_query_path: Optional[str] = None  # for video-as-query
     difficulty: str = "medium"  # "easy", "medium", "hard"
     graded_relevance: Optional[Dict[str, int]] = None  # path -> 0/1/2 relevance score
     is_negative_control: bool = False  # query with zero expected results
@@ -1179,10 +1180,159 @@ TEXT_TO_DOCUMENT_REAL = [
 ]
 
 # Combine all queries
+# ── Image → Image queries (visual similarity) ────────────────
+IMAGE_TO_IMAGE = [
+    GroundTruth(
+        query="similar landscape",
+        query_type="image",
+        image_query_path="images/forest_landscape.png",
+        relevant_paths=["images/mountain_landscape.png", "images/ocean_beach.png"],
+        category="image_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="similar whiteboard",
+        query_type="image",
+        image_query_path="images/whiteboard_architecture.png",
+        relevant_paths=["images/whiteboard_brainstorm.png"],
+        category="image_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="similar food",
+        query_type="image",
+        image_query_path="images/food_pasta_dish.png",
+        relevant_paths=["images/food_pasta_dish.png"],
+        category="image_to_image",
+        difficulty="easy",
+        is_negative_control=True,  # exact match test
+    ),
+]
+
+# ── Image → Video queries ─────────────────────────────────────
+IMAGE_TO_VIDEO = [
+    GroundTruth(
+        query="related video",
+        query_type="image",
+        image_query_path="images/forest_landscape.png",
+        relevant_paths=["videos/nature_timelapse.mp4"],
+        category="image_to_video",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="related video",
+        query_type="image",
+        image_query_path="images/whiteboard_architecture.png",
+        relevant_paths=["videos/architecture_walkthrough.mp4", "videos/whiteboard_session.mp4"],
+        category="image_to_video",
+        difficulty="hard",
+    ),
+]
+
+# ── Image → Document queries ──────────────────────────────────
+IMAGE_TO_DOCUMENT = [
+    GroundTruth(
+        query="related document",
+        query_type="image",
+        image_query_path="images/neural_network_diagram.png",
+        relevant_paths=["documents/ai_strategy_report.docx", "documents/ai_architecture_deck.pptx", "documents/embedding_research.pdf"],
+        category="image_to_document",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="related document",
+        query_type="image",
+        image_query_path="images/code_editor_screenshot.png",
+        relevant_paths=["documents/recallforge_spec.docx", "documents/operations_manual.pdf"],
+        category="image_to_document",
+        difficulty="hard",
+    ),
+]
+
+# ── Video → Text queries ──────────────────────────────────────
+VIDEO_TO_TEXT = [
+    GroundTruth(
+        query="related text",
+        query_type="video",
+        video_query_path="videos/nature_timelapse.mp4",
+        relevant_paths=["text/nature_forests.md", "text/nature_mountains.md", "text/nature_oceans.md"],
+        category="video_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="related text",
+        query_type="video",
+        video_query_path="videos/coding_demo.mp4",
+        relevant_paths=["text/tech_cybersecurity.md", "text/tech_cloud_computing.md"],
+        category="video_to_text",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="related text",
+        query_type="video",
+        video_query_path="videos/architecture_walkthrough.mp4",
+        relevant_paths=["text/architecture_gothic.md", "text/architecture_modern.md", "text/architecture_blueprints.md"],
+        category="video_to_text",
+        difficulty="medium",
+    ),
+]
+
+# ── Video → Image queries ─────────────────────────────────────
+VIDEO_TO_IMAGE = [
+    GroundTruth(
+        query="related image",
+        query_type="video",
+        video_query_path="videos/nature_timelapse.mp4",
+        relevant_paths=["images/forest_landscape.png", "images/mountain_landscape.png", "images/ocean_beach.png"],
+        category="video_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="related image",
+        query_type="video",
+        video_query_path="videos/whiteboard_session.mp4",
+        relevant_paths=["images/whiteboard_brainstorm.png", "images/whiteboard_architecture.png"],
+        category="video_to_image",
+        difficulty="hard",
+    ),
+]
+
+# ── Video → Video queries (similarity) ────────────────────────
+VIDEO_TO_VIDEO = [
+    GroundTruth(
+        query="similar video",
+        query_type="video",
+        video_query_path="videos/nature_timelapse.mp4",
+        relevant_paths=["videos/nature_timelapse.mp4"],
+        category="video_to_video",
+        difficulty="easy",
+        is_negative_control=True,  # exact match test
+    ),
+]
+
+# ── Video → Document queries ──────────────────────────────────
+VIDEO_TO_DOCUMENT = [
+    GroundTruth(
+        query="related document",
+        query_type="video",
+        video_query_path="videos/architecture_walkthrough.mp4",
+        relevant_paths=["documents/ai_architecture_deck.pptx"],
+        category="video_to_document",
+        difficulty="hard",
+    ),
+]
+
 ALL_GROUND_TRUTH = (
     TEXT_TO_TEXT + 
     TEXT_TO_IMAGE + 
     IMAGE_TO_TEXT + 
+    IMAGE_TO_IMAGE +
+    IMAGE_TO_VIDEO +
+    IMAGE_TO_DOCUMENT +
+    VIDEO_TO_TEXT +
+    VIDEO_TO_IMAGE +
+    VIDEO_TO_VIDEO +
+    VIDEO_TO_DOCUMENT +
     MIXED_MODAL + 
     TEXT_TO_DOCUMENT +
     TEXT_TO_DOCUMENT_REAL +
@@ -1483,7 +1633,6 @@ def run_search(
         image_path = str(CORPUS_DIR / gt.image_query_path)
 
         if stage_mode == "embed":
-            # Vector-only baseline for image-as-query
             image_vec = backend.embed_image(image_path)
             results = storage.search_vec(
                 vector=image_vec,
@@ -1491,7 +1640,6 @@ def run_search(
                 limit=limit,
             )
         elif stage_mode in ("rrf", "hybrid"):
-            # Route image query through HybridSearcher pipeline
             searcher = HybridSearcher(
                 backend=backend,
                 storage=storage,
@@ -1503,10 +1651,36 @@ def run_search(
             results = searcher.search_image(image_path)
             backend.set_mode(old_mode)
         elif stage_mode == "bm25":
-            # BM25 cannot process image query directly (no query text/captions yet)
             results = []
         else:
             raise ValueError(f"Unknown stage mode: {stage_mode}")
+
+    elif gt.query_type == "video" and gt.video_query_path:
+        video_path = str(CORPUS_DIR / gt.video_query_path)
+
+        if stage_mode == "embed":
+            video_vec = backend.embed_video(video_path)
+            results = storage.search_vec(
+                vector=video_vec,
+                collection=collection,
+                limit=limit,
+            )
+        elif stage_mode in ("rrf", "hybrid"):
+            searcher = HybridSearcher(
+                backend=backend,
+                storage=storage,
+                limit=limit,
+                collection=collection,
+            )
+            old_mode = backend.get_mode()
+            backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
+            results = searcher.search_video(video_path)
+            backend.set_mode(old_mode)
+        elif stage_mode == "bm25":
+            results = []
+        else:
+            raise ValueError(f"Unknown stage mode: {stage_mode}")
+
     else:
         # Text query
         if stage_mode == "embed":

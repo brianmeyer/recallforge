@@ -480,7 +480,7 @@ class HybridSearcher:
         return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 
     def search_video(self, video_path: str) -> List[HybridResult]:
-        """Run raw-video query search through the vector path.
+        """Run video-query search through hybrid pipeline (RRF + optional rerank).
 
         Raises:
             NotImplementedError: If the backend does not support native video embedding.
@@ -492,7 +492,24 @@ class HybridSearcher:
                 "Install a backend with video support (e.g. recallforge[mlx] or recallforge[torch])."
             )
         vector = embed_video(video_path)
-        return self._search_vector(vector)
+        all_results: Dict[str, List[SearchResult]] = {
+            "original_vec": self.storage.search_vec(
+                vector.tolist() if hasattr(vector, 'tolist') else list(vector),
+                limit=self.fts_probe_limit,
+                collection=self.collection,
+                content_type=self.content_type,
+                user_id=self.user_id,
+                session_id=self.session_id,
+                project_id=self.project_id,
+                profile=self.profile,
+            )
+        }
+
+        # Video queries cannot be expressed as text tokens, so BM25 is skipped.
+        candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
+        rerank_query = f"video_query:{video_path}"
+        rerank_scores, reranker_path = self._rerank_candidates(candidates, rerank_query)
+        return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 
     def _search_vector(self, vector) -> List[HybridResult]:
         """Run a direct vector search and convert to hybrid-style results."""
