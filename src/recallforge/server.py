@@ -405,7 +405,7 @@ async def create_server(
             ),
             Tool(
                 name="search_batch",
-                description="Run multiple search queries in parallel and merge results using RRF fusion. Each query runs independently, then results are deduplicated with best-score-wins.",
+                description="Run multiple search queries in parallel and merge results using weighted RRF fusion. Each query runs independently, then results are deduplicated and scored by fused RRF rank.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -984,11 +984,14 @@ async def _handle_search_batch(arguments: dict, backend, storage) -> list[TextCo
             query_text = q.get("query")
             if not query_text or not isinstance(query_text, str):
                 return _error_response("INVALID_INPUT", f"queries[{i}].query must be a non-empty string")
+            weight = q.get("weight", 1.0)
+            if not isinstance(weight, (int, float)) or weight < 0:
+                return _error_response("INVALID_INPUT", f"queries[{i}].weight must be a non-negative number")
             queries.append(BatchQuery(
                 query=query_text,
                 mode=q.get("mode"),
                 intent=q.get("intent"),
-                weight=q.get("weight", 1.0),
+                weight=float(weight),
             ))
         else:
             return _error_response("INVALID_INPUT", f"queries[{i}] must be a string or object")
@@ -1635,8 +1638,6 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
     server, backend, storage = await _initialize_runtime(mode=mode)
     _server = server
     _http_start_time = time.time()
-    active_mode = backend.get_mode()
-
     sse = SseServerTransport("/messages/")
 
     async def health(_request):
@@ -1646,7 +1647,7 @@ async def run_http_server(port: int = 7433, host: str = "127.0.0.1", mode: Optio
             uptime = int(max(0, time.time() - _http_start_time))
         embedder_ok = bool(info.embedder_loaded)
         reranker_ok = bool(getattr(info, "reranker_loaded", False))
-        is_hybrid = active_mode == "hybrid"
+        is_hybrid = backend.get_mode() == "hybrid"
         all_loaded = embedder_ok and (not is_hybrid or reranker_ok)
         model_ids = backend.get_model_ids() if hasattr(backend, "get_model_ids") else {}
         return JSONResponse(

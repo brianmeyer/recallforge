@@ -174,44 +174,48 @@ class MLXBackend(ModelBackend):
         """Lazy-load the MLX embedding model with explicit failure context."""
         if self._embedder_model is not None:
             return
+        with self._model_lock:
+            # Double-check after acquiring lock
+            if self._embedder_model is not None:
+                return
 
-        try:
-            from mlx_vlm import load
-        except ImportError as exc:
-            raise ImportError(
-                "mlx-vlm is required for MLX embeddings. "
-                "Install with: pip install recallforge[mlx]"
-            ) from exc
+            try:
+                from mlx_vlm import load
+            except ImportError as exc:
+                raise ImportError(
+                    "mlx-vlm is required for MLX embeddings. "
+                    "Install with: pip install recallforge[mlx]"
+                ) from exc
 
-        if not _check_model_cached(self.EMBEDDER_MODEL):
-            size = "~800MB" if self._quantization == "4bit" else "~4GB"
-            logger.info(
-                f"[RecallForge] Downloading embedder model "
-                f"({self.EMBEDDER_MODEL.split('/')[-1]}, {size})... first run only."
-            )
-        logger.info(f"[MLXBackend] Loading embedder: {self.EMBEDDER_MODEL}")
+            if not _check_model_cached(self.EMBEDDER_MODEL):
+                size = "~800MB" if self._quantization == "4bit" else "~4GB"
+                logger.info(
+                    f"[RecallForge] Downloading embedder model "
+                    f"({self.EMBEDDER_MODEL.split('/')[-1]}, {size})... first run only."
+                )
+            logger.info(f"[MLXBackend] Loading embedder: {self.EMBEDDER_MODEL}")
 
-        try:
-            self._embedder_model, self._embedder_processor = load(
-                self.EMBEDDER_MODEL,
-                trust_remote_code=True,
-            )
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                f"Failed to load MLX embedder '{self.EMBEDDER_MODEL}'."
-            ) from exc
+            try:
+                self._embedder_model, self._embedder_processor = load(
+                    self.EMBEDDER_MODEL,
+                    trust_remote_code=True,
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    f"Failed to load MLX embedder '{self.EMBEDDER_MODEL}'."
+                ) from exc
 
-        try:
-            self._embedder_num_layers = int(
-                self._embedder_model.language_model.model.num_hidden_layers
-            )
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                "Loaded MLX embedder does not expose num_hidden_layers."
-            ) from exc
+            try:
+                self._embedder_num_layers = int(
+                    self._embedder_model.language_model.model.num_hidden_layers
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    "Loaded MLX embedder does not expose num_hidden_layers."
+                ) from exc
 
-        self._embed_text_max_tokens = self._resolve_max_text_tokens()
-        logger.info(f"[MLXBackend] Loaded embedder ({self._quantization})")
+            self._embed_text_max_tokens = self._resolve_max_text_tokens()
+            logger.info(f"[MLXBackend] Loaded embedder ({self._quantization})")
 
     def _embed_hidden(self, input_ids: "mx.array", cache) -> "mx.array":
         """
@@ -641,12 +645,16 @@ class MLXBackend(ModelBackend):
         """Lazily load the captioning model (Qwen3.5-0.8B)."""
         if getattr(self, "_captioner_model", None) is not None:
             return
-        from mlx_vlm import load as vlm_load
+        with self._model_lock:
+            # Double-check after acquiring lock
+            if getattr(self, "_captioner_model", None) is not None:
+                return
+            from mlx_vlm import load as vlm_load
 
-        logger.debug("captioner_load model=%s", self.CAPTION_MODEL)
-        self._captioner_model, self._captioner_processor = vlm_load(
-            self.CAPTION_MODEL
-        )
+            logger.debug("captioner_load model=%s", self.CAPTION_MODEL)
+            self._captioner_model, self._captioner_processor = vlm_load(
+                self.CAPTION_MODEL
+            )
 
     def _unload_captioner(self) -> None:
         """Free captioner memory when no longer needed."""
@@ -1289,56 +1297,60 @@ class MLXBackend(ModelBackend):
         """Lazy-load the MLX reranker model."""
         if self._reranker_model is not None:
             return
+        with self._model_lock:
+            # Double-check after acquiring lock
+            if self._reranker_model is not None:
+                return
 
-        from mlx_vlm import load
+            from mlx_vlm import load
 
-        if not _check_model_cached(self.RERANKER_MODEL):
-            size = "~800MB" if self._quantization == "4bit" else "~4GB"
-            logger.info(
-                f"[RecallForge] Downloading reranker model "
-                f"({self.RERANKER_MODEL.split('/')[-1]}, {size})... first run only."
-            )
-        logger.info(f"[MLXBackend] Loading reranker: {self.RERANKER_MODEL}")
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
-                warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
-                warnings.filterwarnings(
-                    "ignore",
-                    message=".*`torch_dtype` is deprecated! Use `dtype` instead!.*",
+            if not _check_model_cached(self.RERANKER_MODEL):
+                size = "~800MB" if self._quantization == "4bit" else "~4GB"
+                logger.info(
+                    f"[RecallForge] Downloading reranker model "
+                    f"({self.RERANKER_MODEL.split('/')[-1]}, {size})... first run only."
                 )
+            logger.info(f"[MLXBackend] Loading reranker: {self.RERANKER_MODEL}")
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
+                    warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=".*`torch_dtype` is deprecated! Use `dtype` instead!.*",
+                    )
 
-                hf_logging = None
-                prev_hf_verbosity = None
-                try:
-                    from transformers.utils import logging as hf_logging  # type: ignore
-
-                    prev_hf_verbosity = hf_logging.get_verbosity()
-                    hf_logging.set_verbosity_error()
-                except Exception:
                     hf_logging = None
                     prev_hf_verbosity = None
+                    try:
+                        from transformers.utils import logging as hf_logging  # type: ignore
 
-                try:
-                    self._reranker_model, self._reranker_processor = load(
-                        self.RERANKER_MODEL,
-                        trust_remote_code=True,
-                    )
-                finally:
-                    if hf_logging is not None and prev_hf_verbosity is not None:
-                        hf_logging.set_verbosity(prev_hf_verbosity)
-            self._init_reranker_scoring()
-        except Exception:
-            self._reranker_model = None
-            self._reranker_processor = None
-            self._reranker_score_linear = None
-            self._reranker_score_weight = None
-            self._reranker_score_bias = None
-            self._reranker_yes_token_id = None
-            self._reranker_no_token_id = None
-            self._reranker_use_direct_logits = False
-            raise
-        logger.info(f"[MLXBackend] Loaded reranker ({self._quantization})")
+                        prev_hf_verbosity = hf_logging.get_verbosity()
+                        hf_logging.set_verbosity_error()
+                    except Exception:
+                        hf_logging = None
+                        prev_hf_verbosity = None
+
+                    try:
+                        self._reranker_model, self._reranker_processor = load(
+                            self.RERANKER_MODEL,
+                            trust_remote_code=True,
+                        )
+                    finally:
+                        if hf_logging is not None and prev_hf_verbosity is not None:
+                            hf_logging.set_verbosity(prev_hf_verbosity)
+                self._init_reranker_scoring()
+            except Exception:
+                self._reranker_model = None
+                self._reranker_processor = None
+                self._reranker_score_linear = None
+                self._reranker_score_weight = None
+                self._reranker_score_bias = None
+                self._reranker_yes_token_id = None
+                self._reranker_no_token_id = None
+                self._reranker_use_direct_logits = False
+                raise
+            logger.info(f"[MLXBackend] Loaded reranker ({self._quantization})")
 
     def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
         """Rerank documents for a query.

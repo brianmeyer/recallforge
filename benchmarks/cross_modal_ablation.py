@@ -15,7 +15,6 @@ Categories:
 - text_to_text: text query → text document
 - text_to_image: text query → relevant image (CROSS-MODAL)
 - image_to_text: image as query → relevant text document (CROSS-MODAL)
-- document_search: text query → DOCX/PPTX/PDF sections
 - mixed_modal: query that should find BOTH text and image results
 
 Metrics: R@1, R@5, R@10, P@5, P@10, NDCG@10, MRR, latency p50/p95
