@@ -1451,6 +1451,10 @@ def ingest_corpus(backend, storage, collection: str, corpus_dir: Path) -> int:
             except Exception as e:
                 print(f"  WARN: Failed to index transcript {transcript_file.name}: {e}")
 
+    # Unload captioner after indexing to reclaim ~0.9GB before search stages
+    if hasattr(backend, '_unload_captioner'):
+        backend._unload_captioner()
+
     return indexed
 
 

@@ -789,7 +789,7 @@ class MLXBackend(ModelBackend):
             messages = [{
                 "role": "user",
                 "content": [
-                    {"type": "video", "video": path},
+                    {"type": "video", "video": path, "nframes": 8},
                     {"type": "text", "text": "Describe this video."},
                 ],
             }]
@@ -1058,7 +1058,7 @@ class MLXBackend(ModelBackend):
             if document:
                 doc_content.append({"type": "text", "text": document})
         elif video_path:
-            doc_content.append({"type": "video", "video": f"file://{video_path}"})
+            doc_content.append({"type": "video", "video": f"file://{video_path}", "nframes": 8})
             if document:
                 doc_content.append({"type": "text", "text": document})
         else:
@@ -1174,7 +1174,7 @@ class MLXBackend(ModelBackend):
             try:
                 from qwen_vl_utils import process_vision_info
                 messages = [{"role": "user", "content": [
-                    {"type": "video", "video": video_path},
+                    {"type": "video", "video": video_path, "nframes": 8},
                     {"type": "text", "text": prompt},
                 ]}]
                 _, video_inputs, video_kwargs = process_vision_info(
