@@ -59,7 +59,7 @@ def _make_storage(store_path="/tmp/test-store"):
 
 
 def _mutable_config(**overrides):
-    cfg = {"mode": "hybrid", "collection": "default", "max_file_size_mb": 100}
+    cfg = {"mode": "hybrid", "collection": "default", "max_file_size_mb": 100, "rerank_top_k": 20}
     cfg.update(overrides)
     return cfg
 
@@ -77,7 +77,7 @@ class TestHandleGetConfig(unittest.IsolatedAsyncioTestCase):
         result = await _handle_get_config(backend, storage, cfg)
         self.assertEqual(len(result), 1)
         data = json.loads(result[0].text)
-        for key in ("version", "backend", "mode", "quantize", "data_dir", "collection", "max_file_size_mb"):
+        for key in ("version", "backend", "mode", "quantize", "data_dir", "collection", "max_file_size_mb", "rerank_top_k"):
             self.assertIn(key, data, f"Missing key: {key}")
 
     async def test_version_matches_package(self):
@@ -149,6 +149,7 @@ class TestHandleGetConfig(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertEqual(data["collection"], "default")
         self.assertEqual(data["max_file_size_mb"], 100)
+        self.assertEqual(data["rerank_top_k"], 20)
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +248,24 @@ class TestHandleSetConfig(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertTrue(data.get("error"))
 
+    async def test_set_rerank_top_k(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        cfg = _mutable_config()
+        result = await _handle_set_config({"rerank_top_k": 42}, backend, storage, cfg)
+        data = json.loads(result[0].text)
+        self.assertEqual(data["rerank_top_k"], 42)
+        self.assertEqual(cfg["rerank_top_k"], 42)
+
+    async def test_set_rerank_top_k_negative_rejected(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        cfg = _mutable_config()
+        result = await _handle_set_config({"rerank_top_k": -1}, backend, storage, cfg)
+        data = json.loads(result[0].text)
+        self.assertTrue(data.get("error"))
+        self.assertEqual(data["code"], "INVALID_INPUT")
+
     async def test_immutable_backend_rejected(self):
         backend = _make_backend()
         storage = _make_storage()
@@ -304,7 +323,7 @@ class TestHandleSetConfig(unittest.IsolatedAsyncioTestCase):
         cfg = _mutable_config()
         result = await _handle_set_config({"mode": "hybrid"}, backend, storage, cfg)
         data = json.loads(result[0].text)
-        for key in ("version", "backend", "mode", "quantize", "data_dir", "collection", "max_file_size_mb"):
+        for key in ("version", "backend", "mode", "quantize", "data_dir", "collection", "max_file_size_mb", "rerank_top_k"):
             self.assertIn(key, data, f"Missing key in set_config response: {key}")
 
     async def test_empty_arguments_returns_current_config(self):
@@ -410,6 +429,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mode", schema["properties"])
         self.assertIn("collection", schema["properties"])
         self.assertIn("max_file_size_mb", schema["properties"])
+        self.assertIn("rerank_top_k", schema["properties"])
         # mode is an enum
         self.assertIn("enum", schema["properties"]["mode"])
         self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid"])
@@ -423,7 +443,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         # Verify tool is registered; actual call_tool requires MCP plumbing,
         # so we just confirm dispatch works directly.
         from recallforge.server import _dispatch_tool
-        cfg = {"mode": "embed", "collection": "default", "max_file_size_mb": 100}
+        cfg = {"mode": "embed", "collection": "default", "max_file_size_mb": 100, "rerank_top_k": 20}
         result = await _dispatch_tool("get_config", {}, backend, storage, cfg)
         data = json.loads(result[0].text)
         self.assertEqual(data["mode"], "embed")

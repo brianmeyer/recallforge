@@ -141,6 +141,7 @@ async def create_server(
         "mode": mode or os.environ.get("RECALLFORGE_MODE", "hybrid"),
         "collection": "default",
         "max_file_size_mb": 100,
+        "rerank_top_k": int(os.environ.get("RECALLFORGE_RERANK_TOP_K", "20")),
     }
     
     @server.list_tools()
@@ -164,6 +165,7 @@ async def create_server(
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
                         "profile": {"type": "string", "description": "Optional profile namespace filter"},
                         "intent": {"type": "string", "enum": ["exact_lookup", "semantic", "broad"], "description": "Optional intent for query steering: exact_lookup (boost BM25), semantic (boost vector), broad (equal weights)"},
+                        "rerank_top_k": {"type": "integer", "description": "Maximum number of top RRF candidates to rerank", "default": 20, "minimum": 0},
                     },
                 },
             ),
@@ -424,6 +426,11 @@ async def create_server(
                             "description": "Maximum file size in MB for ingest operations",
                             "minimum": 1,
                         },
+                        "rerank_top_k": {
+                            "type": "number",
+                            "description": "Maximum number of top RRF candidates to rerank in search (0 disables reranking)",
+                            "minimum": 0,
+                        },
                     },
                 },
             ),
@@ -460,6 +467,8 @@ async def _dispatch_tool(
             arguments.setdefault("collection", mutable_config["collection"])
         if "max_file_size_mb" not in arguments and "max_file_size_mb" in mutable_config:
             arguments.setdefault("max_file_size_mb", mutable_config["max_file_size_mb"])
+        if "rerank_top_k" not in arguments and "rerank_top_k" in mutable_config:
+            arguments.setdefault("rerank_top_k", mutable_config["rerank_top_k"])
     if name == "search":
         return await _handle_search(arguments, backend, storage)
     elif name == "search_fts":
@@ -584,9 +593,10 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
     intent = arguments.get("intent")
+    rerank_top_k = arguments.get("rerank_top_k", 20)
 
     trace_log("search_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent)
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k)
 
     if input_error:
         return _error_response("INVALID_INPUT", input_error)
@@ -602,6 +612,7 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
         project_id=project_id,
         profile=profile,
         intent=intent,
+        rerank_top_k=rerank_top_k,
     )
 
     if image_path:
@@ -1030,6 +1041,7 @@ async def _handle_get_config(backend, storage, mutable_config: dict) -> list[Tex
         "data_dir": data_dir,
         "collection": mutable_config.get("collection", "default"),
         "max_file_size_mb": mutable_config.get("max_file_size_mb", 100),
+        "rerank_top_k": mutable_config.get("rerank_top_k", int(os.environ.get("RECALLFORGE_RERANK_TOP_K", "20"))),
     }
     return [TextContent(type="text", text=json.dumps(config, indent=2))]
 
@@ -1042,7 +1054,7 @@ async def _handle_set_config(
 ) -> list[TextContent]:
     """Validate and apply safe runtime configuration changes."""
     _IMMUTABLE = {"backend", "quantize", "data_dir"}
-    _ALLOWED = {"mode", "collection", "max_file_size_mb"}
+    _ALLOWED = {"mode", "collection", "max_file_size_mb", "rerank_top_k"}
 
     # Reject attempts to change immutable fields
     attempted_immutable = set(arguments.keys()) & _IMMUTABLE
@@ -1089,6 +1101,16 @@ async def _handle_set_config(
                 {"provided": max_mb},
             )
         mutable_config["max_file_size_mb"] = int(max_mb)
+
+    if "rerank_top_k" in arguments:
+        rerank_top_k = arguments["rerank_top_k"]
+        if not isinstance(rerank_top_k, (int, float)) or rerank_top_k < 0:
+            return _error_response(
+                "INVALID_INPUT",
+                "rerank_top_k must be a number >= 0",
+                {"provided": rerank_top_k},
+            )
+        mutable_config["rerank_top_k"] = int(rerank_top_k)
 
     # Return the updated configuration
     return await _handle_get_config(backend, storage, mutable_config)

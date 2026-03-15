@@ -67,6 +67,7 @@ Example MCP client config (Claude Desktop):
 | session_id | string | No | — | Session namespace filter |
 | project_id | string | No | — | Project namespace filter |
 | profile | string | No | — | Profile namespace filter |
+| rerank_top_k | integer | No | 20 | Max top RRF candidates to rerank (`0` disables reranking) |
 
 \* Exactly one of `query`, `image_path`, or `video_path` must be provided.
 
@@ -714,14 +715,15 @@ Operation object schema:
   "quantize": "4bit",
   "data_dir": "/Users/me/.recallforge",
   "collection": "default",
-  "max_file_size_mb": 100
+  "max_file_size_mb": 100,
+  "rerank_top_k": 20
 }
 ```
 
 **Errors:**
 - `INTERNAL_ERROR`: uncaught exceptions.
 
-**Notes:** Reflects mutable runtime values (`mode`, `collection`, `max_file_size_mb`) when changed via `set_config`.
+**Notes:** Reflects mutable runtime values (`mode`, `collection`, `max_file_size_mb`, `rerank_top_k`) when changed via `set_config`.
 
 ---
 
@@ -735,13 +737,15 @@ Operation object schema:
 | mode | string (`embed`\|`hybrid`) | No | current mode | Search mode |
 | collection | string | No | current default collection | Default collection for tools that omit `collection` |
 | max_file_size_mb | number | No | current max | Default ingest file-size limit (must be >= 1) |
+| rerank_top_k | number | No | current value | Max top RRF candidates to rerank during `search` (must be >= 0) |
 
 **Example Request:**
 ```json
 {
   "mode": "hybrid",
   "collection": "work",
-  "max_file_size_mb": 64
+  "max_file_size_mb": 64,
+  "rerank_top_k": 20
 }
 ```
 

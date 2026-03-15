@@ -115,6 +115,13 @@ class TestHybridSearcherInit(unittest.TestCase):
         self.assertIs(searcher.backend, backend)
         self.assertIs(searcher.storage, storage)
 
+    def test_rerank_top_k_reads_env_override(self):
+        backend = StubBackend()
+        storage = StubStorage()
+        with patch.dict(os.environ, {"RECALLFORGE_RERANK_TOP_K": "7"}):
+            searcher = HybridSearcher(backend=backend, storage=storage)
+        self.assertEqual(searcher.rerank_top_k, 7)
+
 
 class TestBM25Probe(unittest.TestCase):
     def test_bm25_probe_delegates_to_storage(self):
@@ -232,6 +239,38 @@ class TestRerankCandidates(unittest.TestCase):
         self.assertIn("b.md", scores)
         for s in scores.values():
             self.assertIsInstance(s, float)
+
+    def test_reranks_only_top_k_candidates(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.91, 0.72])
+        searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=2)
+        candidates = [
+            _make_search_result("a.md", 0.95),
+            _make_search_result("b.md", 0.85),
+            _make_search_result("c.md", 0.75),
+            _make_search_result("d.md", 0.65),
+        ]
+
+        scores = searcher._rerank_candidates(candidates, "query")
+
+        backend.rerank.assert_called_once()
+        rerank_docs = backend.rerank.call_args[0][1]
+        self.assertEqual([d["filepath"] for d in rerank_docs], ["a.md", "b.md"])
+        self.assertEqual(scores["a.md"], 0.91)
+        self.assertEqual(scores["b.md"], 0.72)
+        self.assertEqual(scores["c.md"], 0.5)
+        self.assertEqual(scores["d.md"], 0.5)
+
+    def test_rerank_top_k_zero_skips_reranker(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock()
+        searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=0)
+        candidates = [_make_search_result("doc.md", 0.9)]
+
+        scores = searcher._rerank_candidates(candidates, "query")
+
+        backend.rerank.assert_not_called()
+        self.assertEqual(scores["doc.md"], 0.5)
 
     def test_embed_mode_returns_default_score(self):
         backend = StubBackend(mode="embed")
