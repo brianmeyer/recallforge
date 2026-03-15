@@ -13,6 +13,7 @@ import os
 import logging
 import importlib.util
 import warnings
+import re
 from typing import List, Dict, Any, Optional
 
 import numpy as np
@@ -97,6 +98,20 @@ class MLXBackend(ModelBackend):
     _RERANK_DEFAULT_INSTRUCTION = (
         "Given a search query, retrieve relevant candidates that answer the query."
     )
+    _CAPTION_DESCRIPTOR_CANDIDATES = [
+        "a diagram with labeled components and arrows",
+        "a chart or graph with axes and plotted data",
+        "a screenshot of software, code, or UI",
+        "a document page with printed text",
+        "a presentation slide with title and bullets",
+        "a person speaking to camera indoors",
+        "multiple people in a meeting or conversation",
+        "an outdoor scene with buildings or streets",
+        "an outdoor scene with nature, trees, or mountains",
+        "a product photo or object on a plain background",
+        "a close-up portrait photo of a person",
+        "a whiteboard or handwritten notes",
+    ]
 
     def __init__(
         self,
@@ -131,6 +146,7 @@ class MLXBackend(ModelBackend):
         self._embedder_num_layers = None
         self._embed_text_max_tokens = None
         self._embed_warmed = False
+        self._caption_descriptor_embeddings: Optional[np.ndarray] = None
 
         # Model IDs based on quantization
         if quantization == "4bit":
@@ -606,6 +622,89 @@ class MLXBackend(ModelBackend):
     def embed_video(self, video_path: str) -> np.ndarray:
         """Embed a single video."""
         return self.embed_videos([video_path])[0]
+
+    def _ensure_caption_descriptor_embeddings(self) -> np.ndarray:
+        """Build and cache descriptor text embeddings used for caption fallback."""
+        if self._caption_descriptor_embeddings is None:
+            self._caption_descriptor_embeddings = self.embed_texts(
+                self._CAPTION_DESCRIPTOR_CANDIDATES
+            )
+        return self._caption_descriptor_embeddings
+
+    def caption_image(self, image_path: str) -> str:
+        """Generate a short one-sentence image caption for BM25 indexing."""
+        prompt = "Describe this image in one sentence for search indexing."
+
+        self._load_embedder()
+
+        # Preferred: use model generation if the loaded checkpoint exposes it.
+        try:
+            from mlx_vlm import generate
+
+            output = generate(
+                self._embedder_model,
+                self._embedder_processor,
+                prompt=prompt,
+                image=image_path,
+                max_tokens=50,
+            )
+            if isinstance(output, str) and output.strip():
+                return re.sub(r"\s+", " ", output).strip()
+            if hasattr(output, "text") and isinstance(output.text, str) and output.text.strip():
+                return re.sub(r"\s+", " ", output.text).strip()
+        except Exception:
+            pass
+
+        # Fallback: descriptor matching over embedding space.
+        image_vec = self.embed_image(image_path)
+        descriptor_vecs = self._ensure_caption_descriptor_embeddings()
+
+        # Vectors are L2-normalized by embed_* methods; dot product = cosine similarity.
+        scores = np.dot(descriptor_vecs, image_vec)
+        top_indices = np.argsort(scores)[::-1][:2]
+
+        top_phrases = [self._CAPTION_DESCRIPTOR_CANDIDATES[i] for i in top_indices]
+        primary = top_phrases[0]
+        secondary = top_phrases[1] if len(top_phrases) > 1 else None
+
+        caption = f"Image appears to show {primary}."
+        if secondary and secondary != primary:
+            caption += f" It may also include elements of {secondary}."
+
+        return re.sub(r"\s+", " ", caption).strip()
+
+    def describe_image(self, image_path: str) -> str:
+        """Backward-compatible alias for caption_image."""
+        return self.caption_image(image_path)
+
+    def describe_video(self, video_path: str, frame_paths: Optional[List[str]] = None) -> str:
+        """Describe a video using either provided keyframes or the raw video embedding."""
+        if frame_paths:
+            frame_descriptions: List[str] = []
+            for frame_path in frame_paths[:3]:
+                try:
+                    frame_descriptions.append(self.describe_image(frame_path))
+                except Exception:
+                    continue
+
+            if frame_descriptions:
+                merged = " ".join(frame_descriptions)
+                # Keep 1-3 concise sentences.
+                merged = re.sub(r"\s+", " ", merged).strip()
+                return merged[:420]
+
+        video_vec = self.embed_video(video_path)
+        descriptor_vecs = self._ensure_caption_descriptor_embeddings()
+        scores = np.dot(descriptor_vecs, video_vec)
+        top_indices = np.argsort(scores)[::-1][:2]
+        top_phrases = [self._CAPTION_DESCRIPTOR_CANDIDATES[i] for i in top_indices]
+        primary = top_phrases[0]
+        secondary = top_phrases[1] if len(top_phrases) > 1 else None
+
+        caption = f"Video content appears to show {primary}."
+        if secondary and secondary != primary:
+            caption += f" Additional scenes may resemble {secondary}."
+        return re.sub(r"\s+", " ", caption).strip()
 
     def embed_videos(self, video_paths: List[str]) -> np.ndarray:
         """

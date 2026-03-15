@@ -37,6 +37,59 @@ class IndexingOps:
     def __init__(self, backend: "LanceDBBackend"):
         self._backend = backend
 
+    def _resolve_captioner(self, embed_func, method_name: str):
+        """Resolve optional caption/description method from callable or its bound object."""
+        if embed_func is None:
+            return None
+        direct = getattr(embed_func, method_name, None)
+        if callable(direct):
+            return direct
+        owner = getattr(embed_func, "__self__", None)
+        candidate = getattr(owner, method_name, None) if owner is not None else None
+        if callable(candidate):
+            return candidate
+        return None
+
+    def _describe_image(self, embed_func, image_path: str, enabled: bool) -> str:
+        if not enabled:
+            return ""
+        describer = self._resolve_captioner(embed_func, "describe_image") or self._resolve_captioner(embed_func, "caption_image")
+        if not describer:
+            return ""
+        try:
+            caption = describer(image_path)
+            return caption.strip() if isinstance(caption, str) else ""
+        except Exception as e:
+            logger.warning("index_image: caption generation failed for %s: %s", image_path, e)
+            return ""
+
+    def _describe_video(self, embed_image_func, embed_video_func, video_path: str, frame_paths: List[str], enabled: bool) -> str:
+        if not enabled:
+            return ""
+
+        describer = (
+            self._resolve_captioner(embed_video_func, "describe_video")
+            or self._resolve_captioner(embed_image_func, "describe_video")
+        )
+        if describer:
+            try:
+                caption = describer(video_path, frame_paths=frame_paths)
+                if isinstance(caption, str) and caption.strip():
+                    return caption.strip()
+            except Exception as e:
+                logger.warning("index_video: video caption generation failed for %s: %s", video_path, e)
+
+        # Fallback: summarize first keyframes through image captions.
+        if frame_paths:
+            parts: List[str] = []
+            for frame_path in frame_paths[:3]:
+                frame_caption = self._describe_image(embed_image_func, frame_path, enabled=True)
+                if frame_caption:
+                    parts.append(frame_caption)
+            return " ".join(parts).strip()
+
+        return ""
+
     def index_document(
         self,
         path: str,
@@ -610,6 +663,7 @@ class IndexingOps:
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
         max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
+        enable_captioning: bool = True,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text, file, or folder inputs."""
         content_types = content_types or ["text", "image", "video", "document"]
@@ -682,6 +736,7 @@ class IndexingOps:
                         session_id=session_id,
                         project_id=project_id,
                         profile=profile,
+                        enable_captioning=enable_captioning,
                     )
                     summary["indexed_images"] += 1
                     mark(item_path, "image", "indexed")
@@ -704,6 +759,7 @@ class IndexingOps:
                         session_id=session_id,
                         project_id=project_id,
                         profile=profile,
+                        enable_captioning=enable_captioning,
                     )
                     summary["indexed_videos"] += 1
                     summary["indexed_images"] += video_summary["indexed_frames"]
@@ -864,6 +920,7 @@ class IndexingOps:
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        enable_captioning: bool = True,
     ) -> str:
         """
         Index an image file.
@@ -929,6 +986,7 @@ class IndexingOps:
         )
 
         vector = embed_func(actual_path)
+        image_caption = self._describe_image(embed_func, actual_path, enabled=enable_captioning)
         self._backend.insert_embedding(
             content_hash=content_hash,
             seq=0,
@@ -938,7 +996,7 @@ class IndexingOps:
             collection=collection,
             file_path=logical_path,
             title=resolved_title,
-            text_body="",
+            text_body=image_caption,
             content_type="image",
             user_id=user_id,
             session_id=session_id,
@@ -967,6 +1025,7 @@ class IndexingOps:
         profile: Optional[str] = None,
         frame_interval_seconds: float = 5.0,
         max_frames: int = 8,
+        enable_captioning: bool = True,
     ) -> Dict[str, Any]:
         """Index a video into a top-level video embedding plus derived assets."""
         actual_path = str(Path(path).expanduser().resolve())
@@ -1009,7 +1068,16 @@ class IndexingOps:
             for segment in artifacts.transcripts
             if isinstance(segment.text, str) and segment.text.strip()
         ).strip()
-        video_body = transcript_summary[:4000]
+        frame_paths = [frame.image_path for frame in artifacts.frames]
+        video_caption = self._describe_video(
+            embed_image_func=embed_image_func,
+            embed_video_func=embed_video_func,
+            video_path=actual_path,
+            frame_paths=frame_paths,
+            enabled=enable_captioning,
+        )
+        parts = [part for part in (video_caption, transcript_summary) if part]
+        video_body = "\n\n".join(parts)[:4000]
 
         try:
             modified_at = int(os.path.getmtime(actual_path) * 1000)
@@ -1075,6 +1143,7 @@ class IndexingOps:
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
+                enable_captioning=enable_captioning,
             )
             indexed_frames += 1
 

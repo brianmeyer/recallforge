@@ -1160,6 +1160,7 @@ class LanceDBBackend(StorageBackend):
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        enable_captioning: bool = True,
     ) -> str:
         """Index an image file."""
         return self._indexer.index_image(
@@ -1173,6 +1174,7 @@ class LanceDBBackend(StorageBackend):
             session_id=session_id,
             project_id=project_id,
             profile=profile,
+            enable_captioning=enable_captioning,
         )
 
     def index_video(
@@ -1190,6 +1192,7 @@ class LanceDBBackend(StorageBackend):
         profile: Optional[str] = None,
         frame_interval_seconds: float = 5.0,
         max_frames: int = 8,
+        enable_captioning: bool = True,
     ) -> Dict[str, Any]:
         """Index a video into a top-level video embedding plus derived assets."""
         return self._indexer.index_video(
@@ -1206,6 +1209,7 @@ class LanceDBBackend(StorageBackend):
             profile=profile,
             frame_interval_seconds=frame_interval_seconds,
             max_frames=max_frames,
+            enable_captioning=enable_captioning,
         )
 
     def ingest(
@@ -1228,6 +1232,7 @@ class LanceDBBackend(StorageBackend):
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
         max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
+        enable_captioning: bool = True,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text/image/file/folder inputs."""
         return self._indexer.ingest(
@@ -1249,6 +1254,7 @@ class LanceDBBackend(StorageBackend):
             project_id=project_id,
             profile=profile,
             max_file_size_mb=max_file_size_mb,
+            enable_captioning=enable_captioning,
         )
     
     # =========================================================================

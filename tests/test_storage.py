@@ -12,7 +12,9 @@ import shutil
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from typing import List, Optional
+from unittest.mock import patch
 
 import numpy as np
 
@@ -1104,6 +1106,108 @@ class TestCollectionManagement(unittest.TestCase):
         self.assertEqual(result["embeddings_deleted"], 0)
         self.assertEqual(result["documents_deleted"], 0)
         self.assertEqual(result["orphans_cleaned"], 0)
+
+
+class CaptioningEmbedder:
+    """Mock multimodal embedder with optional caption methods."""
+
+    def __call__(self, path: str) -> List[float]:
+        return mock_embed(path)
+
+    def describe_image(self, path: str) -> str:
+        return "Neural network diagram with labeled hidden layers."
+
+    def describe_video(self, path: str, frame_paths=None) -> str:
+        frame_count = len(frame_paths or [])
+        return f"Technical explainer video with {frame_count} keyframes showing diagrams."
+
+
+class FailingCaptioningEmbedder(CaptioningEmbedder):
+    def describe_image(self, path: str) -> str:
+        raise RuntimeError("caption failed")
+
+    def describe_video(self, path: str, frame_paths=None) -> str:
+        raise RuntimeError("video caption failed")
+
+
+class TestIngestCaptioning(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-caption-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+        self.image_path = os.path.join(self.temp_dir, "diagram.jpg")
+        with open(self.image_path, "wb") as f:
+            f.write(b"\xff\xd8\xff\xdbmockjpg")
+
+        self.video_path = os.path.join(self.temp_dir, "demo.mp4")
+        with open(self.video_path, "wb") as f:
+            f.write(b"mock-video")
+
+        self.frame_path = os.path.join(self.temp_dir, "frame_0001.jpg")
+        with open(self.frame_path, "wb") as f:
+            f.write(b"\xff\xd8\xff\xdbframe")
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_index_image_stores_caption_in_text_body(self):
+        embedder = CaptioningEmbedder()
+        self.backend.index_image(
+            path=self.image_path,
+            collection="test",
+            embed_func=embedder,
+            enable_captioning=True,
+        )
+
+        rows = self.backend._embeddings_table.search().where("content_type = 'image'").to_list()
+        self.assertEqual(len(rows), 1)
+        self.assertIn("Neural network diagram", rows[0].get("text_body") or "")
+
+    def test_index_image_caption_failure_keeps_embedding(self):
+        embedder = FailingCaptioningEmbedder()
+        self.backend.index_image(
+            path=self.image_path,
+            collection="test",
+            embed_func=embedder,
+            enable_captioning=True,
+        )
+
+        rows = self.backend._embeddings_table.search().where("content_type = 'image'").to_list()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("text_body"), "")
+
+    def test_index_video_stores_video_caption_in_text_body(self):
+        embedder = CaptioningEmbedder()
+        fake_artifacts = SimpleNamespace(
+            frames=[
+                SimpleNamespace(
+                    image_path=self.frame_path,
+                    logical_path="demo.mp4::frame:0001@0.00s",
+                    title="frame 1",
+                    timestamp_seconds=0.0,
+                )
+            ],
+            transcripts=[],
+            duration_seconds=4.2,
+            transcript_path=None,
+            ffmpeg_available=True,
+        )
+
+        with patch("recallforge.storage.indexing_ops.extract_video_artifacts", return_value=fake_artifacts):
+            self.backend.index_video(
+                path=self.video_path,
+                collection="test",
+                embed_text_func=mock_embed,
+                embed_image_func=embedder,
+                embed_video_func=embedder,
+                enable_captioning=True,
+            )
+
+        video_rows = self.backend._embeddings_table.search().where("content_type = 'video'").to_list()
+        self.assertEqual(len(video_rows), 1)
+        self.assertIn("Technical explainer video", video_rows[0].get("text_body") or "")
 
 
 if __name__ == "__main__":
