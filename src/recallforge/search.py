@@ -799,7 +799,7 @@ class HybridSearcher:
                             if os.path.exists(frame_path) and hasattr(self.backend, "caption_image"):
                                 effective_query = self.backend.caption_image(frame_path)
                     except Exception as e:
-                        logger.debug("video caption fallback failed: %s", e)
+                        logger.warning("video caption fallback failed (is ffmpeg installed?): %s", e)
                     logger.debug(
                         "reranker_query_caption type=video caption=%s",
                         (effective_query or "")[:80],

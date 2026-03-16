@@ -881,9 +881,8 @@ class MLXBackend(ModelBackend):
             pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
             video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
 
-            # Free PyTorch tensors now that we have MLX arrays
-            del inputs, video_inputs
-            # gc already imported at module level
+            # Free PyTorch tensors and intermediates now that we have MLX arrays
+            del inputs, video_inputs, messages, chat_text, normalized_video_kwargs, video_kwargs
             gc.collect()
 
             try:
@@ -1279,7 +1278,8 @@ class MLXBackend(ModelBackend):
                     if image_path:
                         msg_content.append({"type": "image", "image": f"file://{image_path}"})
                     if video_path:
-                        msg_content.append(self._video_content(video_path))
+                        import os as _os
+                        msg_content.append(self._video_content(f"file://{_os.path.abspath(video_path)}"))
                     msg_content.append({"type": "text", "text": prompt})
                     messages = [{"role": "user", "content": msg_content}]
                     image_inputs, video_inputs, video_kwargs = process_vision_info(
@@ -1322,9 +1322,16 @@ class MLXBackend(ModelBackend):
             if has_image:
                 pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
                 image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
-            elif has_video:
-                pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
+            if has_video:
+                # When both image and video are present (e.g., query_image + doc_video),
+                # video pixels go into a separate tensor. get_input_embeddings handles both.
+                video_pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
                 video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
+                if pixel_values is None:
+                    # Video-only: use video pixels as the primary pixel_values
+                    pixel_values = video_pixel_values
+                # else: both are set — get_input_embeddings receives pixel_values for
+                # images and video_grid_thw for videos separately
 
             # Free processor outputs after conversion to MLX arrays
             del inputs
