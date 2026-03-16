@@ -605,6 +605,10 @@ class MLXBackend(ModelBackend):
         pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
         image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
 
+        # Free PyTorch tensors and vision intermediates now that we have MLX arrays
+        del inputs, image_inputs, chat_texts, messages_batch
+        gc.collect()
+
         try:
             cache = _make_cache(num_layers)
         except Exception as exc:
@@ -691,9 +695,13 @@ class MLXBackend(ModelBackend):
                 {"type": "text", "text": self._CAPTION_PROMPT},
             ]}
         ]
-        return self._captioner_processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        try:
+            return self._captioner_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        finally:
+            del messages
+            gc.collect()
 
     def caption_image(self, image_path: str) -> str:
         """Generate a one-sentence image caption using Qwen3.5-0.8B.
@@ -724,6 +732,12 @@ class MLXBackend(ModelBackend):
         except Exception as exc:
             logger.warning("caption_image failed for %s: %s", image_path, exc)
             return ""
+        finally:
+            try:
+                del prompt, output, text, caption
+            except Exception:
+                pass
+            gc.collect()
 
     def describe_image(self, image_path: str) -> str:
         """Backward-compatible alias for caption_image."""
@@ -776,6 +790,12 @@ class MLXBackend(ModelBackend):
         except Exception as exc:
             logger.warning("generate_text failed: %s", exc)
             return ""
+        finally:
+            try:
+                del messages, formatted, output, text
+            except Exception:
+                pass
+            gc.collect()
 
     def embed_videos(self, video_paths: List[str]) -> np.ndarray:
         """
@@ -1176,146 +1196,165 @@ class MLXBackend(ModelBackend):
         vl_fallback_triggered = False
         raw_score_before_sigmoid = 0.0
 
-        if image_path:
-            from PIL import Image as PILImage
-            try:
-                img = PILImage.open(image_path).convert("RGB")
-                # VL processor requires PyTorch tensors for image inputs
-                inputs = self._reranker_processor(
-                    text=prompt, images=[img], return_tensors="pt",
-                )
-                # Convert to numpy for MLX compatibility
-                inputs = {k: v.numpy() if hasattr(v, 'numpy') else v for k, v in inputs.items()}
-            except Exception as e:
-                logger.warning(
-                    f"[MLXBackend] Failed to load image for reranking: {e}; "
-                    "falling back to text-only"
-                )
-                vl_fallback_triggered = True
+        try:
+            if image_path:
+                from PIL import Image as PILImage
+                try:
+                    img = PILImage.open(image_path).convert("RGB")
+                    # VL processor requires PyTorch tensors for image inputs
+                    pt_inputs = self._reranker_processor(
+                        text=prompt, images=[img], return_tensors="pt",
+                    )
+                    # Convert to numpy for MLX compatibility
+                    inputs = {k: v.numpy() if hasattr(v, "numpy") else v for k, v in pt_inputs.items()}
+                    del pt_inputs, img
+                    gc.collect()
+                except Exception as e:
+                    logger.warning(
+                        f"[MLXBackend] Failed to load image for reranking: {e}; "
+                        "falling back to text-only"
+                    )
+                    vl_fallback_triggered = True
+                    inputs = self._reranker_processor(text=prompt, return_tensors="np")
+            elif video_path:
+                try:
+                    from qwen_vl_utils import process_vision_info
+                    messages = [{"role": "user", "content": [
+                        self._video_content(video_path),
+                        {"type": "text", "text": prompt},
+                    ]}]
+                    _, video_inputs, video_kwargs = process_vision_info(
+                        [messages], return_video_kwargs=True,
+                    )
+                    normalized_kwargs = dict(video_kwargs or {})
+                    fps = normalized_kwargs.get("fps")
+                    if isinstance(fps, list):
+                        normalized_kwargs["fps"] = fps[0] if fps else None
+                    pt_inputs = self._reranker_processor(
+                        text=[prompt], videos=video_inputs,
+                        return_tensors="pt", padding=True,
+                        **normalized_kwargs,
+                    )
+                    inputs = {k: v.numpy() if hasattr(v, "numpy") else v for k, v in pt_inputs.items()}
+                    del pt_inputs, video_inputs, messages, video_kwargs, normalized_kwargs
+                    gc.collect()
+                except Exception as e:
+                    logger.warning(
+                        f"[MLXBackend] Failed to process video for reranking: {e}; "
+                        "falling back to text-only"
+                    )
+                    vl_fallback_triggered = True
+                    inputs = self._reranker_processor(text=prompt, return_tensors="np")
+            else:
                 inputs = self._reranker_processor(text=prompt, return_tensors="np")
-        elif video_path:
-            try:
-                from qwen_vl_utils import process_vision_info
-                messages = [{"role": "user", "content": [
-                    self._video_content(video_path),
-                    {"type": "text", "text": prompt},
-                ]}]
-                _, video_inputs, video_kwargs = process_vision_info(
-                    [messages], return_video_kwargs=True,
-                )
-                normalized_kwargs = dict(video_kwargs or {})
-                fps = normalized_kwargs.get("fps")
-                if isinstance(fps, list):
-                    normalized_kwargs["fps"] = fps[0] if fps else None
-                inputs = self._reranker_processor(
-                    text=[prompt], videos=video_inputs,
-                    return_tensors="pt", padding=True,
-                    **normalized_kwargs,
-                )
-                del video_inputs  # Free PyTorch video frames
-                inputs = {k: v.numpy() if hasattr(v, 'numpy') else v for k, v in inputs.items()}
-            except Exception as e:
-                logger.warning(
-                    f"[MLXBackend] Failed to process video for reranking: {e}; "
-                    "falling back to text-only"
-                )
-                vl_fallback_triggered = True
-                inputs = self._reranker_processor(text=prompt, return_tensors="np")
-        else:
-            inputs = self._reranker_processor(text=prompt, return_tensors="np")
-        input_ids = mx.array(inputs["input_ids"])
 
-        # Check for vision inputs (image or video reranking)
-        has_image = "pixel_values" in inputs and "image_grid_thw" in inputs
-        has_video = "pixel_values_videos" in inputs and "video_grid_thw" in inputs
-        has_vision = has_image or has_video
-        pixel_values = None
-        image_grid_thw = None
-        video_grid_thw = None
-        if has_image:
-            pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
-            image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
-        elif has_video:
-            pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
-            video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
+            input_ids = mx.array(inputs["input_ids"])
 
-        cache = _make_cache(num_layers)
+            # Check for vision inputs (image or video reranking)
+            has_image = "pixel_values" in inputs and "image_grid_thw" in inputs
+            has_video = "pixel_values_videos" in inputs and "video_grid_thw" in inputs
+            has_vision = has_image or has_video
+            pixel_values = None
+            image_grid_thw = None
+            video_grid_thw = None
+            if has_image:
+                pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
+                image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
+            elif has_video:
+                pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
+                video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
 
-        if has_vision:
-            # VL path: merge vision features with text embeddings.
-            # Must use direct yes/no logit comparison instead of the derived
-            # weight projection.  The derived projection (lm_head[yes] - lm_head[no])
-            # is a linear shortcut that assumes text-only hidden-state distributions.
-            # Vision features shift the distribution, making the shortcut unreliable.
-            if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
-                raise RuntimeError(
-                    "yes/no token ids are unavailable; cannot score VL reranker inputs"
-                )
-            try:
-                emb_features = self._reranker_model.get_input_embeddings(
-                    input_ids, pixel_values,
-                    image_grid_thw=image_grid_thw,
-                    video_grid_thw=video_grid_thw,
-                )
-                inputs_embeds = emb_features.to_dict()["inputs_embeds"]
-                # language_model.__call__ accesses inputs.shape for mask validation,
-                # so pass a dummy input_ids matching the sequence length to avoid
-                # NoneType.shape crash when inputs_embeds is the real input.
-                dummy_ids = mx.zeros((1, inputs_embeds.shape[1]), dtype=mx.int32)
-                lm_out = self._reranker_model.language_model(
-                    dummy_ids, inputs_embeds=inputs_embeds, cache=cache,
-                )
-                full_logits = self._to_mx_array(
-                    getattr(lm_out, "logits", lm_out)
-                ).astype(mx.float32)
+            # Free processor outputs after conversion to MLX arrays
+            del inputs
+            gc.collect()
+
+            cache = _make_cache(num_layers)
+
+            if has_vision:
+                # VL path: merge vision features with text embeddings.
+                # Must use direct yes/no logit comparison instead of the derived
+                # weight projection.  The derived projection (lm_head[yes] - lm_head[no])
+                # is a linear shortcut that assumes text-only hidden-state distributions.
+                # Vision features shift the distribution, making the shortcut unreliable.
+                if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
+                    raise RuntimeError(
+                        "yes/no token ids are unavailable; cannot score VL reranker inputs"
+                    )
+                try:
+                    emb_features = self._reranker_model.get_input_embeddings(
+                        input_ids, pixel_values,
+                        image_grid_thw=image_grid_thw,
+                        video_grid_thw=video_grid_thw,
+                    )
+                    inputs_embeds = emb_features.to_dict()["inputs_embeds"]
+                    # language_model.__call__ accesses inputs.shape for mask validation,
+                    # so pass a dummy input_ids matching the sequence length to avoid
+                    # NoneType.shape crash when inputs_embeds is the real input.
+                    dummy_ids = mx.zeros((1, inputs_embeds.shape[1]), dtype=mx.int32)
+                    lm_out = self._reranker_model.language_model(
+                        dummy_ids, inputs_embeds=inputs_embeds, cache=cache,
+                    )
+                    full_logits = self._to_mx_array(
+                        getattr(lm_out, "logits", lm_out)
+                    ).astype(mx.float32)
+                    last_logits = full_logits[:, -1, :]
+                    logits = (
+                        last_logits[:, self._reranker_yes_token_id]
+                        - last_logits[:, self._reranker_no_token_id]
+                    ).reshape(-1, 1)
+                    raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+                    scoring_path = "vl_image" if has_image else "vl_video"
+                except Exception as e:
+                    logger.warning(f"[MLXBackend] VL reranking failed, falling back to text-only: {e}")
+                    vl_fallback_triggered = True
+                    # Fall back to text-only path
+                    qwen_model = self._reranker_model.language_model.model
+                    hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
+                    last_hidden = hidden[:, -1, :]
+                    logits = self._apply_reranker_linear(last_hidden)
+                    raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+                    scoring_path = "fallback_text"
+            elif self._reranker_use_direct_logits:
+                if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
+                    raise RuntimeError("yes/no token ids are unavailable for reranker fallback")
+                lm_out = self._reranker_model.language_model(input_ids, cache=cache)
+                full_logits = self._to_mx_array(getattr(lm_out, "logits", lm_out)).astype(mx.float32)
                 last_logits = full_logits[:, -1, :]
                 logits = (
                     last_logits[:, self._reranker_yes_token_id]
                     - last_logits[:, self._reranker_no_token_id]
                 ).reshape(-1, 1)
                 raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
-                scoring_path = "vl_image" if has_image else "vl_video"
-            except Exception as e:
-                logger.warning(f"[MLXBackend] VL reranking failed, falling back to text-only: {e}")
-                vl_fallback_triggered = True
-                # Fall back to text-only path
+                scoring_path = "text_direct_logits"
+            else:
                 qwen_model = self._reranker_model.language_model.model
                 hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
                 last_hidden = hidden[:, -1, :]
                 logits = self._apply_reranker_linear(last_hidden)
                 raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
-                scoring_path = "fallback_text"
-        elif self._reranker_use_direct_logits:
-            if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
-                raise RuntimeError("yes/no token ids are unavailable for reranker fallback")
-            lm_out = self._reranker_model.language_model(input_ids, cache=cache)
-            full_logits = self._to_mx_array(getattr(lm_out, "logits", lm_out)).astype(mx.float32)
-            last_logits = full_logits[:, -1, :]
-            logits = (
-                last_logits[:, self._reranker_yes_token_id]
-                - last_logits[:, self._reranker_no_token_id]
-            ).reshape(-1, 1)
-            raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
-            scoring_path = "text_direct_logits"
-        else:
-            qwen_model = self._reranker_model.language_model.model
-            hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
-            last_hidden = hidden[:, -1, :]
-            logits = self._apply_reranker_linear(last_hidden)
-            raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
-            scoring_path = "text_derived"
+                scoring_path = "text_derived"
 
-        probs = 1.0 / (1.0 + mx.exp(-logits))
-        mx.eval(probs)
-        score = float(np.array(probs).reshape(-1)[0])
-        if not np.isfinite(score):
-            raise RuntimeError("Reranker produced non-finite score")
+            probs = 1.0 / (1.0 + mx.exp(-logits))
+            mx.eval(probs)
+            score = float(np.array(probs).reshape(-1)[0])
+            if not np.isfinite(score):
+                raise RuntimeError("Reranker produced non-finite score")
 
-        # Log reranker path tracing
-        logger.debug("reranker_score path=%s raw_score=%.4f final_score=%.4f vl_fallback=%s",
-                     scoring_path, raw_score_before_sigmoid, score, vl_fallback_triggered)
+            # Log reranker path tracing
+            logger.debug("reranker_score path=%s raw_score=%.4f final_score=%.4f vl_fallback=%s",
+                         scoring_path, raw_score_before_sigmoid, score, vl_fallback_triggered)
 
-        return score, scoring_path, raw_score_before_sigmoid
+            return score, scoring_path, raw_score_before_sigmoid
+        finally:
+            try:
+                del input_ids, pixel_values, image_grid_thw, video_grid_thw
+            except Exception:
+                pass
+            try:
+                del cache, logits, probs
+            except Exception:
+                pass
+            gc.collect()
 
     def _load_reranker(self):
         """Lazy-load the MLX reranker model."""
