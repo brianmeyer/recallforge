@@ -785,10 +785,21 @@ class HybridSearcher:
                         (effective_query or "")[:80],
                     )
                 elif query_video_path:
-                    # caption_image is image-only; use a short descriptive fallback
-                    effective_query = self.backend.caption_image(query_video_path) if hasattr(
-                        self.backend, "caption_image"
-                    ) else ""
+                    # Extract a representative frame and caption it
+                    effective_query = ""
+                    try:
+                        import tempfile, subprocess, os
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            frame_path = os.path.join(tmpdir, "frame.jpg")
+                            subprocess.run(
+                                ["ffmpeg", "-y", "-i", query_video_path, "-vf",
+                                 "select=eq(n\\,0)", "-vframes", "1", frame_path],
+                                capture_output=True, timeout=10,
+                            )
+                            if os.path.exists(frame_path) and hasattr(self.backend, "caption_image"):
+                                effective_query = self.backend.caption_image(frame_path)
+                    except Exception as e:
+                        logger.debug("video caption fallback failed: %s", e)
                     logger.debug(
                         "reranker_query_caption type=video caption=%s",
                         (effective_query or "")[:80],

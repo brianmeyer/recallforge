@@ -1282,20 +1282,23 @@ class MLXBackend(ModelBackend):
                         msg_content.append(self._video_content(video_path))
                     msg_content.append({"type": "text", "text": prompt})
                     messages = [{"role": "user", "content": msg_content}]
-                    _, video_inputs, video_kwargs = process_vision_info(
+                    image_inputs, video_inputs, video_kwargs = process_vision_info(
                         [messages], return_video_kwargs=True,
                     )
                     normalized_kwargs = dict(video_kwargs or {})
                     fps = normalized_kwargs.get("fps")
                     if isinstance(fps, list):
                         normalized_kwargs["fps"] = fps[0] if fps else None
-                    pt_inputs = self._reranker_processor(
-                        text=[prompt], videos=video_inputs,
-                        return_tensors="pt", padding=True,
-                        **normalized_kwargs,
-                    )
+                    # Pass both images AND videos when both are present
+                    proc_kwargs = {"text": [prompt], "return_tensors": "pt", "padding": True}
+                    if video_inputs:
+                        proc_kwargs["videos"] = video_inputs
+                        proc_kwargs.update(normalized_kwargs)
+                    if image_inputs:
+                        proc_kwargs["images"] = image_inputs
+                    pt_inputs = self._reranker_processor(**proc_kwargs)
                     inputs = {k: v.numpy() if hasattr(v, "numpy") else v for k, v in pt_inputs.items()}
-                    del pt_inputs, video_inputs, messages, video_kwargs, normalized_kwargs
+                    del pt_inputs, video_inputs, image_inputs, messages, video_kwargs, normalized_kwargs
                     gc.collect()
                 except Exception as e:
                     logger.warning(
