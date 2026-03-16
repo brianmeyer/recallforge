@@ -883,8 +883,8 @@ class MLXBackend(ModelBackend):
 
             # Free PyTorch tensors now that we have MLX arrays
             del inputs, video_inputs
-            import gc as _gc
-            _gc.collect()
+            # gc already imported at module level
+            gc.collect()
 
             try:
                 cache = _make_cache(num_layers)
