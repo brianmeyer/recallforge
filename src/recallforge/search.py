@@ -475,8 +475,9 @@ class HybridSearcher:
         # Image queries cannot be expressed as text tokens, so BM25 is skipped.
         # Text-to-image BM25 retrieval still works through search() with ingest-time captions.
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
-        rerank_query = f"image_query:{image_path}"
-        rerank_scores, reranker_path = self._rerank_candidates(candidates, rerank_query)
+        rerank_scores, reranker_path = self._rerank_candidates(
+            candidates, query="", query_image_path=image_path
+        )
         return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 
     def search_video(self, video_path: str) -> List[HybridResult]:
@@ -507,8 +508,9 @@ class HybridSearcher:
 
         # Video queries cannot be expressed as text tokens, so BM25 is skipped.
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
-        rerank_query = f"video_query:{video_path}"
-        rerank_scores, reranker_path = self._rerank_candidates(candidates, rerank_query)
+        rerank_scores, reranker_path = self._rerank_candidates(
+            candidates, query="", query_video_path=video_path
+        )
         return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 
     def _search_vector(self, vector) -> List[HybridResult]:
@@ -735,9 +737,18 @@ class HybridSearcher:
         self,
         candidates: List[SearchResult],
         query: str,
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
     ) -> tuple[Dict[str, float], str]:
         """Rerank candidates with cross-encoder.
-        
+
+        Args:
+            candidates: Candidate results from RRF fusion.
+            query: Text query string. When query_image_path or query_video_path is
+                provided this can be empty ("") — the media IS the query.
+            query_image_path: Path to query image (for image-query searches).
+            query_video_path: Path to query video (for video-query searches).
+
         Returns:
             Tuple of (scores_dict, scoring_path) where scoring_path is one of:
             'text', 'vl_image', 'vl_video', 'fallback', or 'skipped'.
@@ -758,18 +769,55 @@ class HybridSearcher:
         rerank_candidates = candidates_by_rrf[:rerank_limit]
         chunks = [self._select_best_chunk(c) for c in rerank_candidates]
 
-        # Determine reranker scoring path
-        has_image = any(c.get('image_path') for c in chunks)
-        has_video = any(c.get('video_path') for c in chunks)
-        if has_image:
+        # Resolve effective query text when media is the query.
+        # If the backend supports query-side VL reranking it will use the media
+        # directly; otherwise we fall back to a caption of the query media so that
+        # the text cross-encoder still has something meaningful to work with.
+        effective_query = query
+        if (query_image_path or query_video_path) and not effective_query:
+            # Try backend caption as text fallback first; rerank() may override this
+            # if it natively supports query-side VL.
+            try:
+                if query_image_path:
+                    effective_query = self.backend.caption_image(query_image_path)
+                    logger.debug(
+                        "reranker_query_caption type=image caption=%s",
+                        (effective_query or "")[:80],
+                    )
+                elif query_video_path:
+                    # caption_image is image-only; use a short descriptive fallback
+                    effective_query = self.backend.caption_image(query_video_path) if hasattr(
+                        self.backend, "caption_image"
+                    ) else ""
+                    logger.debug(
+                        "reranker_query_caption type=video caption=%s",
+                        (effective_query or "")[:80],
+                    )
+            except (NotImplementedError, Exception) as _cap_err:
+                logger.debug("reranker_query_caption failed: %s", _cap_err)
+                effective_query = ""
+
+        # Determine expected reranker scoring path for telemetry
+        has_doc_image = any(c.get('image_path') for c in chunks)
+        has_doc_video = any(c.get('video_path') for c in chunks)
+        if query_image_path:
             path = "vl_image"
-        elif has_video:
+        elif query_video_path:
+            path = "vl_video"
+        elif has_doc_image:
+            path = "vl_image"
+        elif has_doc_video:
             path = "vl_video"
         else:
             path = "text"
 
         try:
-            scores = self.backend.rerank(query, chunks)
+            scores = self.backend.rerank(
+                effective_query,
+                chunks,
+                query_image_path=query_image_path,
+                query_video_path=query_video_path,
+            )
             logger.debug("reranker_path path=%s candidate_count=%d", path, len(rerank_candidates))
             rerank_scores = {c.filepath: 0.5 for c in candidates}
             rerank_scores.update({c.filepath: s for c, s in zip(rerank_candidates, scores)})

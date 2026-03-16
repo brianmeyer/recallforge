@@ -124,16 +124,30 @@ class ModelBackend(ABC):
         raise NotImplementedError("caption_image is not supported by this backend")
 
     @abstractmethod
-    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
+    def rerank(
+        self,
+        query: str,
+        documents: List[Dict[str, Any]],
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
+    ) -> List[float]:
         """
         Rerank documents for a query.
-        
+
         Args:
-            query: Search query
-            documents: List of document dicts with 'text' or 'text_body' field
-        
+            query: Search query text.  May be empty ("") when query_image_path or
+                query_video_path is provided — in that case the media IS the query.
+            documents: List of document dicts with 'text' or 'text_body' field.
+            query_image_path: Optional path to a query image.  When provided, backends
+                that support VL reranking should cross-encode the visual query against
+                each document.  Backends that do not support VL query-side reranking
+                should ignore this parameter (the caller already falls back to a text
+                caption via ``caption_image``).
+            query_video_path: Optional path to a query video.  Same semantics as
+                query_image_path but for video queries.
+
         Returns:
-            List of relevance scores (0.0 to 1.0) in same order as documents
+            List of relevance scores (0.0 to 1.0) in same order as documents.
         """
         pass
     

@@ -1087,15 +1087,41 @@ class MLXBackend(ModelBackend):
         self, query: str, document: str, instruction: str,
         image_path: Optional[str] = None,
         video_path: Optional[str] = None,
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
     ) -> str:
         """Format a query-document pair as chat input for reranking.
-        
-        When image_path or video_path is provided, the media is included
-        as a vision input so the VL reranker can cross-encode the text query
-        against the actual visual content.
+
+        Document-side media (image_path / video_path):
+            The document being scored contains visual content.  It is embedded in
+            the <Document> section so the reranker can cross-encode text against it.
+
+        Query-side media (query_image_path / query_video_path):
+            The *search query itself* is an image or video.  It is embedded in the
+            <Query> section.  The reranker cross-encodes the visual query against
+            each document's content.  This is the fix for REC-138/REC-139/REC-150:
+            previously the literal string "image_query:/path/to/file.png" was used,
+            which made scores meaningless.
         """
-        doc_content: list = []
-        doc_content.append({"type": "text", "text": "\n<Document>:"})
+        # ---- Query content ------------------------------------------------
+        query_content: list = [{"type": "text", "text": "<Query>:"}]
+        if query_image_path:
+            import os as _os
+            abs_qimg = _os.path.abspath(query_image_path)
+            query_content.append({"type": "image", "image": f"file://{abs_qimg}"})
+            if query:
+                query_content.append({"type": "text", "text": query})
+        elif query_video_path:
+            import os as _os
+            abs_qvid = _os.path.abspath(query_video_path)
+            query_content.append(self._video_content(f"file://{abs_qvid}"))
+            if query:
+                query_content.append({"type": "text", "text": query})
+        else:
+            query_content.append({"type": "text", "text": query or "NULL"})
+
+        # ---- Document content ---------------------------------------------
+        doc_content: list = [{"type": "text", "text": "\n<Document>:"}]
         if image_path:
             doc_content.append({"type": "image", "image": f"file://{image_path}"})
             if document:
@@ -1116,8 +1142,7 @@ class MLXBackend(ModelBackend):
                 "role": "user",
                 "content": [
                     {"type": "text", "text": f"<Instruct>: {instruction}"},
-                    {"type": "text", "text": "<Query>:"},
-                    {"type": "text", "text": query or "NULL"},
+                    *query_content,
                     *doc_content,
                 ],
             },
@@ -1183,11 +1208,18 @@ class MLXBackend(ModelBackend):
         self, prompt: str, num_layers: int,
         image_path: Optional[str] = None,
         video_path: Optional[str] = None,
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
     ) -> tuple[float, str, float]:
         """Run one query-document pair and return (score, scoring_path, raw_score_before_sigmoid).
 
-        When image_path or video_path is provided, processes the media through
-        the VL pipeline so the reranker can cross-encode text against visual content.
+        Handles both document-side and query-side visual inputs:
+          image_path / video_path       — document being reranked contains visual content
+          query_image_path / query_video_path — the search query itself is visual (REC-138/139/150)
+
+        When both are present the prompt already embeds visual tokens for both sides
+        (built by _format_reranker_prompt); we collect all PIL images / video frames and
+        pass them to the processor together so every <image> token is filled.
 
         Returns:
             Tuple of (sigmoid_score, scoring_path, raw_score_before_sigmoid)
@@ -1196,33 +1228,60 @@ class MLXBackend(ModelBackend):
         vl_fallback_triggered = False
         raw_score_before_sigmoid = 0.0
 
+        # Determine which sides have vision content
+        has_any_image = bool(image_path or query_image_path)
+        has_any_video = bool(video_path or query_video_path)
+
         try:
-            if image_path:
+            if has_any_image and not has_any_video:
+                # Pure image path: collect all PIL images in prompt order
+                # (query image first if present, then doc image)
                 from PIL import Image as PILImage
+                images_for_prompt: list = []
                 try:
-                    img = PILImage.open(image_path).convert("RGB")
-                    # VL processor requires PyTorch tensors for image inputs
+                    if query_image_path:
+                        images_for_prompt.append(
+                            PILImage.open(query_image_path).convert("RGB")
+                        )
+                    if image_path:
+                        images_for_prompt.append(
+                            PILImage.open(image_path).convert("RGB")
+                        )
                     pt_inputs = self._reranker_processor(
-                        text=prompt, images=[img], return_tensors="pt",
+                        text=prompt, images=images_for_prompt, return_tensors="pt",
                     )
-                    # Convert to numpy for MLX compatibility
                     inputs = {k: v.numpy() if hasattr(v, "numpy") else v for k, v in pt_inputs.items()}
-                    del pt_inputs, img
+                    del pt_inputs, images_for_prompt
                     gc.collect()
                 except Exception as e:
                     logger.warning(
-                        f"[MLXBackend] Failed to load image for reranking: {e}; "
+                        f"[MLXBackend] Failed to load image(s) for reranking: {e}; "
                         "falling back to text-only"
                     )
                     vl_fallback_triggered = True
                     inputs = self._reranker_processor(text=prompt, return_tensors="np")
-            elif video_path:
+            elif has_any_video:
+                # Video path: build a synthetic messages list that includes all video
+                # (and image) content tokens so qwen_vl_utils can extract the right frames.
                 try:
                     from qwen_vl_utils import process_vision_info
-                    messages = [{"role": "user", "content": [
-                        self._video_content(video_path),
-                        {"type": "text", "text": prompt},
-                    ]}]
+                    msg_content: list = []
+                    if query_image_path:
+                        import os as _os
+                        msg_content.append(
+                            {"type": "image", "image": f"file://{_os.path.abspath(query_image_path)}"}
+                        )
+                    if query_video_path:
+                        import os as _os
+                        msg_content.append(
+                            self._video_content(f"file://{_os.path.abspath(query_video_path)}")
+                        )
+                    if image_path:
+                        msg_content.append({"type": "image", "image": f"file://{image_path}"})
+                    if video_path:
+                        msg_content.append(self._video_content(video_path))
+                    msg_content.append({"type": "text", "text": prompt})
+                    messages = [{"role": "user", "content": msg_content}]
                     _, video_inputs, video_kwargs = process_vision_info(
                         [messages], return_video_kwargs=True,
                     )
@@ -1415,8 +1474,22 @@ class MLXBackend(ModelBackend):
                 raise
             logger.info(f"[MLXBackend] Loaded reranker ({self._quantization})")
 
-    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
+    def rerank(
+        self,
+        query: str,
+        documents: List[Dict[str, Any]],
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
+    ) -> List[float]:
         """Rerank documents for a query.
+
+        Args:
+            query: Text query.  May be empty when query_image_path/query_video_path
+                is set; the media is then used directly as the query side of the
+                cross-encoder prompt.
+            documents: Document dicts (with 'text', optional 'image_path'/'video_path').
+            query_image_path: Path to the query image for image-query searches.
+            query_video_path: Path to the query video for video-query searches.
 
         Returns list of scores. Scoring path information is logged via logger.debug.
         """
@@ -1438,15 +1511,19 @@ class MLXBackend(ModelBackend):
         for idx, doc in enumerate(documents):
             try:
                 text = doc.get("text", "") or doc.get("text_body", "") or ""
-                image_path = doc.get("image_path")
-                video_path = doc.get("video_path")
+                doc_image_path = doc.get("image_path")
+                doc_video_path = doc.get("video_path")
                 prompt = self._format_reranker_prompt(
                     query, text, instruction,
-                    image_path=image_path, video_path=video_path,
+                    image_path=doc_image_path, video_path=doc_video_path,
+                    query_image_path=query_image_path,
+                    query_video_path=query_video_path,
                 )
                 score, scoring_path, raw_score = self._score_reranker_prompt(
                     prompt, num_layers,
-                    image_path=image_path, video_path=video_path,
+                    image_path=doc_image_path, video_path=doc_video_path,
+                    query_image_path=query_image_path,
+                    query_video_path=query_video_path,
                 )
                 scores.append(score)
                 # Log per-document reranker path tracing

@@ -80,7 +80,7 @@ class StubBackend(ModelBackend):
     def embed_videos(self, video_paths: List[str]) -> List[np.ndarray]:
         return [self.embed_video(p) for p in video_paths]
 
-    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
+    def rerank(self, query: str, documents: List[Dict[str, Any]], **kwargs) -> List[float]:
         # Store the documents for verification
         self.rerank_calls.append(documents)
         # Return descending scores

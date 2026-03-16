@@ -430,17 +430,40 @@ class TorchBackend(ModelBackend):
         
         logger.info("[TorchBackend] Loaded reranker on %s with %s", device, dtype)
     
-    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
-        """Rerank documents for a query."""
+    def rerank(
+        self,
+        query: str,
+        documents: List[Dict[str, Any]],
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
+    ) -> List[float]:
+        """Rerank documents for a query.
+
+        Args:
+            query: Text query.  May be empty when query_image_path/query_video_path
+                is provided.
+            documents: Document dicts.
+            query_image_path: Optional query image path (REC-138/139/150).
+            query_video_path: Optional query video path.
+
+        Note: TorchBackend does not yet support query-side VL reranking.
+        The caller (HybridSearcher._rerank_candidates) falls back to captioning
+        the query media and passing the caption as the text query when this backend
+        is active, so scores remain meaningful.
+        """
         if not documents:
             return []
-        
+
         if not self.needs_reranker():
             # Hybrid mode not active, return neutral scores
             return [0.5] * len(documents)
-        
+
         self._load_reranker()
-        
+
+        # Build query dict: prefer caption text already resolved by the caller.
+        # query_image_path / query_video_path are accepted but not used natively here.
+        query_entry: dict = {"text": query}
+
         doc_entries = []
         for d in documents:
             text = d.get("text", "") or d.get("text_body", "") or ""
@@ -452,9 +475,9 @@ class TorchBackend(ModelBackend):
                 doc_entries.append({"text": text, "video": video_path})
             else:
                 doc_entries.append({"text": text})
-        
+
         inputs = {
-            "query": {"text": query},
+            "query": query_entry,
             "documents": doc_entries,
             "instruction": "Given a search query, retrieve relevant candidates that answer the query.",
         }
