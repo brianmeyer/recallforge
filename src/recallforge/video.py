@@ -1,7 +1,7 @@
 """Video extraction helpers for RecallForge.
 
 Frame extraction uses ffmpeg/ffprobe when available.
-Transcript ingestion supports sidecar .srt, .vtt, and .txt files.
+Transcript ingestion supports sidecar .srt, .vtt, .txt, and .transcript.json files.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ VIDEO_EXTENSIONS = {
     ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".mpg", ".mpeg",
 }
 TRANSCRIPT_EXTENSIONS = (".srt", ".vtt", ".txt")
+JSON_TRANSCRIPT_SUFFIX = ".transcript.json"
 
 
 @dataclass
@@ -70,7 +71,65 @@ def _clean_caption_text(text: str) -> str:
 def _load_sidecar_text(sidecar_path: Path) -> List[TranscriptSegment]:
     suffix = sidecar_path.suffix.lower()
     raw = sidecar_path.read_text(encoding="utf-8", errors="replace")
-    stem = sidecar_path.stem
+    stem = sidecar_path.name.removesuffix(JSON_TRANSCRIPT_SUFFIX) if sidecar_path.name.endswith(JSON_TRANSCRIPT_SUFFIX) else sidecar_path.stem
+
+    if sidecar_path.name.endswith(JSON_TRANSCRIPT_SUFFIX):
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+
+        description = ""
+        segment_payloads = []
+        if isinstance(payload, dict):
+            description = _clean_caption_text(str(payload.get("description", "")))
+            raw_segments = payload.get("segments", [])
+            if isinstance(raw_segments, list):
+                segment_payloads = raw_segments
+        elif isinstance(payload, list):
+            segment_payloads = payload
+
+        segments: List[TranscriptSegment] = []
+        for index, segment_payload in enumerate(segment_payloads, start=1):
+            if not isinstance(segment_payload, dict):
+                continue
+            text = _clean_caption_text(str(segment_payload.get("text", "")))
+            if not text:
+                continue
+            start_raw = segment_payload.get("start", segment_payload.get("start_seconds", 0.0)) or 0.0
+            end_raw = segment_payload.get("end", segment_payload.get("end_seconds"))
+            try:
+                start_seconds = float(start_raw)
+            except (TypeError, ValueError):
+                start_seconds = 0.0
+            try:
+                end_seconds = float(end_raw) if end_raw is not None else None
+            except (TypeError, ValueError):
+                end_seconds = None
+
+            segments.append(
+                TranscriptSegment(
+                    logical_path="",
+                    title=f"{stem} transcript {index}",
+                    text=text,
+                    start_seconds=start_seconds,
+                    end_seconds=end_seconds,
+                )
+            )
+
+        if segments:
+            return segments
+        if not description:
+            return []
+        return [
+            TranscriptSegment(
+                logical_path="",
+                title=f"{stem} transcript",
+                text=description,
+                start_seconds=0.0,
+                end_seconds=None,
+            )
+        ]
 
     if suffix == ".txt":
         text = _clean_caption_text(raw)
@@ -140,6 +199,9 @@ def _load_sidecar_text(sidecar_path: Path) -> List[TranscriptSegment]:
 
 def find_transcript_sidecar(video_path: str | Path) -> Optional[Path]:
     path = Path(video_path)
+    json_candidate = path.with_suffix("").with_name(path.stem + JSON_TRANSCRIPT_SUFFIX)
+    if json_candidate.exists() and json_candidate.is_file():
+        return json_candidate
     for suffix in TRANSCRIPT_EXTENSIONS:
         candidate = path.with_suffix(suffix)
         if candidate.exists() and candidate.is_file():
@@ -282,7 +344,7 @@ def extract_video_artifacts(
 
     if not frames and not transcripts:
         raise RuntimeError(
-            "Video ingest requires ffmpeg/ffprobe for frame extraction or a sidecar transcript (.srt/.vtt/.txt)."
+            "Video ingest requires ffmpeg/ffprobe for frame extraction or a sidecar transcript (.srt/.vtt/.txt/.transcript.json)."
         )
 
     return VideoArtifacts(

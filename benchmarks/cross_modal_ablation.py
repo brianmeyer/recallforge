@@ -32,6 +32,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,6 +40,8 @@ from typing import Any, Dict, List, Optional, Tuple
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from recallforge import __version__
 
 CORPUS_DIR = PROJECT_ROOT / "tests" / "uat" / "corpus"
 CORPUS_TEXT = CORPUS_DIR / "text"
@@ -903,10 +906,10 @@ MIXED_MODAL = [
 ]
 
 # ============================================================================
-# TEXT → DOCUMENT QUERIES (15 queries) - for PDF/DOCX/PPTX content
+# TEXT → VIDEO QUERIES (15 queries)
 # ============================================================================
 
-TEXT_TO_DOCUMENT = [
+TEXT_TO_VIDEO = [
     # EASY (6 queries)
     GroundTruth(
         query="architecture walkthrough building tour presentation",
@@ -1104,7 +1107,7 @@ NEGATIVE_CONTROLS = [
 ]
 
 # ── Text → Document queries ──────────────────────────────────
-TEXT_TO_DOCUMENT_REAL = [
+TEXT_TO_DOCUMENT = [
     GroundTruth(
         query="enterprise AI strategy roadmap deployment",
         relevant_paths=["documents/ai_strategy_report.docx"],
@@ -1334,8 +1337,8 @@ ALL_GROUND_TRUTH = (
     VIDEO_TO_VIDEO +
     VIDEO_TO_DOCUMENT +
     MIXED_MODAL + 
+    TEXT_TO_VIDEO +
     TEXT_TO_DOCUMENT +
-    TEXT_TO_DOCUMENT_REAL +
     HARD_NEGATIVES +
     NEGATIVE_CONTROLS
 )
@@ -1353,6 +1356,8 @@ class StageResult:
     stage: str
     category: str
     total_queries: int = 0
+    skipped: bool = False
+    skip_reason: Optional[str] = None
     hits_at_1: int = 0
     hits_at_5: int = 0
     hits_at_10: int = 0
@@ -1616,6 +1621,145 @@ STAGES = [
 ]
 
 
+def _resolve_output_path(output_path: Optional[str]) -> str:
+    """Return the benchmark output path, falling back to the default results file."""
+    return output_path or str(
+        PROJECT_ROOT / "benchmarks" / "results" / "cross_modal_ablation_results.json"
+    )
+
+
+def _build_output_payload(
+    categories: Dict[str, List[GroundTruth]],
+    all_results: Dict[str, Dict[str, StageResult]],
+    *,
+    indexed_items: int,
+    run_status: str,
+    interrupted: bool,
+    completed_stages: List[str],
+    current_stage: Optional[str],
+    current_category: Optional[str],
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Serialize benchmark progress/results into the published JSON payload."""
+    output = {
+        "benchmark": "cross_modal_ablation",
+        "version": __version__,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "run_status": run_status,
+        "interrupted": interrupted,
+        "progress": {
+            "indexed_items": indexed_items,
+            "completed_stages": completed_stages,
+            "completed_categories": {
+                stage_name: sorted(stage_results.keys())
+                for stage_name, stage_results in all_results.items()
+            },
+            "current_stage": current_stage,
+            "current_category": current_category,
+        },
+        "corpus": {
+            "text_docs": len(list((CORPUS_DIR / "text").glob("*.md"))),
+            "images": len(list((CORPUS_DIR / "images").glob("*.png"))),
+            "videos": len(list((CORPUS_DIR / "videos").glob("*.mp4"))),
+            "total_corpus_docs": len(CORPUS_DOCS),
+            "total_queries": len(ALL_GROUND_TRUTH),
+            "queries_by_category": {k: len(v) for k, v in categories.items()},
+        },
+        "categories": {},
+        "stages": {},
+    }
+    if error:
+        output["error"] = error
+
+    for cat_name, queries in categories.items():
+        output["categories"][cat_name] = {
+            "queries": len(queries),
+            "by_difficulty": {
+                "easy": sum(1 for q in queries if q.difficulty == "easy"),
+                "medium": sum(1 for q in queries if q.difficulty == "medium"),
+                "hard": sum(1 for q in queries if q.difficulty == "hard"),
+            }
+        }
+
+    for stage_name, _ in STAGES:
+        output["stages"][stage_name] = {}
+        for cat_name, sr in all_results.get(stage_name, {}).items():
+            output["stages"][stage_name][cat_name] = {
+                "skipped": sr.skipped,
+                "skip_reason": sr.skip_reason,
+                "recall_at_1": None if sr.skipped else round(sr.recall_at_1, 4),
+                "recall_at_5": None if sr.skipped else round(sr.recall_at_5, 4),
+                "recall_at_10": None if sr.skipped else round(sr.recall_at_10, 4),
+                "precision_at_5": None if sr.skipped else round(sr.precision_at_5, 4),
+                "precision_at_10": None if sr.skipped else round(sr.precision_at_10, 4),
+                "ndcg_at_10": None if sr.skipped else round(sr.ndcg_at_10, 4),
+                "mrr": None if sr.skipped else round(sr.mrr, 4),
+                "p50_ms": None if sr.skipped else round(sr.p50_ms, 1),
+                "p95_ms": None if sr.skipped else round(sr.p95_ms, 1),
+                "total_queries": sr.total_queries,
+                "by_difficulty": {
+                    "easy": {
+                        "queries": sr.easy_queries,
+                        "recall_at_1": None if sr.skipped or sr.easy_queries == 0 else round(sr.easy_recall_at_1, 4),
+                        "recall_at_5": None if sr.skipped or sr.easy_queries == 0 else round(sr.easy_recall_at_5, 4),
+                    },
+                    "medium": {
+                        "queries": sr.medium_queries,
+                        "recall_at_1": None if sr.skipped or sr.medium_queries == 0 else round(sr.medium_recall_at_1, 4),
+                        "recall_at_5": None if sr.skipped or sr.medium_queries == 0 else round(sr.medium_recall_at_5, 4),
+                    },
+                    "hard": {
+                        "queries": sr.hard_queries,
+                        "recall_at_1": None if sr.skipped or sr.hard_queries == 0 else round(sr.hard_recall_at_1, 4),
+                        "recall_at_5": None if sr.skipped or sr.hard_queries == 0 else round(sr.hard_recall_at_5, 4),
+                    },
+                },
+                "per_query_results": sr.per_query_results,
+            }
+
+    return output
+
+
+def _write_output_payload(output: Dict[str, Any], save_path: str) -> None:
+    """Write output JSON atomically so interruptions do not leave a partial file."""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    temp_path = f"{save_path}.tmp"
+    with open(temp_path, "w") as f:
+        json.dump(output, f, indent=2)
+    os.replace(temp_path, save_path)
+
+
+def _skip_reason_for_stage(stage_mode: str, queries: List[GroundTruth]) -> Optional[str]:
+    """Return a reason when a stage cannot support a category's query modality."""
+    if stage_mode != "bm25" or not queries:
+        return None
+
+    query_types = {gt.query_type for gt in queries}
+    if "text" in query_types:
+        return None
+    if query_types == {"image"}:
+        return "BM25 can't process image queries"
+    if query_types == {"video"}:
+        return "BM25 can't process video queries"
+    return "BM25 can't process image/video queries"
+
+
+def _result_content_type_for_category(category: str) -> Optional[str]:
+    """Return the expected result modality for category-specific benchmark runs."""
+    mapping = {
+        "text_to_text": "text",
+        "text_to_image": "image",
+        "text_to_video": "video",
+        "image_to_text": "text",
+        "image_to_image": "image",
+        "image_to_video": "video",
+        "video_to_text": "text",
+        "video_to_image": "image",
+        "video_to_video": "video",
+    }
+    return mapping.get(category)
+
+
 def run_search(
     backend,
     storage,
@@ -1628,6 +1772,7 @@ def run_search(
     from recallforge.search import HybridSearcher
 
     t0 = time.perf_counter()
+    result_content_type = _result_content_type_for_category(gt.category)
 
     if gt.query_type == "image" and gt.image_query_path:
         image_path = str(CORPUS_DIR / gt.image_query_path)
@@ -1637,6 +1782,7 @@ def run_search(
             results = storage.search_vec(
                 vector=image_vec,
                 collection=collection,
+                content_type=result_content_type,
                 limit=limit,
             )
         elif stage_mode in ("rrf", "hybrid"):
@@ -1645,6 +1791,7 @@ def run_search(
                 storage=storage,
                 limit=limit,
                 collection=collection,
+                content_type=result_content_type,
             )
             old_mode = backend.get_mode()
             backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
@@ -1663,6 +1810,7 @@ def run_search(
             results = storage.search_vec(
                 vector=video_vec,
                 collection=collection,
+                content_type=result_content_type,
                 limit=limit,
             )
         elif stage_mode in ("rrf", "hybrid"):
@@ -1671,6 +1819,7 @@ def run_search(
                 storage=storage,
                 limit=limit,
                 collection=collection,
+                content_type=result_content_type,
             )
             old_mode = backend.get_mode()
             backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
@@ -1689,6 +1838,7 @@ def run_search(
             results = storage.search_vec(
                 vector=query_vec,
                 collection=collection,
+                content_type=result_content_type,
                 limit=limit,
             )
         elif stage_mode == "bm25":
@@ -1696,6 +1846,7 @@ def run_search(
             results = storage.search_fts(
                 query=gt.query,
                 collection=collection,
+                content_type=result_content_type,
                 limit=limit,
             )
         elif stage_mode == "rrf":
@@ -1705,6 +1856,7 @@ def run_search(
                 storage=storage,
                 limit=limit,
                 collection=collection,
+                content_type=result_content_type,
             )
             old_mode = backend.get_mode()
             backend.set_mode("embed")
@@ -1717,6 +1869,7 @@ def run_search(
                 storage=storage,
                 limit=limit,
                 collection=collection,
+                content_type=result_content_type,
             )
             old_mode = backend.get_mode()
             backend.set_mode("hybrid")
@@ -1763,120 +1916,175 @@ def run_benchmark(
     output_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the full cross-modal ablation benchmark."""
-    
+
     # Group queries by category
     categories = {}
     for gt in ALL_GROUND_TRUTH:
         categories.setdefault(gt.category, []).append(gt)
+    save_path = _resolve_output_path(output_path)
+    indexed = 0
+    completed_stages: List[str] = []
+    current_stage_name: Optional[str] = None
+    current_category_name: Optional[str] = None
+
+    def save_checkpoint(
+        *,
+        run_status: str,
+        interrupted: bool = False,
+        error: Optional[str] = None,
+        announce: bool = False,
+    ) -> Dict[str, Any]:
+        output = _build_output_payload(
+            categories,
+            all_results,
+            indexed_items=indexed,
+            run_status=run_status,
+            interrupted=interrupted,
+            completed_stages=completed_stages.copy(),
+            current_stage=current_stage_name,
+            current_category=current_category_name,
+            error=error,
+        )
+        _write_output_payload(output, save_path)
+        if announce:
+            message = "Saved partial results" if interrupted or run_status != "complete" else "Saved"
+            print(f"\n{message}: {save_path}")
+        return output
 
     print(f"\nQuery categories: {', '.join(f'{k}({len(v)})' for k, v in categories.items())}")
     print(f"Total queries: {len(ALL_GROUND_TRUTH)}")
     print(f"Corpus documents: {len(CORPUS_DOCS)}")
 
-    # Ingest corpus
-    print("\nIndexing corpus...")
-    indexed = ingest_corpus(backend, storage, collection, CORPUS_DIR)
-    print(f"Indexed {indexed} items.\n")
-
-    # Run all stages × categories
     all_results: Dict[str, Dict[str, StageResult]] = {}
 
-    for stage_name, stage_mode in STAGES:
-        all_results[stage_name] = {}
-        # Clear Metal cache between stages to avoid OOM on 16GB devices
-        import gc
-        gc.collect()
-        try:
-            import mlx.core as mx
-            mx.clear_cache()
-        except Exception:
-            pass
+    try:
+        # Ingest corpus
+        print("\nIndexing corpus...")
+        indexed = ingest_corpus(backend, storage, collection, CORPUS_DIR)
+        print(f"Indexed {indexed} items.\n")
+        save_checkpoint(run_status="partial")
 
-        for cat_name, queries in categories.items():
-            # Skip BM25 for image queries (BM25 can't process images)
-            if stage_mode == "bm25" and cat_name == "image_to_text":
+        # Run all stages × categories
+        for stage_name, stage_mode in STAGES:
+            current_stage_name = stage_name
+            current_category_name = None
+            all_results[stage_name] = {}
+
+            # Clear Metal cache between stages to avoid OOM on 16GB devices
+            import gc
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.clear_cache()
+            except Exception:
+                pass
+
+            for cat_name, queries in categories.items():
+                current_category_name = cat_name
                 sr = StageResult(stage=stage_name, category=cat_name, total_queries=len(queries))
-                all_results[stage_name][cat_name] = sr
-                print(f"  {stage_name} for {cat_name}: SKIPPED (BM25 can't embed images)")
-                continue
 
-            effective_mode = stage_mode
-
-            sr = StageResult(stage=stage_name, category=cat_name, total_queries=len(queries))
-            
-            # Track per-difficulty counts
-            for gt in queries:
-                if gt.difficulty == "easy":
-                    sr.easy_queries += 1
-                elif gt.difficulty == "medium":
-                    sr.medium_queries += 1
-                elif gt.difficulty == "hard":
-                    sr.hard_queries += 1
-
-            for gt in queries:
-                try:
-                    results, latency = run_search(
-                        backend, storage, gt,
-                        collection, effective_mode,
-                    )
-                    h1, h5, h10, ndcg, rr, prec_5, prec_10 = evaluate_results(results, gt, CORPUS_DIR)
-                    
-                    sr.hits_at_1 += int(h1)
-                    sr.hits_at_5 += int(h5)
-                    sr.hits_at_10 += int(h10)
-                    sr.ndcg_sum += ndcg
-                    sr.mrr_sum += rr
-                    sr.precision_at_5_sum += prec_5
-                    sr.precision_at_10_sum += prec_10
-                    sr.latencies_ms.append(latency)
-                    
-                    # Track per-difficulty hits
+                # Track per-difficulty counts
+                for gt in queries:
                     if gt.difficulty == "easy":
-                        sr.easy_hits_at_1 += int(h1)
-                        sr.easy_hits_at_5 += int(h5)
+                        sr.easy_queries += 1
                     elif gt.difficulty == "medium":
-                        sr.medium_hits_at_1 += int(h1)
-                        sr.medium_hits_at_5 += int(h5)
+                        sr.medium_queries += 1
                     elif gt.difficulty == "hard":
-                        sr.hard_hits_at_1 += int(h1)
-                        sr.hard_hits_at_5 += int(h5)
-                    
-                    # Store per-query result with audit trail for post-hoc analysis
-                    sr.per_query_results.append({
-                        "query": gt.query,
-                        "query_type": gt.query_type,
-                        "image_query_path": gt.image_query_path,
-                        "relevant_paths": gt.relevant_paths,
-                        "difficulty": gt.difficulty,
-                        "is_negative_control": gt.is_negative_control,
-                        "hit_at_1": h1,
-                        "hit_at_5": h5,
-                        "hit_at_10": h10,
-                        "ndcg": ndcg,
-                        "mrr": rr,
-                        "precision_at_5": prec_5,
-                        "precision_at_10": prec_10,
-                        "latency_ms": latency,
-                        "results": results,
-                    })
-                except Exception as e:
-                    print(f"    ERROR: {gt.query[:50]}... → {e}")
-                    sr.latencies_ms.append(0)
-                    sr.per_query_results.append({
-                        "query": gt.query,
-                        "query_type": gt.query_type,
-                        "image_query_path": gt.image_query_path,
-                        "relevant_paths": gt.relevant_paths,
-                        "difficulty": gt.difficulty,
-                        "is_negative_control": gt.is_negative_control,
-                        "error": str(e),
-                    })
+                        sr.hard_queries += 1
 
-            all_results[stage_name][cat_name] = sr
-            print(f"  {stage_name} for {cat_name} ({len(queries)}q)... "
-                  f"R@1={sr.recall_at_1:.1%} R@5={sr.recall_at_5:.1%} "
-                  f"R@10={sr.recall_at_10:.1%} P@5={sr.precision_at_5:.3f} "
-                  f"NDCG@10={sr.ndcg_at_10:.3f} MRR={sr.mrr:.3f}")
+                skip_reason = _skip_reason_for_stage(stage_mode, queries)
+                if skip_reason:
+                    sr.skipped = True
+                    sr.skip_reason = skip_reason
+                    all_results[stage_name][cat_name] = sr
+                    print(f"  {stage_name} for {cat_name}: SKIPPED ({skip_reason})")
+                    save_checkpoint(run_status="partial")
+                    continue
+
+                effective_mode = stage_mode
+
+                for gt in queries:
+                    try:
+                        results, latency = run_search(
+                            backend, storage, gt,
+                            collection, effective_mode,
+                        )
+                        h1, h5, h10, ndcg, rr, prec_5, prec_10 = evaluate_results(results, gt, CORPUS_DIR)
+
+                        sr.hits_at_1 += int(h1)
+                        sr.hits_at_5 += int(h5)
+                        sr.hits_at_10 += int(h10)
+                        sr.ndcg_sum += ndcg
+                        sr.mrr_sum += rr
+                        sr.precision_at_5_sum += prec_5
+                        sr.precision_at_10_sum += prec_10
+                        sr.latencies_ms.append(latency)
+
+                        # Track per-difficulty hits
+                        if gt.difficulty == "easy":
+                            sr.easy_hits_at_1 += int(h1)
+                            sr.easy_hits_at_5 += int(h5)
+                        elif gt.difficulty == "medium":
+                            sr.medium_hits_at_1 += int(h1)
+                            sr.medium_hits_at_5 += int(h5)
+                        elif gt.difficulty == "hard":
+                            sr.hard_hits_at_1 += int(h1)
+                            sr.hard_hits_at_5 += int(h5)
+
+                        # Store per-query result with audit trail for post-hoc analysis
+                        sr.per_query_results.append({
+                            "query": gt.query,
+                            "query_type": gt.query_type,
+                            "image_query_path": gt.image_query_path,
+                            "relevant_paths": gt.relevant_paths,
+                            "difficulty": gt.difficulty,
+                            "is_negative_control": gt.is_negative_control,
+                            "hit_at_1": h1,
+                            "hit_at_5": h5,
+                            "hit_at_10": h10,
+                            "ndcg": ndcg,
+                            "mrr": rr,
+                            "precision_at_5": prec_5,
+                            "precision_at_10": prec_10,
+                            "latency_ms": latency,
+                            "results": results,
+                        })
+                    except Exception as e:
+                        print(f"    ERROR: {gt.query[:50]}... → {e}")
+                        sr.latencies_ms.append(0)
+                        sr.per_query_results.append({
+                            "query": gt.query,
+                            "query_type": gt.query_type,
+                            "image_query_path": gt.image_query_path,
+                            "relevant_paths": gt.relevant_paths,
+                            "difficulty": gt.difficulty,
+                            "is_negative_control": gt.is_negative_control,
+                            "error": str(e),
+                        })
+
+                all_results[stage_name][cat_name] = sr
+                print(f"  {stage_name} for {cat_name} ({len(queries)}q)... "
+                      f"R@1={sr.recall_at_1:.1%} R@5={sr.recall_at_5:.1%} "
+                      f"R@10={sr.recall_at_10:.1%} P@5={sr.precision_at_5:.3f} "
+                      f"NDCG@10={sr.ndcg_at_10:.3f} MRR={sr.mrr:.3f}")
+                save_checkpoint(run_status="partial")
+
+            completed_stages.append(stage_name)
+            current_category_name = None
+            save_checkpoint(run_status="partial")
+
+    except KeyboardInterrupt:
+        save_checkpoint(
+            run_status="partial",
+            interrupted=True,
+            error="Interrupted by user",
+            announce=True,
+        )
+        raise
+
+    current_stage_name = None
+    current_category_name = None
+    complete_output = save_checkpoint(run_status="complete", announce=True)
 
     # Print results tables
     print("\n" + "=" * 120)
@@ -1892,6 +2100,9 @@ def run_benchmark(
             sr = all_results[stage_name][cat_name]
             if sr.total_queries == 0:
                 continue
+            if sr.skipped:
+                print(f"{stage_name:<35} SKIPPED ({sr.skip_reason})")
+                continue
             print(f"{stage_name:<35} "
                   f"{sr.recall_at_1:>5.1%} {sr.recall_at_5:>5.1%} {sr.recall_at_10:>5.1%} "
                   f"{sr.precision_at_5:>6.3f} {sr.precision_at_10:>6.3f} "
@@ -1904,11 +2115,14 @@ def run_benchmark(
     print(f"{'=' * 120}")
     print(f"{'Category':<20} {'Stage':<30} {'Easy':>12} {'Medium':>12} {'Hard':>12}")
     print("-" * 100)
-    
+
     for cat_name in categories:
         for stage_name, _ in STAGES:
             sr = all_results[stage_name][cat_name]
             if sr.total_queries == 0:
+                continue
+            if sr.skipped:
+                print(f"{cat_name:<20} {stage_name:<30} {'SKIPPED':>12}")
                 continue
             easy_str = f"{sr.easy_recall_at_1:.1%}/{sr.easy_recall_at_5:.1%}" if sr.easy_queries > 0 else "N/A"
             med_str = f"{sr.medium_recall_at_1:.1%}/{sr.medium_recall_at_5:.1%}" if sr.medium_queries > 0 else "N/A"
@@ -1935,76 +2149,7 @@ def run_benchmark(
                   f"{vec.ndcg_at_10:>8.3f} {rerank.ndcg_at_10:>11.3f} "
                   f"{delta_ndcg:>+7.3f}")
 
-    # Save results
-    output = {
-        "benchmark": "cross_modal_ablation",
-        "version": "0.2.0",
-        "corpus": {
-            "text_docs": len(list((CORPUS_DIR / "text").glob("*.md"))),
-            "images": len(list((CORPUS_DIR / "images").glob("*.png"))),
-            "videos": len(list((CORPUS_DIR / "videos").glob("*.mp4"))),
-            "total_corpus_docs": len(CORPUS_DOCS),
-            "total_queries": len(ALL_GROUND_TRUTH),
-            "queries_by_category": {k: len(v) for k, v in categories.items()},
-        },
-        "categories": {},
-        "stages": {},
-    }
-
-    for cat_name, queries in categories.items():
-        output["categories"][cat_name] = {
-            "queries": len(queries),
-            "by_difficulty": {
-                "easy": sum(1 for q in queries if q.difficulty == "easy"),
-                "medium": sum(1 for q in queries if q.difficulty == "medium"),
-                "hard": sum(1 for q in queries if q.difficulty == "hard"),
-            }
-        }
-
-    for stage_name, _ in STAGES:
-        output["stages"][stage_name] = {}
-        for cat_name in categories:
-            sr = all_results[stage_name][cat_name]
-            output["stages"][stage_name][cat_name] = {
-                "recall_at_1": round(sr.recall_at_1, 4),
-                "recall_at_5": round(sr.recall_at_5, 4),
-                "recall_at_10": round(sr.recall_at_10, 4),
-                "precision_at_5": round(sr.precision_at_5, 4),
-                "precision_at_10": round(sr.precision_at_10, 4),
-                "ndcg_at_10": round(sr.ndcg_at_10, 4),
-                "mrr": round(sr.mrr, 4),
-                "p50_ms": round(sr.p50_ms, 1),
-                "p95_ms": round(sr.p95_ms, 1),
-                "total_queries": sr.total_queries,
-                "by_difficulty": {
-                    "easy": {
-                        "queries": sr.easy_queries,
-                        "recall_at_1": round(sr.easy_recall_at_1, 4) if sr.easy_queries > 0 else None,
-                        "recall_at_5": round(sr.easy_recall_at_5, 4) if sr.easy_queries > 0 else None,
-                    },
-                    "medium": {
-                        "queries": sr.medium_queries,
-                        "recall_at_1": round(sr.medium_recall_at_1, 4) if sr.medium_queries > 0 else None,
-                        "recall_at_5": round(sr.medium_recall_at_5, 4) if sr.medium_queries > 0 else None,
-                    },
-                    "hard": {
-                        "queries": sr.hard_queries,
-                        "recall_at_1": round(sr.hard_recall_at_1, 4) if sr.hard_queries > 0 else None,
-                        "recall_at_5": round(sr.hard_recall_at_5, 4) if sr.hard_queries > 0 else None,
-                    },
-                },
-                "per_query_results": sr.per_query_results,
-            }
-
-    save_path = output_path or str(
-        PROJECT_ROOT / "benchmarks" / "results" / "cross_modal_ablation_results.json"
-    )
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    with open(save_path, "w") as f:
-        json.dump(output, f, indent=2)
-    print(f"\nSaved: {save_path}")
-
-    return output
+    return complete_output
 
 
 # ---------------------------------------------------------------------------

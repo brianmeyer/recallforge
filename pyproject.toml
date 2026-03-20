@@ -5,7 +5,7 @@ description = "Local multimodal memory for AI agents — cross-modal vision-lang
 authors = [{name = "Brian Meyer", email = "brian@recallforge.dev"}]
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
-license = {text = "MIT"}
+license = "MIT"
 keywords = [
     "search", "semantic", "embedding", "vision-language", "cross-modal",
     "mcp", "agent-memory", "local-first", "multimodal", "retrieval",
@@ -14,10 +14,8 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Text Processing :: Indexing",
     "Typing :: Typed",
@@ -52,6 +50,10 @@ mlx = [
     "torchvision>=0.15,<1.0",
 ]
 docs = ["pypdf>=5.0,<6.0"]
+server = [
+    "starlette>=0.36,<1.0",
+    "uvicorn>=0.30,<1.0",
+]
 cuda = [
     "torch>=2.0,<3.0",
     "torchvision>=0.15,<1.0",
@@ -63,7 +65,7 @@ dev = [
     "pytest>=8.0,<9.0",
     "pytest-asyncio>=0.24,<1.0",
 ]
-all = ["recallforge[torch,mlx,docs]"]
+all = ["recallforge[torch,mlx,docs,server]"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

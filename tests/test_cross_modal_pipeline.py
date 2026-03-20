@@ -493,14 +493,18 @@ class TestMediaCompensationInRRF(unittest.TestCase):
     def setUp(self):
         self.backend = StubBackend()
         self.storage = StubStorage()
-        self.searcher = HybridSearcher(
+
+    def _make_searcher(self, content_type=None):
+        return HybridSearcher(
             backend=self.backend,
             storage=self.storage,
             rrf_k=60,
+            content_type=content_type,
         )
 
     def test_image_candidates_get_rrf_boost(self):
         """Image candidates should get boosted RRF score when BM25 is present."""
+        searcher = self._make_searcher(content_type="image")
         # Create results where image only appears in vector (not BM25)
         fts_results = [
             _make_search_result("text1.md", 0.9, "fts", "text"),
@@ -515,7 +519,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = searcher._reciprocal_rank_fusion(all_results)
 
         # Both should be present
         text_doc = next((r for r in fused if r.filepath == "text1.md"), None)
@@ -531,6 +535,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
 
     def test_video_candidates_get_rrf_boost(self):
         """Video candidates should get boosted RRF score when BM25 is present."""
+        searcher = self._make_searcher(content_type="video")
         fts_results = [
             _make_search_result("text1.md", 0.9, "fts", "text"),
         ]
@@ -544,7 +549,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = searcher._reciprocal_rank_fusion(all_results)
 
         vid_doc = next((r for r in fused if r.filepath == "video1.mp4"), None)
         self.assertIsNotNone(vid_doc)
@@ -552,6 +557,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
 
     def test_text_candidates_do_not_get_media_boost(self):
         """Text candidates should not receive media compensation boost."""
+        searcher = self._make_searcher()
         fts_results = [
             _make_search_result("text1.md", 0.9, "fts", "text"),
         ]
@@ -564,7 +570,7 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = searcher._reciprocal_rank_fusion(all_results)
 
         text_doc = fused[0]
         # Text appears in both lists, so score = 2.0/61 + 2.0/61 = 0.0656
@@ -572,10 +578,8 @@ class TestMediaCompensationInRRF(unittest.TestCase):
         self.assertAlmostEqual(text_doc.score, expected_score, places=5)
 
     def test_media_boost_calculation(self):
-        """Verify media boost calculation is correct for single-source media."""
-        # With default weights: FTS=2.0, vec=2.0
-        # total_weight = 4.0, bm25_weight = 2.0, non_bm25_weight = 2.0
-        # media_boost = 4.0 / 2.0 = 2.0
+        """Explicit media-targeted searches should apply compensation."""
+        searcher = self._make_searcher(content_type="image")
 
         # Image only appears in vector (not FTS) - this is when boost applies
         fts_results = [
@@ -590,17 +594,32 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, audit = searcher._reciprocal_rank_fusion(all_results)
         img_doc = next(r for r in fused if r.filepath == "image1.jpg")
 
-        # Image only in vec, so it gets boosted by media_boost.
-        # Verify boosted score is greater than the unboosted base.
-        unboosted_base = 2.0 / 61  # weight / (k + rank + 1)
-        self.assertGreater(img_doc.score, unboosted_base,
-                           "Image RRF score should be boosted above unboosted base")
+        unboosted_base = 1.5 / 61
+        expected_boost = (2.5 + 1.5) / 1.5
+
+        self.assertAlmostEqual(img_doc.score, unboosted_base * expected_boost, places=5)
+        self.assertTrue(audit["image1.jpg"]["media_compensation"])
+
+    def test_no_boost_when_target_modality_unspecified(self):
+        """Mixed or generic searches should not apply blanket media compensation."""
+        searcher = self._make_searcher()
+        all_results = {
+            "original_fts": [_make_search_result("text1.md", 0.9, "fts", "text")],
+            "original_vec": [_make_search_result("image1.jpg", 0.9, "vec", "image")],
+        }
+
+        fused, audit = searcher._reciprocal_rank_fusion(all_results)
+        img_doc = next(r for r in fused if r.filepath == "image1.jpg")
+
+        self.assertAlmostEqual(img_doc.score, 2.0 / 61, places=5)
+        self.assertFalse(audit["image1.jpg"]["media_compensation"])
 
     def test_no_boost_when_no_bm25(self):
         """Media compensation should not apply when there's no BM25 list."""
+        searcher = self._make_searcher(content_type="image")
         # Only vector results, no FTS
         vec_results = [
             _make_search_result("image1.jpg", 0.9, "vec", "image"),
@@ -610,12 +629,12 @@ class TestMediaCompensationInRRF(unittest.TestCase):
             "original_vec": vec_results,
         }
 
-        fused, _audit = self.searcher._reciprocal_rank_fusion(all_results)
+        fused, _audit = searcher._reciprocal_rank_fusion(all_results)
         img_doc = fused[0]
 
         # No BM25 present, so no media boost
-        # Score should be: 2.0 / (60 + 0 + 1) = 0.0328
-        expected_score = 2.0 / 61
+        # Image-targeted searches still use the modality-aware vec weight.
+        expected_score = 1.5 / 61
         self.assertAlmostEqual(img_doc.score, expected_score, places=5)
 
 

@@ -134,17 +134,32 @@ Query
   │                  ├── BM25
   │                  └── Vector
   │
-  ├──[all modes]──> RRF fusion (k=60, weighted)
+  ├──[all modes]──> RRF fusion (k=60, weighted, modality-aware)
   │
   ├──[hybrid mode]─> Cross-encoder reranking
   │
   └──[all modes]──> Score blending → top-K HybridResult
 ```
 
+#### RRF Defaults
+
+- Text-targeted searches lean vector-first by default: `original_vec=2.5`, `original_fts=1.5`
+- Image/video-targeted searches lean BM25-caption/transcript support: `original_vec=1.5`, `original_fts=2.5`
+- Expanded query branches inherit their parent weight at `0.5x`
+- Intent-specific weights (`exact_lookup`, `semantic`, `broad`) override the defaults when explicitly requested
+- Media compensation only applies for explicit image/video target searches, and only when a media result never appeared in any BM25/FTS list
+
 #### Score Blending
-- RRF rank 1-3: 75% RRF + 25% reranker
-- RRF rank 4-10: 60% RRF + 40% reranker
-- RRF rank 11+: 40% RRF + 60% reranker
+
+- Text-only rerank path:
+  - RRF rank 1-3: 90% RRF + 10% reranker
+  - RRF rank 4-10: 85% RRF + 15% reranker
+  - RRF rank 11+: 75% RRF + 25% reranker
+- Cross-modal or media-target rerank path:
+  - RRF rank 1-3: 75% RRF + 25% reranker
+  - RRF rank 4-10: 60% RRF + 40% reranker
+  - RRF rank 11+: 40% RRF + 60% reranker
+- `embed` mode skips reranking entirely and returns fused RRF scores directly
 
 ### 4. Auto Backend Selection (`src/recallforge/__init__.py`)
 
@@ -164,11 +179,17 @@ backend = recallforge.get_backend()
 ### 5. MCP Server (`src/recallforge/server.py`)
 
 ```
-Tools: search, search_fts, search_vec, index_document, index_image, status, rebuild_fts
-Transport: stdio
+Tools: 20 MCP tools across search, ingest, memory, collection admin, batch, and runtime config
+Transport: stdio (default) or HTTP/SSE (`/health`, `/sse`, `/messages/`)
 Startup: backend.warm_up() for predictable latency
 Signals: SIGTERM/SIGINT graceful shutdown
 ```
+
+Key runtime details:
+
+- Blocking tool work is routed through a bounded async semaphore to avoid overloading local model/runtime resources
+- HTTP mode requires the optional `server` extra (`starlette` + `uvicorn`)
+- Runtime-safe config changes (`mode`, `collection`, `rerank_top_k`, `caption_media`, model IDs) are exposed through `get_config` / `set_config`
 
 ## Storage Layout
 

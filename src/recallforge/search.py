@@ -455,6 +455,67 @@ class HybridSearcher:
         self.cache.put(cache_key, vector)
         return vector
 
+    def _caption_image_query(self, image_path: str) -> str:
+        """Caption an image query for BM25 probing when the backend supports it."""
+        try:
+            caption = self.backend.caption_image(image_path)
+        except (NotImplementedError, Exception) as exc:
+            logger.debug("image_query_caption failed: %s", exc)
+            return ""
+        return (caption or "").strip()
+
+    def _caption_video_query(self, video_path: str) -> str:
+        """Extract a representative frame and caption it for BM25 probing."""
+        try:
+            import subprocess
+            import tempfile
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                frame_path = os.path.join(tmpdir, "frame.jpg")
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        video_path,
+                        "-vf",
+                        "select=eq(n\\,0)",
+                        "-vframes",
+                        "1",
+                        frame_path,
+                    ],
+                    capture_output=True,
+                    timeout=10,
+                )
+                if os.path.exists(frame_path):
+                    return self._caption_image_query(frame_path)
+        except Exception as exc:
+            logger.warning("video query caption failed (is ffmpeg installed?): %s", exc)
+        return ""
+
+    def _bm25_results_for_query_media(
+        self,
+        *,
+        image_path: Optional[str] = None,
+        video_path: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Generate a text probe from query media and run BM25 when possible."""
+        query_text = ""
+        if image_path:
+            query_text = self._caption_image_query(image_path)
+        elif video_path:
+            query_text = self._caption_video_query(video_path)
+
+        if not query_text:
+            return []
+
+        logger.debug(
+            "media_bm25_probe type=%s caption=%s",
+            "image" if image_path else "video",
+            query_text[:100],
+        )
+        return self._bm25_probe(query_text)
+
     def search_image(self, image_path: str) -> List[HybridResult]:
         """Run image-query search through hybrid pipeline (RRF + optional rerank)."""
         # Image query always contributes vector candidates.
@@ -472,8 +533,10 @@ class HybridSearcher:
             )
         }
 
-        # Image queries cannot be expressed as text tokens, so BM25 is skipped.
-        # Text-to-image BM25 retrieval still works through search() with ingest-time captions.
+        bm25_results = self._bm25_results_for_query_media(image_path=image_path)
+        if bm25_results:
+            all_results["original_fts"] = bm25_results
+
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_scores, reranker_path = self._rerank_candidates(
             candidates, query="", query_image_path=image_path
@@ -506,7 +569,10 @@ class HybridSearcher:
             )
         }
 
-        # Video queries cannot be expressed as text tokens, so BM25 is skipped.
+        bm25_results = self._bm25_results_for_query_media(video_path=video_path)
+        if bm25_results:
+            all_results["original_fts"] = bm25_results
+
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_scores, reranker_path = self._rerank_candidates(
             candidates, query="", query_video_path=video_path
@@ -584,6 +650,14 @@ class HybridSearcher:
                     all_results[key] = []
 
         return all_results
+
+    def _default_rrf_parent_weight(self, source_name: str) -> float:
+        """Return the default RRF weight for a primary source."""
+        if self.content_type == "text":
+            return {"original_vec": 2.5, "original_fts": 1.5}.get(source_name, 2.0)
+        if self.content_type in ("image", "video"):
+            return {"original_vec": 1.5, "original_fts": 2.5}.get(source_name, 2.0)
+        return 2.0
     
     def _reciprocal_rank_fusion(
         self,
@@ -618,14 +692,15 @@ class HybridSearcher:
                     # to avoid diluting the primary signal
                     weights[name] = parent_weight * 0.5
         else:
-            # Default weights: original sources = 2.0, expansions = 1.0
+            # Default weights are result-modality aware for category-specific runs:
+            # text results lean vector, image/video results lean BM25 captions.
             for name in list_names:
                 if re.search(r"_exp\d+$", name):
                     parent = re.sub(r"_exp\d+$", "", name)
-                    parent_weight = weights.get(parent, 2.0)
+                    parent_weight = weights.get(parent, self._default_rrf_parent_weight(parent))
                     weights[name] = parent_weight * 0.5
                 else:
-                    weights[name] = 2.0
+                    weights[name] = self._default_rrf_parent_weight(name)
 
         # Log blend weights applied
         for name, weight in weights.items():
@@ -660,7 +735,8 @@ class HybridSearcher:
         # Only apply boost to media that did NOT appear in any BM25/FTS list
         # (i.e., has no text_body/caption). Captioned media CAN appear in BM25
         # and should not get an unconditional modality boost.
-        if has_bm25:
+        should_apply_media_compensation = self.content_type in ("image", "video")
+        if has_bm25 and should_apply_media_compensation:
             total_weight = sum(weights.values())
             bm25_weight = sum(
                 w for name, w in weights.items()
@@ -900,6 +976,10 @@ class HybridSearcher:
         rerank_norm = {}
         rerank_norm.update(text_rerank_norm)
         rerank_norm.update(media_rerank_norm)
+        all_text_results = all(
+            result_types.get(fp, "text") not in ("image", "video")
+            for fp in rrf_raw
+        )
 
         for rank, result in enumerate(rrf_results):
             rrf_rank = rank + 1
@@ -909,13 +989,22 @@ class HybridSearcher:
 
             if has_meaningful_rerank:
                 # Blend RRF with reranker scores
-                # RRF weight: higher for top results
-                if rrf_rank <= 3:
-                    rrf_weight = 0.75
-                elif rrf_rank <= 10:
-                    rrf_weight = 0.60
+                # Text-only reranking should be conservative; the VL reranker is
+                # stronger as a refinement layer for cross-modal candidates.
+                if all_text_results and reranker_path == "text":
+                    if rrf_rank <= 3:
+                        rrf_weight = 0.90
+                    elif rrf_rank <= 10:
+                        rrf_weight = 0.85
+                    else:
+                        rrf_weight = 0.75
                 else:
-                    rrf_weight = 0.40
+                    if rrf_rank <= 3:
+                        rrf_weight = 0.75
+                    elif rrf_rank <= 10:
+                        rrf_weight = 0.60
+                    else:
+                        rrf_weight = 0.40
 
                 blended = rrf_weight * rrf_score + (1 - rrf_weight) * rerank_score
             else:

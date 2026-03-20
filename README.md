@@ -32,7 +32,7 @@ One query. Any modality. All local.
 | Video support [Beta] | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
-| MCP-native | ✅ 16 tools | ❌ | ❌ | ❌ | ❌ |
+| MCP-native | ✅ 20 tools | ❌ | ❌ | ❌ | ❌ |
 | 100% local | ✅ | ✅ | ⚠️ Cloud default | ✅ | ✅ Docker |
 | Apple Silicon optimized | ✅ MLX 4-bit | ❌ | ❌ | ❌ | ❌ |
 | Cloud option | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -60,6 +60,8 @@ Each stage of the pipeline improves retrieval quality. The reranker is the quali
 The reranker delivers **+20.7% R@1 over RRF fusion** and pushes R@10 to 97.8%. Embed mode gives you 20ms searches for speed-sensitive workloads. Hybrid mode gives you 85.9% R@1 when quality matters.
 
 *Benchmark categories: text_only (30 queries), image_only (30 queries), long_query (12 queries), typo_query (20 queries). See `benchmarks/results/pipeline_ablation_modality_results.json` for full breakdown.*
+
+For release validation, use `benchmarks/cross_modal_ablation.py`. It now checkpoints JSON output as it runs, so long MLX benchmark sessions still leave behind a partial artifact if interrupted.
 
 ### Latency & resource usage
 
@@ -89,6 +91,7 @@ For transparency: raw embedding quality on the standard COCO benchmark (1,000 im
 
 ```bash
 pip install recallforge[mlx]       # Apple Silicon (recommended, 4-bit quantization)
+pip install "recallforge[mlx,server]"  # Apple Silicon + HTTP/SSE server
 pip install recallforge[cuda]      # NVIDIA GPU
 pip install recallforge[torch]     # CPU / other PyTorch targets
 pip install recallforge[docs]      # add richer PDF extraction (optional)
@@ -96,6 +99,7 @@ pip install recallforge[docs]      # add richer PDF extraction (optional)
 
 > **Note:** `pip install recallforge` installs the core without a backend.
 > You need at least one of `[mlx]`, `[cuda]`, or `[torch]` to run inference.
+> Add `[server]` only when you want HTTP/SSE transport (`recallforge serve --http`).
 
 From source:
 
@@ -128,13 +132,19 @@ RecallForge is designed as a **Model Context Protocol server for AI agents**. Co
 }
 ```
 
-Run manually:
+Run manually (stdio):
 
 ```bash
 recallforge serve --mode embed --backend mlx --quantize 4bit
 ```
 
-Exposes **16 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
+Run over HTTP/SSE:
+
+```bash
+recallforge serve --http --host 127.0.0.1 --port 7433 --mode embed
+```
+
+RecallForge now exposes **20 MCP tools** across search, ingest, memory, collection admin, and runtime config. HTTP/SSE mode also exposes `/health`, `/sse`, and `/messages/`.
 
 See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 
@@ -257,7 +267,7 @@ src/recallforge/
 │   └── lancedb_backend.py # LanceDB + Tantivy FTS
 ├── cache.py              # LRU embedding cache
 ├── search.py             # Hybrid search pipeline (BM25 + vector + RRF)
-├── server.py             # MCP server (16 tools)
+├── server.py             # MCP server (20 tools, stdio + HTTP/SSE)
 ├── documents.py          # PDF/DOCX/PPTX extraction
 ├── video.py              # Frame/transcript extraction
 ├── watch_folder.py       # Folder monitoring with dedup
@@ -270,6 +280,12 @@ src/recallforge/
 pytest tests/ -m "not live"    # Unit tests (no model download needed)
 pytest tests/ -m live -v       # Integration tests (requires models)
 ```
+
+## Release Workflow
+
+CI in `.github/workflows/ci.yml` runs the test matrix, builds distributions, runs `twine check`, smoke-tests wheel installation, and smoke-tests the HTTP server extra from the built wheel. Tagged pushes matching `v*` trigger `.github/workflows/publish.yml`, which publishes to PyPI with trusted publishing.
+
+Before tagging a release, run the repo test suite plus the install/CLI UAT scripts, and if you are on a capable host, run the live integration slice and expanded benchmark. The full checklist lives in [docs/RELEASE.md](docs/RELEASE.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full development guidelines.
 

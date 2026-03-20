@@ -1082,12 +1082,43 @@ class MLXBackend(ModelBackend):
 
         raise RuntimeError("Unable to locate reranker score head (score_linear/lm_head)")
 
+    def _render_reranker_prompt(
+        self,
+        messages: List[Dict[str, Any]],
+        query: str,
+        document: str,
+        instruction: str,
+    ) -> tuple[str, bool]:
+        """Render reranker chat messages to text and report whether vision tokens survived."""
+        try:
+            return (
+                self._reranker_processor.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                ),
+                True,
+            )
+        except Exception:
+            # Keep a manual fallback so reranking still works even if template API differs.
+            return (
+                (
+                    f"<|im_start|>system\n{self._RERANK_SYSTEM}<|im_end|>\n"
+                    "<|im_start|>user\n"
+                    f"<Instruct>: {instruction}\n<Query>:\n{query or 'NULL'}\n"
+                    f"<Document>:\n{document or 'NULL'}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                ),
+                False,
+            )
+
     def _format_reranker_prompt(
         self, query: str, document: str, instruction: str,
         image_path: Optional[str] = None,
         video_path: Optional[str] = None,
         query_image_path: Optional[str] = None,
         query_video_path: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Format a query-document pair as chat input for reranking.
 
@@ -1102,37 +1133,61 @@ class MLXBackend(ModelBackend):
             previously the literal string "image_query:/path/to/file.png" was used,
             which made scores meaningless.
         """
-        # ---- Query content ------------------------------------------------
+        messages = messages or self._build_reranker_messages(
+            query,
+            document,
+            instruction,
+            image_path=image_path,
+            video_path=video_path,
+            query_image_path=query_image_path,
+            query_video_path=query_video_path,
+        )
+
+        prompt, _ = self._render_reranker_prompt(messages, query, document, instruction)
+        return prompt
+
+    def _as_file_uri(self, path: str) -> str:
+        """Normalize local media paths for Qwen chat-template vision blocks."""
+        if path.startswith("file://"):
+            return path
+        return f"file://{os.path.abspath(path)}"
+
+    def _build_reranker_messages(
+        self,
+        query: str,
+        document: str,
+        instruction: str,
+        image_path: Optional[str] = None,
+        video_path: Optional[str] = None,
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Build the multimodal chat messages used for reranker prompting."""
         query_content: list = [{"type": "text", "text": "<Query>:"}]
         if query_image_path:
-            import os as _os
-            abs_qimg = _os.path.abspath(query_image_path)
-            query_content.append({"type": "image", "image": f"file://{abs_qimg}"})
+            query_content.append({"type": "image", "image": self._as_file_uri(query_image_path)})
             if query:
                 query_content.append({"type": "text", "text": query})
         elif query_video_path:
-            import os as _os
-            abs_qvid = _os.path.abspath(query_video_path)
-            query_content.append(self._video_content(f"file://{abs_qvid}"))
+            query_content.append(self._video_content(self._as_file_uri(query_video_path)))
             if query:
                 query_content.append({"type": "text", "text": query})
         else:
             query_content.append({"type": "text", "text": query or "NULL"})
 
-        # ---- Document content ---------------------------------------------
         doc_content: list = [{"type": "text", "text": "\n<Document>:"}]
         if image_path:
-            doc_content.append({"type": "image", "image": f"file://{image_path}"})
+            doc_content.append({"type": "image", "image": self._as_file_uri(image_path)})
             if document:
                 doc_content.append({"type": "text", "text": document})
         elif video_path:
-            doc_content.append(self._video_content(f"file://{video_path}"))
+            doc_content.append(self._video_content(self._as_file_uri(video_path)))
             if document:
                 doc_content.append({"type": "text", "text": document})
         else:
             doc_content.append({"type": "text", "text": document or "NULL"})
 
-        messages = [
+        return [
             {
                 "role": "system",
                 "content": [{"type": "text", "text": self._RERANK_SYSTEM}],
@@ -1147,21 +1202,51 @@ class MLXBackend(ModelBackend):
             },
         ]
 
-        try:
-            return self._reranker_processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        except Exception:
-            # Keep a manual fallback so reranking still works even if template API differs.
-            return (
-                f"<|im_start|>system\n{self._RERANK_SYSTEM}<|im_end|>\n"
-                "<|im_start|>user\n"
-                f"<Instruct>: {instruction}\n<Query>:\n{query or 'NULL'}\n"
-                f"<Document>:\n{document or 'NULL'}<|im_end|>\n"
-                "<|im_start|>assistant\n"
-            )
+    def _build_reranker_processor_inputs(
+        self,
+        prompt: str,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Build reranker processor inputs from the same message structure as the prompt."""
+        if not messages:
+            return self._reranker_processor(text=prompt, return_tensors="np")
+
+        user_messages = [m for m in messages if m.get("role") == "user"]
+        content_blocks = []
+        for message in user_messages:
+            content_blocks.extend(message.get("content", []))
+
+        has_vision = any(
+            block.get("type") in {"image", "video"}
+            for block in content_blocks
+            if isinstance(block, dict)
+        )
+        if not has_vision:
+            return self._reranker_processor(text=prompt, return_tensors="np")
+
+        from qwen_vl_utils import process_vision_info
+
+        image_inputs, video_inputs, video_kwargs = process_vision_info(
+            [user_messages],
+            return_video_kwargs=True,
+        )
+        normalized_video_kwargs = dict(video_kwargs or {})
+        fps = normalized_video_kwargs.get("fps")
+        if isinstance(fps, list):
+            normalized_video_kwargs["fps"] = fps[0] if fps else None
+
+        proc_kwargs = {"text": [prompt], "return_tensors": "pt", "padding": True}
+        if image_inputs:
+            proc_kwargs["images"] = image_inputs
+        if video_inputs:
+            proc_kwargs["videos"] = video_inputs
+            proc_kwargs.update(normalized_video_kwargs)
+
+        pt_inputs = self._reranker_processor(**proc_kwargs)
+        return {
+            key: value.numpy() if hasattr(value, "numpy") else value
+            for key, value in pt_inputs.items()
+        }
 
     def _apply_reranker_linear(self, last_hidden: "mx.array") -> "mx.array":
         """Apply resolved reranker linear head to final hidden states."""
@@ -1205,20 +1290,13 @@ class MLXBackend(ModelBackend):
 
     def _score_reranker_prompt(
         self, prompt: str, num_layers: int,
-        image_path: Optional[str] = None,
-        video_path: Optional[str] = None,
-        query_image_path: Optional[str] = None,
-        query_video_path: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple[float, str, float]:
         """Run one query-document pair and return (score, scoring_path, raw_score_before_sigmoid).
 
-        Handles both document-side and query-side visual inputs:
-          image_path / video_path       — document being reranked contains visual content
-          query_image_path / query_video_path — the search query itself is visual (REC-138/139/150)
-
-        When both are present the prompt already embeds visual tokens for both sides
-        (built by _format_reranker_prompt); we collect all PIL images / video frames and
-        pass them to the processor together so every <image> token is filled.
+        When multimodal messages are supplied, the same message structure is used to
+        build both the chat template and the processor vision inputs. This keeps the
+        number and order of vision tokens aligned with the extracted pixel features.
 
         Returns:
             Tuple of (sigmoid_score, scoring_path, raw_score_before_sigmoid)
@@ -1227,87 +1305,15 @@ class MLXBackend(ModelBackend):
         vl_fallback_triggered = False
         raw_score_before_sigmoid = 0.0
 
-        # Determine which sides have vision content
-        has_any_image = bool(image_path or query_image_path)
-        has_any_video = bool(video_path or query_video_path)
-
         try:
-            if has_any_image and not has_any_video:
-                # Pure image path: collect all PIL images in prompt order
-                # (query image first if present, then doc image)
-                from PIL import Image as PILImage
-                images_for_prompt: list = []
-                try:
-                    if query_image_path:
-                        images_for_prompt.append(
-                            PILImage.open(query_image_path).convert("RGB")
-                        )
-                    if image_path:
-                        images_for_prompt.append(
-                            PILImage.open(image_path).convert("RGB")
-                        )
-                    pt_inputs = self._reranker_processor(
-                        text=prompt, images=images_for_prompt, return_tensors="pt",
-                    )
-                    inputs = {k: v.numpy() if hasattr(v, "numpy") else v for k, v in pt_inputs.items()}
-                    del pt_inputs, images_for_prompt
-                    gc.collect()
-                except Exception as e:
-                    logger.warning(
-                        f"[MLXBackend] Failed to load image(s) for reranking: {e}; "
-                        "falling back to text-only"
-                    )
-                    vl_fallback_triggered = True
-                    inputs = self._reranker_processor(text=prompt, return_tensors="np")
-            elif has_any_video:
-                # Video path: build a synthetic messages list that includes all video
-                # (and image) content tokens so qwen_vl_utils can extract the right frames.
-                try:
-                    from qwen_vl_utils import process_vision_info
-                    msg_content: list = []
-                    if query_image_path:
-                        import os as _os
-                        msg_content.append(
-                            {"type": "image", "image": f"file://{_os.path.abspath(query_image_path)}"}
-                        )
-                    if query_video_path:
-                        import os as _os
-                        msg_content.append(
-                            self._video_content(f"file://{_os.path.abspath(query_video_path)}")
-                        )
-                    if image_path:
-                        msg_content.append({"type": "image", "image": f"file://{image_path}"})
-                    if video_path:
-                        import os as _os
-                        msg_content.append(self._video_content(f"file://{_os.path.abspath(video_path)}"))
-                    msg_content.append({"type": "text", "text": prompt})
-                    messages = [{"role": "user", "content": msg_content}]
-                    image_inputs, video_inputs, video_kwargs = process_vision_info(
-                        [messages], return_video_kwargs=True,
-                    )
-                    normalized_kwargs = dict(video_kwargs or {})
-                    fps = normalized_kwargs.get("fps")
-                    if isinstance(fps, list):
-                        normalized_kwargs["fps"] = fps[0] if fps else None
-                    # Pass both images AND videos when both are present
-                    proc_kwargs = {"text": [prompt], "return_tensors": "pt", "padding": True}
-                    if video_inputs:
-                        proc_kwargs["videos"] = video_inputs
-                        proc_kwargs.update(normalized_kwargs)
-                    if image_inputs:
-                        proc_kwargs["images"] = image_inputs
-                    pt_inputs = self._reranker_processor(**proc_kwargs)
-                    inputs = {k: v.numpy() if hasattr(v, "numpy") else v for k, v in pt_inputs.items()}
-                    del pt_inputs, video_inputs, image_inputs, messages, video_kwargs, normalized_kwargs
-                    gc.collect()
-                except Exception as e:
-                    logger.warning(
-                        f"[MLXBackend] Failed to process video for reranking: {e}; "
-                        "falling back to text-only"
-                    )
-                    vl_fallback_triggered = True
-                    inputs = self._reranker_processor(text=prompt, return_tensors="np")
-            else:
+            try:
+                inputs = self._build_reranker_processor_inputs(prompt, messages)
+            except Exception as e:
+                logger.warning(
+                    f"[MLXBackend] Failed to build multimodal reranker inputs: {e}; "
+                    "falling back to text-only"
+                )
+                vl_fallback_triggered = True
                 inputs = self._reranker_processor(text=prompt, return_tensors="np")
 
             input_ids = mx.array(inputs["input_ids"])
@@ -1523,17 +1529,23 @@ class MLXBackend(ModelBackend):
                 text = doc.get("text", "") or doc.get("text_body", "") or ""
                 doc_image_path = doc.get("image_path")
                 doc_video_path = doc.get("video_path")
-                prompt = self._format_reranker_prompt(
-                    query, text, instruction,
+                messages = self._build_reranker_messages(
+                    query,
+                    text,
+                    instruction,
                     image_path=doc_image_path, video_path=doc_video_path,
                     query_image_path=query_image_path,
                     query_video_path=query_video_path,
                 )
+                prompt, template_ok = self._render_reranker_prompt(
+                    messages,
+                    query,
+                    text,
+                    instruction,
+                )
                 score, scoring_path, raw_score = self._score_reranker_prompt(
                     prompt, num_layers,
-                    image_path=doc_image_path, video_path=doc_video_path,
-                    query_image_path=query_image_path,
-                    query_video_path=query_video_path,
+                    messages=messages if template_ok else None,
                 )
                 scores.append(score)
                 # Log per-document reranker path tracing
