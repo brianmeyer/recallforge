@@ -1,13 +1,25 @@
 # RecallForge MCP Tool Reference
 
 ## Overview
-RecallForge exposes a local Model Context Protocol (MCP) server over stdio for multimodal retrieval and memory operations. It supports text, images, video, and document ingest/search, plus runtime configuration.
+RecallForge exposes a local Model Context Protocol (MCP) server over stdio or HTTP/SSE for multimodal retrieval and memory operations. It supports text, images, video, and document ingest/search, collection administration, and runtime configuration.
 
-Start the server:
+Start the server over stdio:
 
 ```bash
 recallforge serve --mode hybrid
 ```
+
+Start the server over HTTP/SSE:
+
+```bash
+recallforge serve --http --host 127.0.0.1 --port 7433 --mode hybrid
+```
+
+HTTP mode also exposes:
+
+- `/health`
+- `/sse`
+- `/messages/`
 
 Example MCP client config (Claude Desktop):
 
@@ -46,6 +58,8 @@ Example MCP client config (Claude Desktop):
 - `rebuild_fts`
 - `list_collections`
 - `list_namespaces`
+- `rename_collection`
+- `delete_collection`
 - `batch`
 - `get_config`
 - `set_config`
@@ -684,14 +698,13 @@ Example MCP client config (Claude Desktop):
 **Example Response:**
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "models": {
     "backend": "mlx",
     "device": "mps",
     "dtype": "float16",
     "embedder_loaded": true,
     "reranker_loaded": true,
-    "expander_loaded": true,
     "memory_gb": 1.9,
     "quantization": "4bit",
     "mode": "hybrid"
@@ -706,7 +719,7 @@ Example MCP client config (Claude Desktop):
 **Errors:**
 - `INTERNAL_ERROR`: uncaught exceptions.
 
-**Notes:** Useful heartbeat/health endpoint for agent startup checks.
+**Notes:** Useful MCP-side heartbeat/status call for agent startup checks. HTTP mode also exposes a separate `/health` route.
 
 ---
 
@@ -875,14 +888,15 @@ Operation object schema:
 **Example Response:**
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "backend": "mlx",
   "mode": "hybrid",
   "quantize": "4bit",
   "data_dir": "/Users/me/.recallforge",
   "collection": "default",
   "max_file_size_mb": 100,
-  "rerank_top_k": 20
+  "rerank_top_k": 20,
+  "caption_media": true
 }
 ```
 
@@ -918,13 +932,15 @@ Operation object schema:
 **Example Response:**
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "backend": "mlx",
   "mode": "hybrid",
   "quantize": "4bit",
   "data_dir": "/Users/me/.recallforge",
   "collection": "work",
-  "max_file_size_mb": 64
+  "max_file_size_mb": 64,
+  "rerank_top_k": 20,
+  "caption_media": true
 }
 ```
 

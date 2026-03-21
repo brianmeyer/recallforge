@@ -134,12 +134,13 @@ else
     fail "recallforge search --mode hybrid"
 fi
 
-# Explicit full mode
-OUTPUT=$(recallforge search "transformer architecture" --mode full --store-path "$UAT_STORE" --collection cli_dir_test 2>&1)
-if echo "$OUTPUT" | grep -q "Results for"; then
-    pass "recallforge search --mode full"
+# Deprecated full mode should be rejected explicitly
+OUTPUT=$(recallforge search "transformer architecture" --mode full --store-path "$UAT_STORE" --collection cli_dir_test 2>&1 || true)
+if echo "$OUTPUT" | grep -q "invalid choice"; then
+    pass "recallforge search rejects deprecated --mode full"
 else
-    fail "recallforge search --mode full"
+    fail "recallforge search should reject deprecated --mode full"
+    echo "    Output: $(echo "$OUTPUT" | head -5)"
 fi
 
 # Search with limit
@@ -248,6 +249,71 @@ if kill -0 $SERVER_PID 2>/dev/null; then
     fi
 else
     fail "recallforge serve failed to start"
+fi
+
+# ──────────────────────────────────────────────
+subsection "Serve Command (HTTP health)"
+# ──────────────────────────────────────────────
+
+if python3 - <<'PY' >/dev/null 2>&1
+import starlette  # noqa: F401
+import uvicorn  # noqa: F401
+PY
+then
+    HTTP_PORT=17643
+    HTTP_LOG="${UAT_STORE}/serve-http.log"
+
+    info "Starting HTTP MCP server in background..."
+    recallforge serve --http --mode embed --host 127.0.0.1 --port "${HTTP_PORT}" --store-path "$UAT_STORE" >"${HTTP_LOG}" 2>&1 &
+    SERVER_PID=$!
+
+    HEALTH_OK=0
+    for _ in $(seq 1 30); do
+        if ! kill -0 $SERVER_PID 2>/dev/null; then
+            break
+        fi
+
+        if python3 - "${HTTP_PORT}" <<'PY' >/dev/null 2>&1
+import json
+import sys
+import urllib.request
+
+port = sys.argv[1]
+with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1.0) as response:
+    payload = json.load(response)
+    assert response.status == 200
+    assert payload["status"] == "ok"
+    assert payload["embedder_loaded"] is True
+    assert payload["models_loaded"] is True
+PY
+        then
+            HEALTH_OK=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [[ $HEALTH_OK -eq 1 ]]; then
+        pass "recallforge serve --http exposes healthy /health endpoint"
+    else
+        fail "recallforge serve --http health check failed"
+        echo "    Log tail:"
+        tail -20 "${HTTP_LOG}" 2>/dev/null || true
+    fi
+
+    if kill -0 $SERVER_PID 2>/dev/null; then
+        kill -INT $SERVER_PID
+        sleep 2
+    fi
+
+    if ! kill -0 $SERVER_PID 2>/dev/null; then
+        pass "recallforge serve --http stops on SIGINT"
+    else
+        fail "recallforge serve --http did not stop on SIGINT"
+        kill -9 $SERVER_PID 2>/dev/null || true
+    fi
+else
+    skip "recallforge serve --http /health (missing server extras)"
 fi
 
 print_summary "CLI Tests"

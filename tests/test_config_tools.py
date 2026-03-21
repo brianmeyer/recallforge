@@ -417,7 +417,8 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
             "memory_add", "memory_update", "memory_delete",
             "status", "rebuild_fts", "batch",
             "list_collections", "list_namespaces",
-            "get_config", "set_config", "explain_results",
+            "rename_collection", "delete_collection",
+            "search_batch", "get_config", "set_config", "explain_results",
         }
         missing = expected - set(names)
         self.assertFalse(missing, f"Missing tools: {missing}")

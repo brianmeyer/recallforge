@@ -1,11 +1,14 @@
 """
 server.py - MCP Server for RecallForge.
 
-MCP protocol server with stdio transport.
-Tools: search, search_fts, search_vec, ingest, index_document, index_image,
-memory_add, memory_update, memory_delete, status, rebuild_fts
+MCP protocol server with stdio or HTTP/SSE transport.
+Tools: search, search_fts, search_vec, explain_results, search_batch, ingest,
+index_document, index_image, memory_add, memory_update, memory_delete, status,
+rebuild_fts, list_collections, list_namespaces, rename_collection,
+delete_collection, batch, get_config, set_config.
 
 Calls backend.warm_up() on server start for predictable latency.
+HTTP mode exposes /health, /sse, and /messages/.
 """
 
 import asyncio

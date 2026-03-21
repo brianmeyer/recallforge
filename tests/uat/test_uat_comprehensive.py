@@ -9,7 +9,7 @@ Tests the FULL MCP server pipeline with mocked backend:
 - Performance bounds
 
 Run with: python3 -m pytest tests/uat/test_uat_comprehensive.py --tb=short -q
-Run integration tests against real server: python3 -m pytest tests/uat/test_uat_comprehensive.py -m integration --tb=short
+Run integration tests against real server: .venv/bin/python -m pytest tests/uat/test_uat_comprehensive.py -m integration --tb=short
 
 This suite supersedes tests/uat/test_mcp_server.sh (bash script retained for backward compatibility).
 
@@ -289,6 +289,34 @@ def real_storage():
         pass
 
 
+@pytest.fixture(scope="session")
+def live_backend():
+    """Create a warmed real backend for integration tests."""
+    if os.environ.get("UAT_MCP_LIVE", "0") != "1":
+        pytest.skip("Integration test requires UAT_MCP_LIVE=1 and model weights")
+
+    managed_env = {
+        "RECALLFORGE_BACKEND": "auto",
+        "RECALLFORGE_MODE": "hybrid",
+        "RECALLFORGE_MLX_QUANTIZE": "4bit",
+    }
+    previous_env = {key: os.environ.get(key) for key in managed_env}
+
+    for key, value in managed_env.items():
+        os.environ.setdefault(key, value)
+
+    backend = get_backend()
+    backend.warm_up()
+
+    yield backend
+
+    for key, previous in previous_env.items():
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
 @pytest.fixture
 def mock_backend():
     """Create a mock backend for unit tests."""
@@ -334,8 +362,9 @@ class TestServerCreation:
             "index_document", "index_image",
             "memory_add", "memory_update", "memory_delete",
             "status", "rebuild_fts", "get_config", "set_config",
-            "list_collections", "rename_collection", "delete_collection",
-            "batch", "search_batch",
+            "list_collections", "list_namespaces",
+            "rename_collection", "delete_collection",
+            "batch", "search_batch", "explain_results",
         }
         missing = required_tools - tool_names
         assert not missing, f"Missing required tools: {missing}"
@@ -1844,27 +1873,143 @@ class TestIntegrationRealBackend:
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_real_backend_ingest_text(self, real_storage):
+    async def test_real_backend_ingest_text(self, live_backend, real_storage):
         """Ingest text with real backend (requires model loading)."""
-        pytest.skip("Integration test requires UAT_MCP_LIVE=1 and model weights")
+        server = await create_server(backend=live_backend, storage=real_storage, mode="hybrid")
+
+        result = await self._call_tool(server, "ingest", {
+            "text": "Retrieval augmented generation uses external knowledge during answer synthesis.",
+            "path": "integration/rag.md",
+            "collection": "uat_real_text",
+        })
+        data = json.loads(result[0].text)
+
+        assert data.get("success") or data.get("indexed_text", 0) >= 1
+        assert real_storage.count_embeddings() >= 1
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_real_backend_search_text_to_text(self, real_storage):
+    async def test_real_backend_search_text_to_text(self, live_backend, real_storage):
         """Text→text search with real backend."""
-        pytest.skip("Integration test requires UAT_MCP_LIVE=1 and model weights")
+        server = await create_server(backend=live_backend, storage=real_storage, mode="hybrid")
+
+        await self._call_tool(server, "ingest", {
+            "text": "Retrieval augmented generation uses external knowledge during answer synthesis.",
+            "path": "integration/rag.md",
+            "collection": "uat_real_search",
+        })
+        await self._call_tool(server, "ingest", {
+            "text": "Sourdough bread fermentation depends on a mature starter and time.",
+            "path": "integration/sourdough.md",
+            "collection": "uat_real_search",
+        })
+
+        result = await self._call_tool(server, "search", {
+            "query": "external knowledge for language model answers",
+            "limit": 5,
+            "collection": "uat_real_search",
+            "content_type": "text",
+        })
+        data = json.loads(result[0].text)
+        paths = [item.get("filepath", "") for item in data.get("results", [])]
+
+        assert data.get("count", 0) >= 1
+        assert any(path.endswith("integration/rag.md") for path in paths)
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_real_backend_cross_modal_text_to_image(self, real_storage):
+    async def test_real_backend_cross_modal_text_to_image(self, live_backend, real_storage):
         """Text→image cross-modal search with real backend."""
-        pytest.skip("Integration test requires UAT_MCP_LIVE=1 and model weights")
+        img_path = IMAGES_DIR / "whiteboard_architecture.png"
+        if not img_path.exists():
+            pytest.skip("whiteboard_architecture.png not found")
+
+        server = await create_server(backend=live_backend, storage=real_storage, mode="hybrid")
+
+        await self._call_tool(server, "ingest", {
+            "file_path": str(img_path),
+            "collection": "uat_real_images",
+            "caption_media": True,
+        })
+
+        result = await self._call_tool(server, "search", {
+            "query": "whiteboard architecture diagram",
+            "limit": 5,
+            "collection": "uat_real_images",
+            "content_type": "image",
+        })
+        data = json.loads(result[0].text)
+        paths = [item.get("filepath", "") for item in data.get("results", [])]
+
+        assert data.get("count", 0) >= 1
+        assert any(path.endswith("whiteboard_architecture.png") for path in paths)
 
     @pytest.mark.integration
     @pytest.mark.asyncio
-    async def test_real_backend_captioning_works(self, real_storage):
+    async def test_real_backend_captioning_works(self, live_backend, real_storage):
         """Verify captioning produces non-empty text_body with real backend."""
-        pytest.skip("Integration test requires UAT_MCP_LIVE=1 and model weights")
+        img_path = IMAGES_DIR / "neural_network_diagram.png"
+        if not img_path.exists():
+            pytest.skip("neural_network_diagram.png not found")
+
+        server = await create_server(backend=live_backend, storage=real_storage, mode="hybrid")
+
+        result = await self._call_tool(server, "ingest", {
+            "file_path": str(img_path),
+            "collection": "uat_real_caption",
+            "caption_media": True,
+        })
+        data = json.loads(result[0].text)
+        assert data.get("success") or data.get("indexed_images", 0) >= 1
+
+        rows = list(
+            real_storage._embeddings_table.search()
+            .where("collection = 'uat_real_caption'")
+            .select(["file_path", "content_type", "text_body"])
+            .to_list()
+        )
+        image_rows = [
+            row for row in rows
+            if row.get("content_type") == "image"
+            and str(row.get("file_path", "")).endswith("neural_network_diagram.png")
+        ]
+
+        assert image_rows, "Expected at least one image row for neural_network_diagram.png"
+        assert any((row.get("text_body") or "").strip() for row in image_rows)
+
+    async def _call_tool(self, server, name: str, arguments: dict) -> list:
+        """Call a tool and return the result."""
+        try:
+            result = await server.call_tool(name, arguments)
+            if isinstance(result, list):
+                return result
+        except TypeError:
+            pass
+
+        try:
+            result = server.call_tool(name, arguments)
+            if asyncio.iscoroutine(result):
+                result = await result
+            if isinstance(result, list):
+                return result
+        except TypeError:
+            pass
+
+        handler = getattr(server, "request_handlers", {}).get(CallToolRequest)
+        if handler is None:
+            raise RuntimeError("Unable to resolve MCP call_tool handler")
+
+        response = await handler(
+            CallToolRequest(
+                method="tools/call",
+                params=CallToolRequestParams(name=name, arguments=arguments),
+            )
+        )
+        root = getattr(response, "root", response)
+        content = getattr(root, "content", None)
+        if content is None:
+            raise RuntimeError(f"Unable to extract tool response content for '{name}'")
+        return content
 
 
 # ---------------------------------------------------------------------------
