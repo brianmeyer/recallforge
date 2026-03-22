@@ -131,6 +131,7 @@ class SearchAudit:
     # Blend provenance
     blend_weights: Dict[str, float] = field(default_factory=dict)  # rrf_weight, rerank_weight
     media_compensation_applied: bool = False  # Whether media boost was applied in RRF
+    memory_rollup_boost: float = 1.0  # Multiplier applied when sibling assets are rolled up
     final_blended_score: float = 0.0
 
 
@@ -1098,16 +1099,17 @@ class HybridSearcher:
             logger.debug("final_ranking rank=%d score=%.4f rrf_rank=%d rerank_score=%.4f%s filepath=%s",
                          rank, hr.score, hr.rrf_rank, hr.rerank_score, audit_info, hr.filepath)
 
-        # Log score audit trail for each result
-        for hr in hybrid_results[:self.limit]:
+        rolled_results = self._roll_up_memory_hits(hybrid_results)
+        # Log score audit trail for the post-rollup results so the audit
+        # payload matches the score the caller receives.
+        for hr in rolled_results[:self.limit]:
             if hr.audit:
-                logger.debug("score_audit filepath=%s content_type=%s rrf_sources=%s reranker_raw=%.4f reranker_norm=%.4f scoring_path=%s blend_weights=%s final_score=%.4f",
+                logger.debug("score_audit filepath=%s content_type=%s rrf_sources=%s reranker_raw=%.4f reranker_norm=%.4f scoring_path=%s blend_weights=%s memory_rollup_boost=%.4f final_score=%.4f",
                              hr.audit.filepath, hr.audit.content_type, json.dumps(hr.audit.rrf_sources),
                              hr.audit.reranker_raw_score, hr.audit.reranker_normalized_score,
                              hr.audit.reranker_scoring_path, json.dumps(hr.audit.blend_weights),
-                             hr.audit.final_blended_score)
+                             hr.audit.memory_rollup_boost, hr.audit.final_blended_score)
 
-        rolled_results = self._roll_up_memory_hits(hybrid_results)
         _log_stage_metrics("blend", rolled_results, start_time=t0)
         return rolled_results[:self.limit]
 
@@ -1130,8 +1132,13 @@ class HybridSearcher:
             group = sorted(grouped[key], key=lambda item: item.score, reverse=True)
             representative = group[0]
             representative.memory_hit_count = len(group)
+            memory_rollup_boost = 1.0
             if len(group) > 1:
-                representative.score *= 1.0 + min(0.15, 0.03 * (len(group) - 1))
+                memory_rollup_boost += min(0.15, 0.03 * (len(group) - 1))
+                representative.score *= memory_rollup_boost
+            if representative.audit:
+                representative.audit.memory_rollup_boost = memory_rollup_boost
+                representative.audit.final_blended_score = representative.score
             rolled.append(representative)
 
         rolled.sort(key=lambda item: item.score, reverse=True)

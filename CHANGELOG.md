@@ -6,6 +6,46 @@ All notable changes to RecallForge will be documented in this file.
 
 *Nothing yet.*
 
+## [0.2.0] — 2026-03-22
+
+RecallForge 0.2.0 makes the project much more usable as a local multimodal memory MCP. This release improves cross-modal retrieval, adds a stronger MCP surface for agents, and lays the foundation for memory-level results instead of isolated file fragments.
+
+**Note:** Python 3.12 and 3.13 supported. Python 3.14 is not yet supported due to the pinned `pyarrow` wheel range for this release.
+
+### Memory MCP
+
+- First-class `memory_id` support in storage and search
+- Parent/child memory linkage for derived assets such as frames, transcripts, and document sections
+- Memory-centric MCP capabilities including memory lookup and listing
+- `memory://` resources for stable memory access
+- Memory-level result rollup so related assets can surface as a single memory hit
+
+### Search and Retrieval
+
+- Hybrid search support for image and video retrieval paths
+- Parallel `search_batch` MCP tool for multi-query workflows
+- `explain_results` MCP tool for search transparency and score inspection
+- Ingest-time image/video captioning to improve BM25 and keyword recall
+- Optional vision-language query expansion and stronger cross-modal benchmark coverage
+- PDF vision fallback so scanned or image-heavy documents remain searchable
+
+### Runtime and Product
+
+- HTTP transport for the MCP server with persistent model loading
+- Configurable model selection via environment variables and MCP config
+- Qwen3.5-0.8B captioning for lighter-weight media understanding
+- Version-aware server reporting and improved health/config surfaces
+- Collection management API for better multi-namespace organization
+
+### Reliability and Performance
+
+- Fast media retrieval defaults for better real-world latency
+- Query-side media handling fixes so reranking is no longer blind to media queries
+- Thread-safe model swaps plus explicit memory cleanup
+- Video frame sampling and cleanup fixes to reduce OOMs and tensor retention
+- Expanded UAT, observability, score audits, and release validation coverage
+- Trusted publishing workflow for tag-based PyPI releases
+
 ## [0.1.0] — 2026-03-13
 
 First public release. The local multimodal memory engine for AI agents.

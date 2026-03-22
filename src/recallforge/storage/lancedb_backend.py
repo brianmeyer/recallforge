@@ -1040,6 +1040,130 @@ class LanceDBBackend(StorageBackend):
             self._search = SearchOps(self)
         return self._search._make_search_result(row, score, source)
 
+    def _memory_namespace_filters(
+        self,
+        *,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        active_only: bool = True,
+        root_only: bool = False,
+    ) -> List[str]:
+        filters: List[str] = []
+        if active_only:
+            filters.append("active = 1")
+        if root_only:
+            filters.append("(memory_role IS NULL OR memory_role = 'root')")
+        if collection:
+            filters.append(_safe_filter("collection", collection))
+        if user_id is not None:
+            filters.append(_safe_filter("user_id", user_id))
+        if session_id is not None:
+            filters.append(_safe_filter("session_id", session_id))
+        if project_id is not None:
+            filters.append(_safe_filter("project_id", project_id))
+        if profile is not None:
+            filters.append(_safe_filter("profile", profile))
+        return filters
+
+    def _memory_path_clause(self, path: str) -> str:
+        validated_path = _validate_identifier(path, "path")
+        escaped_path = validated_path.replace("'", "''")
+        return (
+            f"(file_path = '{escaped_path}' "
+            f"OR memory_root_path = '{escaped_path}' "
+            f"OR file_path LIKE '{escaped_path}::%')"
+        )
+
+    def _resolve_memory_root_row(
+        self,
+        *,
+        memory_id: Optional[str] = None,
+        path: Optional[str] = None,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        root_filters = self._memory_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            root_only=True,
+        )
+
+        if memory_id:
+            try:
+                rows = list(
+                    self._documents_table.search()
+                    .where(" AND ".join(root_filters + [_safe_filter("memory_id", memory_id)]))
+                    .limit(1)
+                    .to_list()
+                )
+                if rows:
+                    return rows[0]
+            except Exception as exc:
+                logger.debug(f"_resolve_memory_root_row: exact id lookup failed for {memory_id}: {exc}")
+
+            if path:
+                try:
+                    rows = list(
+                        self._documents_table.search()
+                        .where(" AND ".join(root_filters + [self._memory_path_clause(path)]))
+                        .limit(1)
+                        .to_list()
+                    )
+                    if rows:
+                        return rows[0]
+                except Exception as exc:
+                    logger.debug(f"_resolve_memory_root_row: path lookup failed for {path}: {exc}")
+
+            try:
+                rows = list(
+                    self._documents_table.search()
+                    .where(" AND ".join(root_filters))
+                    .limit(10_000)
+                    .to_list()
+                )
+            except Exception as exc:
+                logger.debug(f"_resolve_memory_root_row: fallback scan failed for {memory_id}: {exc}")
+                return None
+
+            rows.sort(key=lambda row: row.get("updated_at", 0), reverse=True)
+            for row in rows:
+                root_path = row.get("memory_root_path") or row.get("file_path")
+                candidate_id = row.get("memory_id") or build_memory_id(
+                    row.get("collection", ""),
+                    root_path,
+                    user_id=row.get("user_id"),
+                    session_id=row.get("session_id"),
+                    project_id=row.get("project_id"),
+                    profile=row.get("profile"),
+                )
+                if candidate_id == memory_id:
+                    return row
+            return None
+
+        if path:
+            try:
+                rows = list(
+                    self._documents_table.search()
+                    .where(" AND ".join(root_filters + [self._memory_path_clause(path)]))
+                    .limit(1)
+                    .to_list()
+                )
+                if rows:
+                    return rows[0]
+            except Exception as exc:
+                logger.debug(f"_resolve_memory_root_row: path lookup failed for {path}: {exc}")
+
+        return None
+
     def list_memories(
         self,
         *,
@@ -1051,17 +1175,14 @@ class LanceDBBackend(StorageBackend):
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
         """List canonical root memories from the documents table."""
-        filters = ["active = 1", "(memory_role IS NULL OR memory_role = 'root')"]
-        if collection:
-            filters.append(_safe_filter("collection", collection))
-        if user_id is not None:
-            filters.append(_safe_filter("user_id", user_id))
-        if session_id is not None:
-            filters.append(_safe_filter("session_id", session_id))
-        if project_id is not None:
-            filters.append(_safe_filter("project_id", project_id))
-        if profile is not None:
-            filters.append(_safe_filter("profile", profile))
+        filters = self._memory_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            root_only=True,
+        )
 
         rows = list(
             self._documents_table.search()
@@ -1099,35 +1220,56 @@ class LanceDBBackend(StorageBackend):
 
     def get_memory(
         self,
-        memory_id: str,
+        memory_id: Optional[str] = None,
         *,
         collection: Optional[str] = None,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        path: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Return a canonical memory plus child assets and snippets."""
-        filters = ["active = 1", _safe_filter("memory_id", memory_id)]
-        if collection:
-            filters.append(_safe_filter("collection", collection))
-        if user_id is not None:
-            filters.append(_safe_filter("user_id", user_id))
-        if session_id is not None:
-            filters.append(_safe_filter("session_id", session_id))
-        if project_id is not None:
-            filters.append(_safe_filter("project_id", project_id))
-        if profile is not None:
-            filters.append(_safe_filter("profile", profile))
+        if not memory_id and not path:
+            return None
+
+        root_row = self._resolve_memory_root_row(
+            memory_id=memory_id,
+            path=path,
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+        if not root_row:
+            return None
+
+        root_path = root_row.get("memory_root_path") or root_row.get("file_path")
+        resolved_memory_id = root_row.get("memory_id") or build_memory_id(
+            root_row.get("collection", ""),
+            root_path,
+            user_id=root_row.get("user_id"),
+            session_id=root_row.get("session_id"),
+            project_id=root_row.get("project_id"),
+            profile=root_row.get("profile"),
+        )
+
+        document_filters = self._memory_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+        document_filters.append(self._memory_path_clause(root_path))
 
         document_rows = list(
             self._documents_table.search()
-            .where(" AND ".join(filters))
+            .where(" AND ".join(document_filters))
             .limit(10_000)
             .to_list()
         )
-        if not document_rows:
-            return None
 
         document_rows.sort(
             key=lambda row: (
@@ -1137,21 +1279,18 @@ class LanceDBBackend(StorageBackend):
         )
         root_row = next(
             (row for row in document_rows if (row.get("memory_role") or "root") == "root"),
-            document_rows[0],
+            root_row,
         )
-        root_path = root_row.get("memory_root_path") or root_row.get("file_path")
 
-        embed_filters = [_safe_filter("memory_id", memory_id)]
-        if collection:
-            embed_filters.append(_safe_filter("collection", collection))
-        if user_id is not None:
-            embed_filters.append(_safe_filter("user_id", user_id))
-        if session_id is not None:
-            embed_filters.append(_safe_filter("session_id", session_id))
-        if project_id is not None:
-            embed_filters.append(_safe_filter("project_id", project_id))
-        if profile is not None:
-            embed_filters.append(_safe_filter("profile", profile))
+        embed_filters = self._memory_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            active_only=False,
+        )
+        embed_filters.append(self._memory_path_clause(root_path))
 
         try:
             snippet_rows = list(
@@ -1195,7 +1334,7 @@ class LanceDBBackend(StorageBackend):
             )
 
         return {
-            "memory_id": memory_id,
+            "memory_id": resolved_memory_id,
             "collection": root_row.get("collection"),
             "title": root_row.get("title") or root_path,
             "path": root_path,

@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from recallforge.storage.base import StorageBackend, SearchResult, Document
 from recallforge.storage.lancedb_backend import LanceDBBackend
+from recallforge.storage.lancedb_shared import build_memory_id
 
 
 # ---------------------------------------------------------------------------
@@ -695,6 +696,51 @@ class TestMemoryMetadata(unittest.TestCase):
         self.assertIsNone(rows[0]["ttl_seconds"])
         self.assertIsNone(rows[0]["tags"])
         self.assertIsNone(rows[0]["expires_at"])
+
+
+class TestMemoryLookupCompatibility(unittest.TestCase):
+    """Regression tests for canonical memory lookup compatibility."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-memory-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_get_memory_resolves_legacy_null_memory_id_and_path(self):
+        path = "notes/legacy-memory.md"
+        expected_memory_id = build_memory_id("test", path)
+        self.backend.upsert_memory(
+            path=path,
+            text="Legacy memory lookup regression test",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        lookup_where = "collection = 'test' AND file_path = 'notes/legacy-memory.md'"
+        self.backend._documents_table.update(where=lookup_where, values={"memory_id": None})
+        self.backend._embeddings_table.update(where=lookup_where, values={"memory_id": None})
+
+        memories = self.backend.list_memories(collection="test", limit=10)
+        self.assertEqual(len(memories), 1)
+        self.assertEqual(memories[0]["memory_id"], expected_memory_id)
+
+        by_id = self.backend.get_memory(expected_memory_id, collection="test")
+        self.assertIsNotNone(by_id)
+        self.assertEqual(by_id["memory_id"], expected_memory_id)
+        self.assertEqual(by_id["path"], path)
+        self.assertEqual(by_id["root_document"]["path"], path)
+        self.assertGreater(len(by_id["snippets"]), 0)
+
+        by_path = self.backend.get_memory(path=path, collection="test")
+        self.assertIsNotNone(by_path)
+        self.assertEqual(by_path["memory_id"], expected_memory_id)
+        self.assertEqual(by_path["path"], path)
+        self.assertEqual(by_path["root_document"]["path"], path)
 
 
 class TestFTSMissFallbackBehavior(unittest.TestCase):
