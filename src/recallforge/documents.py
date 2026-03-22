@@ -265,6 +265,27 @@ def _render_pdf_page_as_image(
     return None
 
 
+def _ocr_pdf_page_text(pdf_path: Path, page_number: int) -> str:
+    """Extract OCR text for a PDF page when embedded text is unavailable."""
+    import logging
+
+    logger = logging.getLogger("recallforge.documents")
+
+    if importlib.util.find_spec("fitz") is None:
+        return ""
+
+    try:
+        import fitz  # type: ignore
+
+        with fitz.open(str(pdf_path)) as doc:
+            page = doc.load_page(page_number - 1)  # 0-indexed
+            text_page = page.get_textpage_ocr(language="eng", dpi=150, full=True)
+            return _clean_text(page.get_text(textpage=text_page) or "")
+    except Exception as exc:
+        logger.debug("pymupdf OCR failed for %s page %d: %s", pdf_path, page_number, exc)
+        return ""
+
+
 def _extract_pdf_with_pypdf(path: Path, logical_path: str) -> DocumentArtifacts:
     import logging
     from pypdf import PdfReader  # type: ignore
@@ -295,17 +316,29 @@ def _extract_pdf_with_pypdf(path: Path, logical_path: str) -> DocumentArtifacts:
         # No text extracted - try to render page as image
         if temp_dir is None:
             temp_dir = Path(tempfile.mkdtemp(prefix="recallforge_pdf_"))
+        ocr_text = _ocr_pdf_page_text(path, index)
         image_path = _render_pdf_page_as_image(path, index, temp_dir)
         if image_path:
             sections.append(
                 DocumentSection(
                     logical_path=f"{logical_path}::page:{index:04d}",
                     title=f"{path.stem} page {index}",
-                    text="",  # No text, image will be embedded
+                    text=ocr_text,
                     section_type="page",
                     index=index,
                     content_type="image",
                     image_path=image_path,
+                )
+            )
+        elif ocr_text:
+            sections.append(
+                DocumentSection(
+                    logical_path=f"{logical_path}::page:{index:04d}",
+                    title=f"{path.stem} page {index}",
+                    text=ocr_text,
+                    section_type="page",
+                    index=index,
+                    content_type="text",
                 )
             )
 
@@ -344,7 +377,8 @@ def _extract_pdf_fallback(path: Path, logical_path: str) -> DocumentArtifacts:
             extractor="builtin-pdf-fallback",
         )
 
-    # No text extracted - try to render first page as image using pymupdf
+    # No text extracted - try OCR + page rendering for scanned/image-only PDFs.
+    ocr_text = _ocr_pdf_page_text(path, 1)
     image_path = _render_pdf_page_as_image(path, 1, None)
     if image_path:
         return DocumentArtifacts(
@@ -352,11 +386,26 @@ def _extract_pdf_fallback(path: Path, logical_path: str) -> DocumentArtifacts:
                 DocumentSection(
                     logical_path=f"{logical_path}::page:0001",
                     title=f"{path.stem} page 1",
-                    text="",
+                    text=ocr_text,
                     section_type="page",
                     index=1,
                     content_type="image",
                     image_path=image_path,
+                )
+            ],
+            document_type="pdf",
+            extractor="builtin-pdf-fallback",
+        )
+    if ocr_text:
+        return DocumentArtifacts(
+            sections=[
+                DocumentSection(
+                    logical_path=f"{logical_path}::page:0001",
+                    title=f"{path.stem} page 1",
+                    text=ocr_text,
+                    section_type="page",
+                    index=1,
+                    content_type="text",
                 )
             ],
             document_type="pdf",

@@ -1443,6 +1443,51 @@ class TestIngestCaptioning(unittest.TestCase):
         self.assertEqual(child_doc.memory_role, "child")
         self.assertEqual(child_doc.memory_root_path, logical_path)
 
+    def test_index_document_file_preserves_ocr_text_for_image_only_pages(self):
+        document_path = os.path.join(self.temp_dir, "scan.pdf")
+        logical_path = str(Path(document_path).expanduser().resolve())
+        with open(document_path, "wb") as f:
+            f.write(b"%PDF-1.4 mock")
+
+        fake_artifacts = SimpleNamespace(
+            document_type="pdf",
+            extractor="unit-test",
+            sections=[
+                SimpleNamespace(
+                    logical_path=f"{logical_path}::page:0001",
+                    title="scan page 1",
+                    text="Scanned invoice total due on receipt.",
+                    section_type="page",
+                    index=1,
+                    content_type="image",
+                    image_path=self.frame_path,
+                )
+            ],
+        )
+
+        with patch("recallforge.storage.indexing_ops.extract_document_artifacts", return_value=fake_artifacts):
+            result = self.backend.index_document_file(
+                path=document_path,
+                collection="test",
+                embed_func=mock_embed,
+                embed_image_func=mock_embed,
+                model="mock-embedder",
+            )
+
+        self.assertEqual(result["indexed_images"], 1)
+        self.assertEqual(result["indexed_sections"], 1)
+
+        ocr_doc = self.backend.find_document("test", f"{logical_path}::page:0001::ocr")
+        self.assertIsNotNone(ocr_doc)
+        self.assertEqual(ocr_doc.memory_role, "child")
+        self.assertEqual(ocr_doc.memory_root_path, logical_path)
+
+        ocr_rows = self.backend._embeddings_table.search().where(
+            f"collection = 'test' AND file_path = '{logical_path}::page:0001::ocr'"
+        ).to_list()
+        self.assertGreaterEqual(len(ocr_rows), 1)
+        self.assertIn("Scanned invoice total due", ocr_rows[0].get("text_body") or "")
+
     def test_ingest_caption_media_disabled_skips_image_caption(self):
         embedder = CaptioningEmbedder()
         self.backend.ingest(

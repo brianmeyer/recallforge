@@ -49,7 +49,10 @@ mlx = [
     # transformers 5.x Qwen3VLVideoProcessor requires torchvision for processor loading
     "torchvision>=0.15,<1.0",
 ]
-docs = ["pypdf>=5.0,<6.0"]
+docs = [
+    "pypdf>=5.0,<6.0",
+    "pymupdf>=1.24,<2.0",
+]
 server = [
     "starlette>=0.36,<1.0",
     "uvicorn>=0.30,<1.0",

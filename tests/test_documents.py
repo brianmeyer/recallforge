@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from recallforge.documents import extract_document_artifacts, is_document_file
@@ -89,6 +90,35 @@ def _write_fake_pdf(path: Path) -> None:
     path.write_bytes(b"".join(chunks))
 
 
+def _write_empty_pdf(path: Path) -> None:
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+        b"<< /Length 0 >>\nstream\n\nendstream",
+    ]
+
+    chunks = [b"%PDF-1.4\n"]
+    offsets = [0]
+    for index, obj in enumerate(objects, start=1):
+        offsets.append(sum(len(chunk) for chunk in chunks))
+        chunks.append(f"{index} 0 obj\n".encode("ascii"))
+        chunks.append(obj)
+        chunks.append(b"\nendobj\n")
+
+    xref_offset = sum(len(chunk) for chunk in chunks)
+    chunks.append(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    chunks.append(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        chunks.append(f"{offset:010d} 00000 n \n".encode("ascii"))
+    chunks.append(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode(
+            "ascii"
+        )
+    )
+    path.write_bytes(b"".join(chunks))
+
+
 def test_is_document_file():
     assert is_document_file("report.pdf")
     assert is_document_file("slides.pptx")
@@ -138,40 +168,37 @@ def test_extract_pdf_artifacts_with_builtin_fallback(tmp_path):
 
 def test_extract_pdf_empty_graceful_skip(tmp_path):
     """PDFs with no extractable text should return empty sections, not crash."""
-    # Create a minimal PDF with no text streams - just structure
     path = tmp_path / "empty.pdf"
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
-        b"<< /Length 0 >>\nstream\n\nendstream",
-    ]
-
-    chunks = [b"%PDF-1.4\n"]
-    offsets = [0]
-    for index, obj in enumerate(objects, start=1):
-        offsets.append(sum(len(chunk) for chunk in chunks))
-        chunks.append(f"{index} 0 obj\n".encode("ascii"))
-        chunks.append(obj)
-        chunks.append(b"\nendobj\n")
-
-    xref_offset = sum(len(chunk) for chunk in chunks)
-    chunks.append(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
-    chunks.append(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        chunks.append(f"{offset:010d} 00000 n \n".encode("ascii"))
-    chunks.append(
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n".encode(
-            "ascii"
-        )
-    )
-    path.write_bytes(b"".join(chunks))
+    _write_empty_pdf(path)
 
     artifacts = extract_document_artifacts(path, "empty/empty.pdf")
 
     # Should return empty sections gracefully, not raise
     assert artifacts.document_type == "pdf"
     assert artifacts.sections == []
+
+
+def test_extract_pdf_scanned_page_carries_ocr_text_with_image(tmp_path):
+    path = tmp_path / "scanned.pdf"
+    _write_empty_pdf(path)
+
+    def _fake_find_spec(name: str):
+        if name == "pypdf":
+            return None
+        return object()
+
+    with (
+        patch("recallforge.documents.importlib.util.find_spec", side_effect=_fake_find_spec),
+        patch("recallforge.documents._ocr_pdf_page_text", return_value="Scanned invoice total due"),
+        patch("recallforge.documents._render_pdf_page_as_image", return_value=str(tmp_path / "page_0001.png")),
+    ):
+        artifacts = extract_document_artifacts(path, "scanned/scanned.pdf")
+
+    assert artifacts.document_type == "pdf"
+    assert len(artifacts.sections) == 1
+    assert artifacts.sections[0].content_type == "image"
+    assert artifacts.sections[0].image_path is not None
+    assert artifacts.sections[0].text == "Scanned invoice total due"
 
 
 def test_extract_docx_empty_graceful_skip(tmp_path):
