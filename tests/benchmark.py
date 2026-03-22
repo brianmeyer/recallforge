@@ -126,16 +126,9 @@ def benchmark_backend(
                 result.reranker_load_time_s = time.time() - start
                 print(f"  Reranker: {result.reranker_load_time_s:.1f}s")
             
-            if backend.needs_expander():
-                start = time.time()
-                backend._load_expander()
-                result.expander_load_time_s = time.time() - start
-                print(f"  Expander: {result.expander_load_time_s:.1f}s")
-            
             result.total_load_time_s = (
                 result.embedder_load_time_s +
-                result.reranker_load_time_s +
-                result.expander_load_time_s
+                result.reranker_load_time_s
             )
             
             # Get memory
@@ -278,7 +271,7 @@ def run_full_benchmark(
         output_dir: Directory for results
     """
     backends = backends or ["torch"]
-    modes = modes or ["embed", "hybrid", "full"]
+    modes = modes or ["embed", "hybrid"]
     quantizations = quantizations or ["bf16"]
     
     # Create test data
@@ -409,8 +402,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--modes",
         nargs="+",
-        default=["embed", "hybrid", "full"],
-        choices=["embed", "hybrid", "full"],
+        default=["embed", "hybrid"],
+        choices=["embed", "hybrid"],
         help="Modes to benchmark",
     )
     parser.add_argument(

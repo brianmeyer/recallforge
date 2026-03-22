@@ -1,18 +1,24 @@
 [project]
 name = "recallforge"
-version = "0.1.2"
-description = "RecallForge - Cross-Modal Vision-Language Search Engine"
-authors = [{name = "Brian Meyer"}]
+version = "0.2.0"
+description = "Local multimodal memory for AI agents — cross-modal vision-language search"
+authors = [{name = "Brian Meyer", email = "brian@recallforge.dev"}]
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
-license = {text = "MIT"}
-keywords = ["search", "semantic", "embedding", "vision-language", "cross-modal"]
+requires-python = ">=3.12,<3.15"
+license = "MIT"
+keywords = [
+    "search", "semantic", "embedding", "vision-language", "cross-modal",
+    "mcp", "agent-memory", "local-first", "multimodal", "retrieval",
+    "rag", "vector-search", "reranking", "mlx", "apple-silicon",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+    "Typing :: Typed",
 ]
 
 dependencies = [
@@ -44,6 +50,10 @@ mlx = [
     "torchvision>=0.15,<1.0",
 ]
 docs = ["pypdf>=5.0,<6.0"]
+server = [
+    "starlette>=0.36,<1.0",
+    "uvicorn>=0.30,<1.0",
+]
 cuda = [
     "torch>=2.0,<3.0",
     "torchvision>=0.15,<1.0",
@@ -55,7 +65,7 @@ dev = [
     "pytest>=8.0,<9.0",
     "pytest-asyncio>=0.24,<1.0",
 ]
-all = ["recallforge[torch,mlx,docs]"]
+all = ["recallforge[torch,mlx,docs,server]"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -76,4 +86,5 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "live: marks tests as live (deselect with '-m \"not live\"')",
+    "integration: marks tests as integration tests requiring real backend (run with '-m integration')",
 ]

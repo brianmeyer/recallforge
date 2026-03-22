@@ -7,13 +7,15 @@ Supports bf16 and 4-bit quantization (4-bit default, ~2GB memory).
 Model IDs:
 - MLX BF16: arthurcollet/Qwen3-VL-Embedding-2B-mlx, arthurcollet/Qwen3-VL-Reranker-2B-mlx
 - MLX 4-bit: arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit, arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit
-- Expander: bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit (native MLX), torch fallback for bf16
 """
 
+import gc
 import os
 import logging
 import importlib.util
+import threading
 import warnings
+import re
 from typing import List, Dict, Any, Optional
 
 import numpy as np
@@ -51,15 +53,6 @@ def _load_mlx_core():
         mx = _mx
     return mx
 
-# Optional torch import for expander fallback
-_torch_available = False
-try:
-    import torch
-    _torch_available = True
-except ImportError:
-    pass
-
-
 def _make_cache(num_layers):
     """Create KVCache objects for each transformer layer."""
     try:
@@ -87,7 +80,7 @@ class MLXBackend(ModelBackend):
     MLX-based model backend for Apple Silicon.
 
     Default path for macOS arm64. Uses 4-bit quantization (~2GB)
-    for embedder and reranker. Query expander falls back to torch.
+    for embedder and reranker.
     """
 
     # Chat template for embedding queries
@@ -108,9 +101,23 @@ class MLXBackend(ModelBackend):
         "Given a search query, retrieve relevant candidates that answer the query."
     )
 
+    # Video sampling: 1 fps adapts to video length (30s video = 30 frames,
+    # 5min video = 300 frames). Max cap prevents OOM on very long videos.
+    _VIDEO_SAMPLE_FPS = 1.0
+    _VIDEO_MAX_FRAMES = 128
+    # Captioning descriptors removed — they produced captions too generic for BM25.
+    # See REC-129 for dedicated captioning model support.
+
+    # Default model IDs (can be overridden via env vars or set_config)
+    _DEFAULT_EMBEDDER_MODEL_4BIT = "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit"
+    _DEFAULT_EMBEDDER_MODEL_BF16 = "arthurcollet/Qwen3-VL-Embedding-2B-mlx"
+    _DEFAULT_RERANKER_MODEL_4BIT = "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit"
+    _DEFAULT_RERANKER_MODEL_BF16 = "arthurcollet/Qwen3-VL-Reranker-2B-mlx"
+    _DEFAULT_CAPTION_MODEL = "mlx-community/Qwen3.5-0.8B-4bit"
+
     def __init__(
         self,
-        mode: str = "full",
+        mode: str = "hybrid",
         quantization: str = "4bit",
     ):
         if not MLX_AVAILABLE:
@@ -126,6 +133,7 @@ class MLXBackend(ModelBackend):
 
         self._mode = mode
         self._quantization = quantization
+        self._model_lock = threading.Lock()
 
         # Lazy-loaded models
         self._embedder_model = None
@@ -138,25 +146,30 @@ class MLXBackend(ModelBackend):
         self._reranker_yes_token_id = None
         self._reranker_no_token_id = None
         self._reranker_use_direct_logits = False
-        self._expander = None
-        self._expander_tokenizer = None
         self._embedder_num_layers = None
         self._embed_text_max_tokens = None
         self._embed_warmed = False
+        self._captioner_model = None
+        self._captioner_processor = None
 
-        # Model IDs based on quantization
+        # Model IDs - configurable via env vars (REC-116)
+        # Priority: env var > default
         if quantization == "4bit":
-            self.EMBEDDER_MODEL = "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit"
-            self.RERANKER_MODEL = "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit"
+            default_embedder = self._DEFAULT_EMBEDDER_MODEL_4BIT
+            default_reranker = self._DEFAULT_RERANKER_MODEL_4BIT
         else:
-            self.EMBEDDER_MODEL = "arthurcollet/Qwen3-VL-Embedding-2B-mlx"
-            self.RERANKER_MODEL = "arthurcollet/Qwen3-VL-Reranker-2B-mlx"
-        if quantization == "4bit":
-            self.EXPANDER_MODEL = "bmeyer2025/qmd-query-expansion-qwen3.5-2B-mlx-4bit"
-        else:
-            # bf16: fall back to torch since no MLX bf16 expander exists yet
-            self.EXPANDER_MODEL = "tobil/qmd-query-expansion-qwen3.5-2B"
-        self._expander_is_mlx = quantization == "4bit"
+            default_embedder = self._DEFAULT_EMBEDDER_MODEL_BF16
+            default_reranker = self._DEFAULT_RERANKER_MODEL_BF16
+
+        self.EMBEDDER_MODEL = os.environ.get(
+            "RECALLFORGE_EMBEDDER_MODEL", default_embedder
+        )
+        self.RERANKER_MODEL = os.environ.get(
+            "RECALLFORGE_RERANKER_MODEL", default_reranker
+        )
+        self.CAPTION_MODEL = os.environ.get(
+            "RECALLFORGE_CAPTIONER_MODEL", self._DEFAULT_CAPTION_MODEL
+        )
 
     # =========================================================================
     # Embedder
@@ -166,44 +179,48 @@ class MLXBackend(ModelBackend):
         """Lazy-load the MLX embedding model with explicit failure context."""
         if self._embedder_model is not None:
             return
+        with self._model_lock:
+            # Double-check after acquiring lock
+            if self._embedder_model is not None:
+                return
 
-        try:
-            from mlx_vlm import load
-        except ImportError as exc:
-            raise ImportError(
-                "mlx-vlm is required for MLX embeddings. "
-                "Install with: pip install recallforge[mlx]"
-            ) from exc
+            try:
+                from mlx_vlm import load
+            except ImportError as exc:
+                raise ImportError(
+                    "mlx-vlm is required for MLX embeddings. "
+                    "Install with: pip install recallforge[mlx]"
+                ) from exc
 
-        if not _check_model_cached(self.EMBEDDER_MODEL):
-            size = "~800MB" if self._quantization == "4bit" else "~4GB"
-            logger.info(
-                f"[RecallForge] Downloading embedder model "
-                f"({self.EMBEDDER_MODEL.split('/')[-1]}, {size})... first run only."
-            )
-        logger.info(f"[MLXBackend] Loading embedder: {self.EMBEDDER_MODEL}")
+            if not _check_model_cached(self.EMBEDDER_MODEL):
+                size = "~800MB" if self._quantization == "4bit" else "~4GB"
+                logger.info(
+                    f"[RecallForge] Downloading embedder model "
+                    f"({self.EMBEDDER_MODEL.split('/')[-1]}, {size})... first run only."
+                )
+            logger.info(f"[MLXBackend] Loading embedder: {self.EMBEDDER_MODEL}")
 
-        try:
-            self._embedder_model, self._embedder_processor = load(
-                self.EMBEDDER_MODEL,
-                trust_remote_code=True,
-            )
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                f"Failed to load MLX embedder '{self.EMBEDDER_MODEL}'."
-            ) from exc
+            try:
+                self._embedder_model, self._embedder_processor = load(
+                    self.EMBEDDER_MODEL,
+                    trust_remote_code=True,
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    f"Failed to load MLX embedder '{self.EMBEDDER_MODEL}'."
+                ) from exc
 
-        try:
-            self._embedder_num_layers = int(
-                self._embedder_model.language_model.model.num_hidden_layers
-            )
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                "Loaded MLX embedder does not expose num_hidden_layers."
-            ) from exc
+            try:
+                self._embedder_num_layers = int(
+                    self._embedder_model.language_model.model.num_hidden_layers
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    "Loaded MLX embedder does not expose num_hidden_layers."
+                ) from exc
 
-        self._embed_text_max_tokens = self._resolve_max_text_tokens()
-        logger.info(f"[MLXBackend] Loaded embedder ({self._quantization})")
+            self._embed_text_max_tokens = self._resolve_max_text_tokens()
+            logger.info(f"[MLXBackend] Loaded embedder ({self._quantization})")
 
     def _embed_hidden(self, input_ids: "mx.array", cache) -> "mx.array":
         """
@@ -588,6 +605,10 @@ class MLXBackend(ModelBackend):
         pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
         image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
 
+        # Free PyTorch tensors and vision intermediates now that we have MLX arrays
+        del inputs, image_inputs, chat_texts, messages_batch
+        gc.collect()
+
         try:
             cache = _make_cache(num_layers)
         except Exception as exc:
@@ -621,9 +642,160 @@ class MLXBackend(ModelBackend):
 
         return embeddings
 
+    def _video_content(self, path: str) -> dict:
+        """Build a video content dict with adaptive frame sampling.
+
+        Uses fps-based sampling (1 frame/sec) so longer videos get more frames.
+        Caps at _VIDEO_MAX_FRAMES to bound memory on very long videos.
+        A 30s video → 30 frames. A 10min video → 128 frames (capped).
+        """
+        return {"type": "video", "video": path, "fps": self._VIDEO_SAMPLE_FPS,
+                "max_frames": self._VIDEO_MAX_FRAMES}
+
     def embed_video(self, video_path: str) -> np.ndarray:
         """Embed a single video."""
         return self.embed_videos([video_path])[0]
+
+    # Captioning & Generation configuration
+    _CAPTION_MAX_TOKENS = 60
+    _CAPTION_PROMPT = "Describe this image in one concise sentence for search indexing. No thinking."
+
+    def _load_captioner(self) -> None:
+        """Lazily load the captioning model (Qwen3.5-0.8B)."""
+        if getattr(self, "_captioner_model", None) is not None:
+            return
+        with self._model_lock:
+            # Double-check after acquiring lock
+            if getattr(self, "_captioner_model", None) is not None:
+                return
+            from mlx_vlm import load as vlm_load
+
+            logger.debug("captioner_load model=%s", self.CAPTION_MODEL)
+            self._captioner_model, self._captioner_processor = vlm_load(
+                self.CAPTION_MODEL
+            )
+
+    def _unload_captioner(self) -> None:
+        """Free captioner memory when no longer needed."""
+        if getattr(self, "_captioner_model", None) is not None:
+            del self._captioner_model
+            del self._captioner_processor
+            self._captioner_model = None
+            self._captioner_processor = None
+            import gc
+            gc.collect()
+
+    def _format_caption_prompt(self, image_path: str) -> str:
+        """Build a chat-template prompt with vision tokens for captioning."""
+        import os
+        abs_path = os.path.abspath(image_path)
+        messages = [
+            {"role": "user", "content": [
+                {"type": "image", "image": f"file://{abs_path}"},
+                {"type": "text", "text": self._CAPTION_PROMPT},
+            ]}
+        ]
+        try:
+            return self._captioner_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        finally:
+            del messages
+            gc.collect()
+
+    def caption_image(self, image_path: str) -> str:
+        """Generate a one-sentence image caption using Qwen3.5-0.8B.
+
+        The captioning model is loaded lazily on first use and kept in memory
+        for the duration of the ingest batch.  Call _unload_captioner() after
+        batch completion to reclaim ~0.9 GB.
+        """
+        try:
+            self._load_captioner()
+            from mlx_vlm import generate as vlm_generate
+
+            prompt = self._format_caption_prompt(image_path)
+            output = vlm_generate(
+                self._captioner_model,
+                self._captioner_processor,
+                prompt=prompt,
+                image=[image_path],
+                max_tokens=self._CAPTION_MAX_TOKENS,
+            )
+            text = output.text if hasattr(output, "text") else str(output)
+            caption = re.sub(r"\s+", " ", text).strip()
+            logger.debug(
+                "caption_image path=%s caption_len=%d caption=%s",
+                image_path, len(caption), caption[:100],
+            )
+            return caption[:512]  # Safety cap for BM25 field length
+        except Exception as exc:
+            logger.warning("caption_image failed for %s: %s", image_path, exc)
+            return ""
+        finally:
+            try:
+                del prompt, output, text, caption
+            except Exception:
+                pass
+            gc.collect()
+
+    def describe_image(self, image_path: str) -> str:
+        """Backward-compatible alias for caption_image."""
+        return self.caption_image(image_path)
+
+    def describe_video(self, video_path: str, frame_paths: Optional[List[str]] = None) -> str:
+        """Describe a video by captioning its keyframes.
+
+        Generates captions for up to 3 keyframes and merges them.
+        Falls back to empty string if no frames are available.
+        """
+        if not frame_paths:
+            return ""
+
+        parts: List[str] = []
+        for frame_path in frame_paths[:3]:
+            try:
+                caption = self.caption_image(frame_path)
+                if caption:
+                    parts.append(caption)
+            except Exception:
+                continue
+
+        return " ".join(parts).strip()[:420] if parts else ""
+
+    def generate_text(self, prompt: str, max_tokens: int = 60) -> str:
+        """Generate text using the captioner model (Qwen3.5-0.8B).
+
+        Used for query expansion and other lightweight generation tasks.
+        Text-only — no image input.
+        """
+        try:
+            self._load_captioner()
+            from mlx_vlm import generate as vlm_generate
+
+            messages = [{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+            ]}]
+            formatted = self._captioner_processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            output = vlm_generate(
+                self._captioner_model,
+                self._captioner_processor,
+                prompt=formatted,
+                max_tokens=max_tokens,
+            )
+            text = output.text if hasattr(output, "text") else str(output)
+            return text.strip()
+        except Exception as exc:
+            logger.warning("generate_text failed: %s", exc)
+            return ""
+        finally:
+            try:
+                del messages, formatted, output, text
+            except Exception:
+                pass
+            gc.collect()
 
     def embed_videos(self, video_paths: List[str]) -> np.ndarray:
         """
@@ -652,7 +824,7 @@ class MLXBackend(ModelBackend):
             messages = [{
                 "role": "user",
                 "content": [
-                    {"type": "video", "video": path},
+                    self._video_content(path),
                     {"type": "text", "text": "Describe this video."},
                 ],
             }]
@@ -709,6 +881,10 @@ class MLXBackend(ModelBackend):
             pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
             video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
 
+            # Free PyTorch tensors and intermediates now that we have MLX arrays
+            del inputs, video_inputs, messages, chat_text, normalized_video_kwargs, video_kwargs
+            gc.collect()
+
             try:
                 cache = _make_cache(num_layers)
             except Exception as exc:
@@ -734,6 +910,9 @@ class MLXBackend(ModelBackend):
                 raise MLXEmbeddingError(
                     f"Failed to pool and normalize video embedding for '{path}'."
                 ) from exc
+
+            # Free MLX intermediates before next video
+            del input_ids, pixel_values, video_grid_thw, cache, h
 
             embeddings.append(embedding[0])
 
@@ -903,9 +1082,112 @@ class MLXBackend(ModelBackend):
 
         raise RuntimeError("Unable to locate reranker score head (score_linear/lm_head)")
 
-    def _format_reranker_prompt(self, query: str, document: str, instruction: str) -> str:
-        """Format a query-document pair as chat input for reranking."""
-        messages = [
+    def _render_reranker_prompt(
+        self,
+        messages: List[Dict[str, Any]],
+        query: str,
+        document: str,
+        instruction: str,
+    ) -> tuple[str, bool]:
+        """Render reranker chat messages to text and report whether vision tokens survived."""
+        try:
+            return (
+                self._reranker_processor.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                ),
+                True,
+            )
+        except Exception:
+            # Keep a manual fallback so reranking still works even if template API differs.
+            return (
+                (
+                    f"<|im_start|>system\n{self._RERANK_SYSTEM}<|im_end|>\n"
+                    "<|im_start|>user\n"
+                    f"<Instruct>: {instruction}\n<Query>:\n{query or 'NULL'}\n"
+                    f"<Document>:\n{document or 'NULL'}<|im_end|>\n"
+                    "<|im_start|>assistant\n"
+                ),
+                False,
+            )
+
+    def _format_reranker_prompt(
+        self, query: str, document: str, instruction: str,
+        image_path: Optional[str] = None,
+        video_path: Optional[str] = None,
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Format a query-document pair as chat input for reranking.
+
+        Document-side media (image_path / video_path):
+            The document being scored contains visual content.  It is embedded in
+            the <Document> section so the reranker can cross-encode text against it.
+
+        Query-side media (query_image_path / query_video_path):
+            The *search query itself* is an image or video.  It is embedded in the
+            <Query> section.  The reranker cross-encodes the visual query against
+            each document's content.  This is the fix for REC-138/REC-139/REC-150:
+            previously the literal string "image_query:/path/to/file.png" was used,
+            which made scores meaningless.
+        """
+        messages = messages or self._build_reranker_messages(
+            query,
+            document,
+            instruction,
+            image_path=image_path,
+            video_path=video_path,
+            query_image_path=query_image_path,
+            query_video_path=query_video_path,
+        )
+
+        prompt, _ = self._render_reranker_prompt(messages, query, document, instruction)
+        return prompt
+
+    def _as_file_uri(self, path: str) -> str:
+        """Normalize local media paths for Qwen chat-template vision blocks."""
+        if path.startswith("file://"):
+            return path
+        return f"file://{os.path.abspath(path)}"
+
+    def _build_reranker_messages(
+        self,
+        query: str,
+        document: str,
+        instruction: str,
+        image_path: Optional[str] = None,
+        video_path: Optional[str] = None,
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Build the multimodal chat messages used for reranker prompting."""
+        query_content: list = [{"type": "text", "text": "<Query>:"}]
+        if query_image_path:
+            query_content.append({"type": "image", "image": self._as_file_uri(query_image_path)})
+            if query:
+                query_content.append({"type": "text", "text": query})
+        elif query_video_path:
+            query_content.append(self._video_content(self._as_file_uri(query_video_path)))
+            if query:
+                query_content.append({"type": "text", "text": query})
+        else:
+            query_content.append({"type": "text", "text": query or "NULL"})
+
+        doc_content: list = [{"type": "text", "text": "\n<Document>:"}]
+        if image_path:
+            doc_content.append({"type": "image", "image": self._as_file_uri(image_path)})
+            if document:
+                doc_content.append({"type": "text", "text": document})
+        elif video_path:
+            doc_content.append(self._video_content(self._as_file_uri(video_path)))
+            if document:
+                doc_content.append({"type": "text", "text": document})
+        else:
+            doc_content.append({"type": "text", "text": document or "NULL"})
+
+        return [
             {
                 "role": "system",
                 "content": [{"type": "text", "text": self._RERANK_SYSTEM}],
@@ -914,29 +1196,57 @@ class MLXBackend(ModelBackend):
                 "role": "user",
                 "content": [
                     {"type": "text", "text": f"<Instruct>: {instruction}"},
-                    {"type": "text", "text": "<Query>:"},
-                    {"type": "text", "text": query or "NULL"},
-                    {"type": "text", "text": "\n<Document>:"},
-                    {"type": "text", "text": document or "NULL"},
+                    *query_content,
+                    *doc_content,
                 ],
             },
         ]
 
-        try:
-            return self._reranker_processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        except Exception:
-            # Keep a manual fallback so reranking still works even if template API differs.
-            return (
-                f"<|im_start|>system\n{self._RERANK_SYSTEM}<|im_end|>\n"
-                "<|im_start|>user\n"
-                f"<Instruct>: {instruction}\n<Query>:\n{query or 'NULL'}\n"
-                f"<Document>:\n{document or 'NULL'}<|im_end|>\n"
-                "<|im_start|>assistant\n"
-            )
+    def _build_reranker_processor_inputs(
+        self,
+        prompt: str,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Build reranker processor inputs from the same message structure as the prompt."""
+        if not messages:
+            return self._reranker_processor(text=prompt, return_tensors="np")
+
+        user_messages = [m for m in messages if m.get("role") == "user"]
+        content_blocks = []
+        for message in user_messages:
+            content_blocks.extend(message.get("content", []))
+
+        has_vision = any(
+            block.get("type") in {"image", "video"}
+            for block in content_blocks
+            if isinstance(block, dict)
+        )
+        if not has_vision:
+            return self._reranker_processor(text=prompt, return_tensors="np")
+
+        from qwen_vl_utils import process_vision_info
+
+        image_inputs, video_inputs, video_kwargs = process_vision_info(
+            [user_messages],
+            return_video_kwargs=True,
+        )
+        normalized_video_kwargs = dict(video_kwargs or {})
+        fps = normalized_video_kwargs.get("fps")
+        if isinstance(fps, list):
+            normalized_video_kwargs["fps"] = fps[0] if fps else None
+
+        proc_kwargs = {"text": [prompt], "return_tensors": "pt", "padding": True}
+        if image_inputs:
+            proc_kwargs["images"] = image_inputs
+        if video_inputs:
+            proc_kwargs["videos"] = video_inputs
+            proc_kwargs.update(normalized_video_kwargs)
+
+        pt_inputs = self._reranker_processor(**proc_kwargs)
+        return {
+            key: value.numpy() if hasattr(value, "numpy") else value
+            for key, value in pt_inputs.items()
+        }
 
     def _apply_reranker_linear(self, last_hidden: "mx.array") -> "mx.array":
         """Apply resolved reranker linear head to final hidden states."""
@@ -978,92 +1288,227 @@ class MLXBackend(ModelBackend):
 
         return logits
 
-    def _score_reranker_prompt(self, prompt: str, num_layers: int) -> float:
-        """Run one query-document pair and return sigmoid(score_linear(last_hidden))."""
-        inputs = self._reranker_processor(text=prompt, return_tensors="np")
-        input_ids = mx.array(inputs["input_ids"])
+    def _score_reranker_prompt(
+        self, prompt: str, num_layers: int,
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> tuple[float, str, float]:
+        """Run one query-document pair and return (score, scoring_path, raw_score_before_sigmoid).
 
-        cache = _make_cache(num_layers)
-        if self._reranker_use_direct_logits:
-            if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
-                raise RuntimeError("yes/no token ids are unavailable for reranker fallback")
-            lm_out = self._reranker_model.language_model(input_ids, cache=cache)
-            full_logits = self._to_mx_array(getattr(lm_out, "logits", lm_out)).astype(mx.float32)
-            last_logits = full_logits[:, -1, :]
-            logits = (
-                last_logits[:, self._reranker_yes_token_id]
-                - last_logits[:, self._reranker_no_token_id]
-            ).reshape(-1, 1)
-        else:
-            qwen_model = self._reranker_model.language_model.model
-            hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
-            last_hidden = hidden[:, -1, :]
-            logits = self._apply_reranker_linear(last_hidden)
+        When multimodal messages are supplied, the same message structure is used to
+        build both the chat template and the processor vision inputs. This keeps the
+        number and order of vision tokens aligned with the extracted pixel features.
 
-        probs = 1.0 / (1.0 + mx.exp(-logits))
-        mx.eval(probs)
-        score = float(np.array(probs).reshape(-1)[0])
-        if not np.isfinite(score):
-            raise RuntimeError("Reranker produced non-finite score")
-        return score
+        Returns:
+            Tuple of (sigmoid_score, scoring_path, raw_score_before_sigmoid)
+        """
+        scoring_path = "unknown"
+        vl_fallback_triggered = False
+        raw_score_before_sigmoid = 0.0
+
+        try:
+            try:
+                inputs = self._build_reranker_processor_inputs(prompt, messages)
+            except Exception as e:
+                logger.warning(
+                    f"[MLXBackend] Failed to build multimodal reranker inputs: {e}; "
+                    "falling back to text-only"
+                )
+                vl_fallback_triggered = True
+                inputs = self._reranker_processor(text=prompt, return_tensors="np")
+
+            input_ids = mx.array(inputs["input_ids"])
+
+            # Check for vision inputs (image or video reranking)
+            has_image = "pixel_values" in inputs and "image_grid_thw" in inputs
+            has_video = "pixel_values_videos" in inputs and "video_grid_thw" in inputs
+            has_vision = has_image or has_video
+            pixel_values = None
+            image_grid_thw = None
+            video_grid_thw = None
+            if has_image:
+                pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
+                image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
+            if has_video:
+                # When both image and video are present (e.g., query_image + doc_video),
+                # video pixels go into a separate tensor. get_input_embeddings handles both.
+                video_pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
+                video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
+                if pixel_values is None:
+                    # Video-only: use video pixels as the primary pixel_values
+                    pixel_values = video_pixel_values
+                # else: both are set — get_input_embeddings receives pixel_values for
+                # images and video_grid_thw for videos separately
+
+            # Free processor outputs after conversion to MLX arrays
+            del inputs
+            gc.collect()
+
+            cache = _make_cache(num_layers)
+
+            if has_vision:
+                # VL path: merge vision features with text embeddings.
+                # Must use direct yes/no logit comparison instead of the derived
+                # weight projection.  The derived projection (lm_head[yes] - lm_head[no])
+                # is a linear shortcut that assumes text-only hidden-state distributions.
+                # Vision features shift the distribution, making the shortcut unreliable.
+                if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
+                    raise RuntimeError(
+                        "yes/no token ids are unavailable; cannot score VL reranker inputs"
+                    )
+                try:
+                    emb_features = self._reranker_model.get_input_embeddings(
+                        input_ids, pixel_values,
+                        image_grid_thw=image_grid_thw,
+                        video_grid_thw=video_grid_thw,
+                    )
+                    inputs_embeds = emb_features.to_dict()["inputs_embeds"]
+                    # language_model.__call__ accesses inputs.shape for mask validation,
+                    # so pass a dummy input_ids matching the sequence length to avoid
+                    # NoneType.shape crash when inputs_embeds is the real input.
+                    dummy_ids = mx.zeros((1, inputs_embeds.shape[1]), dtype=mx.int32)
+                    lm_out = self._reranker_model.language_model(
+                        dummy_ids, inputs_embeds=inputs_embeds, cache=cache,
+                    )
+                    full_logits = self._to_mx_array(
+                        getattr(lm_out, "logits", lm_out)
+                    ).astype(mx.float32)
+                    last_logits = full_logits[:, -1, :]
+                    logits = (
+                        last_logits[:, self._reranker_yes_token_id]
+                        - last_logits[:, self._reranker_no_token_id]
+                    ).reshape(-1, 1)
+                    raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+                    scoring_path = "vl_image" if has_image else "vl_video"
+                except Exception as e:
+                    logger.warning(f"[MLXBackend] VL reranking failed, falling back to text-only: {e}")
+                    vl_fallback_triggered = True
+                    # Fall back to text-only path
+                    qwen_model = self._reranker_model.language_model.model
+                    hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
+                    last_hidden = hidden[:, -1, :]
+                    logits = self._apply_reranker_linear(last_hidden)
+                    raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+                    scoring_path = "fallback_text"
+            elif self._reranker_use_direct_logits:
+                if self._reranker_yes_token_id is None or self._reranker_no_token_id is None:
+                    raise RuntimeError("yes/no token ids are unavailable for reranker fallback")
+                lm_out = self._reranker_model.language_model(input_ids, cache=cache)
+                full_logits = self._to_mx_array(getattr(lm_out, "logits", lm_out)).astype(mx.float32)
+                last_logits = full_logits[:, -1, :]
+                logits = (
+                    last_logits[:, self._reranker_yes_token_id]
+                    - last_logits[:, self._reranker_no_token_id]
+                ).reshape(-1, 1)
+                raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+                scoring_path = "text_direct_logits"
+            else:
+                qwen_model = self._reranker_model.language_model.model
+                hidden = qwen_model(input_ids, cache=cache).astype(mx.float32)
+                last_hidden = hidden[:, -1, :]
+                logits = self._apply_reranker_linear(last_hidden)
+                raw_score_before_sigmoid = float(np.array(logits).reshape(-1)[0])
+                scoring_path = "text_derived"
+
+            probs = 1.0 / (1.0 + mx.exp(-logits))
+            mx.eval(probs)
+            score = float(np.array(probs).reshape(-1)[0])
+            if not np.isfinite(score):
+                raise RuntimeError("Reranker produced non-finite score")
+
+            # Log reranker path tracing
+            logger.debug("reranker_score path=%s raw_score=%.4f final_score=%.4f vl_fallback=%s",
+                         scoring_path, raw_score_before_sigmoid, score, vl_fallback_triggered)
+
+            return score, scoring_path, raw_score_before_sigmoid
+        finally:
+            try:
+                del input_ids, pixel_values, image_grid_thw, video_grid_thw
+            except Exception:
+                pass
+            try:
+                del cache, logits, probs
+            except Exception:
+                pass
+            gc.collect()
 
     def _load_reranker(self):
         """Lazy-load the MLX reranker model."""
         if self._reranker_model is not None:
             return
+        with self._model_lock:
+            # Double-check after acquiring lock
+            if self._reranker_model is not None:
+                return
 
-        from mlx_vlm import load
+            from mlx_vlm import load
 
-        if not _check_model_cached(self.RERANKER_MODEL):
-            size = "~800MB" if self._quantization == "4bit" else "~4GB"
-            logger.info(
-                f"[RecallForge] Downloading reranker model "
-                f"({self.RERANKER_MODEL.split('/')[-1]}, {size})... first run only."
-            )
-        logger.info(f"[MLXBackend] Loading reranker: {self.RERANKER_MODEL}")
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
-                warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
-                warnings.filterwarnings(
-                    "ignore",
-                    message=".*`torch_dtype` is deprecated! Use `dtype` instead!.*",
+            if not _check_model_cached(self.RERANKER_MODEL):
+                size = "~800MB" if self._quantization == "4bit" else "~4GB"
+                logger.info(
+                    f"[RecallForge] Downloading reranker model "
+                    f"({self.RERANKER_MODEL.split('/')[-1]}, {size})... first run only."
                 )
+            logger.info(f"[MLXBackend] Loading reranker: {self.RERANKER_MODEL}")
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
+                    warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=".*`torch_dtype` is deprecated! Use `dtype` instead!.*",
+                    )
 
-                hf_logging = None
-                prev_hf_verbosity = None
-                try:
-                    from transformers.utils import logging as hf_logging  # type: ignore
-
-                    prev_hf_verbosity = hf_logging.get_verbosity()
-                    hf_logging.set_verbosity_error()
-                except Exception:
                     hf_logging = None
                     prev_hf_verbosity = None
+                    try:
+                        from transformers.utils import logging as hf_logging  # type: ignore
 
-                try:
-                    self._reranker_model, self._reranker_processor = load(
-                        self.RERANKER_MODEL,
-                        trust_remote_code=True,
-                    )
-                finally:
-                    if hf_logging is not None and prev_hf_verbosity is not None:
-                        hf_logging.set_verbosity(prev_hf_verbosity)
-            self._init_reranker_scoring()
-        except Exception:
-            self._reranker_model = None
-            self._reranker_processor = None
-            self._reranker_score_linear = None
-            self._reranker_score_weight = None
-            self._reranker_score_bias = None
-            self._reranker_yes_token_id = None
-            self._reranker_no_token_id = None
-            self._reranker_use_direct_logits = False
-            raise
-        logger.info(f"[MLXBackend] Loaded reranker ({self._quantization})")
+                        prev_hf_verbosity = hf_logging.get_verbosity()
+                        hf_logging.set_verbosity_error()
+                    except Exception:
+                        hf_logging = None
+                        prev_hf_verbosity = None
 
-    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
-        """Rerank documents for a query."""
+                    try:
+                        self._reranker_model, self._reranker_processor = load(
+                            self.RERANKER_MODEL,
+                            trust_remote_code=True,
+                        )
+                    finally:
+                        if hf_logging is not None and prev_hf_verbosity is not None:
+                            hf_logging.set_verbosity(prev_hf_verbosity)
+                self._init_reranker_scoring()
+            except Exception:
+                self._reranker_model = None
+                self._reranker_processor = None
+                self._reranker_score_linear = None
+                self._reranker_score_weight = None
+                self._reranker_score_bias = None
+                self._reranker_yes_token_id = None
+                self._reranker_no_token_id = None
+                self._reranker_use_direct_logits = False
+                raise
+            logger.info(f"[MLXBackend] Loaded reranker ({self._quantization})")
+
+    def rerank(
+        self,
+        query: str,
+        documents: List[Dict[str, Any]],
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
+    ) -> List[float]:
+        """Rerank documents for a query.
+
+        Args:
+            query: Text query.  May be empty when query_image_path/query_video_path
+                is set; the media is then used directly as the query side of the
+                cross-encoder prompt.
+            documents: Document dicts (with 'text', optional 'image_path'/'video_path').
+            query_image_path: Path to the query image for image-query searches.
+            query_video_path: Path to the query video for video-query searches.
+
+        Returns list of scores. Scoring path information is logged via logger.debug.
+        """
         if not documents:
             return []
 
@@ -1082,166 +1527,37 @@ class MLXBackend(ModelBackend):
         for idx, doc in enumerate(documents):
             try:
                 text = doc.get("text", "") or doc.get("text_body", "") or ""
-                prompt = self._format_reranker_prompt(query, text, instruction)
-                score = self._score_reranker_prompt(prompt, num_layers)
+                doc_image_path = doc.get("image_path")
+                doc_video_path = doc.get("video_path")
+                messages = self._build_reranker_messages(
+                    query,
+                    text,
+                    instruction,
+                    image_path=doc_image_path, video_path=doc_video_path,
+                    query_image_path=query_image_path,
+                    query_video_path=query_video_path,
+                )
+                prompt, template_ok = self._render_reranker_prompt(
+                    messages,
+                    query,
+                    text,
+                    instruction,
+                )
+                score, scoring_path, raw_score = self._score_reranker_prompt(
+                    prompt, num_layers,
+                    messages=messages if template_ok else None,
+                )
                 scores.append(score)
+                # Log per-document reranker path tracing
+                logger.debug("reranker_doc idx=%d path=%s raw_score=%.4f final_score=%.4f content_type=%s",
+                             idx, scoring_path, raw_score, score, doc.get("content_type", "unknown"))
             except Exception as e:
                 logger.error(f"[MLXBackend] Rerank error at doc {idx}: {e}")
                 scores.append(0.5)
+                logger.debug("reranker_doc idx=%d path=error_fallback raw_score=0.0 final_score=0.5 content_type=%s",
+                             idx, doc.get("content_type", "unknown"))
 
         return scores
-
-    # =========================================================================
-    # Query Expander
-    # =========================================================================
-
-    def _load_expander(self):
-        """Load expander — native MLX for 4-bit, torch fallback for bf16."""
-        if self._expander is not None:
-            return
-
-        if self._expander_is_mlx:
-            self._load_expander_mlx()
-        else:
-            self._load_expander_torch()
-
-    def _load_expander_mlx(self):
-        """Load the MLX 4-bit query expander natively."""
-        from mlx_lm import load as mlx_lm_load
-
-        if not _check_model_cached(self.EXPANDER_MODEL):
-            logger.info(
-                f"[RecallForge] Downloading expander model "
-                f"({self.EXPANDER_MODEL.split('/')[-1]}, ~700MB)... first run only."
-            )
-        logger.info(f"[MLXBackend] Loading expander: {self.EXPANDER_MODEL}")
-        model, tokenizer = mlx_lm_load(self.EXPANDER_MODEL)
-        self._expander = model
-        self._expander_tokenizer = tokenizer
-        logger.info(f"[MLXBackend] Loaded expander (MLX 4-bit)")
-
-    def _load_expander_torch(self):
-        """Load expander via torch fallback (bf16 mode)."""
-        if not _torch_available:
-            raise ImportError(
-                "PyTorch is required for query expansion in bf16 mode. "
-                "Install with: pip install torch"
-            )
-
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-
-        if not _check_model_cached(self.EXPANDER_MODEL):
-            logger.info(
-                f"[RecallForge] Downloading expander model "
-                f"({self.EXPANDER_MODEL.split('/')[-1]}, ~4GB)... first run only."
-            )
-        logger.info(f"[MLXBackend] Loading expander via torch fallback on {device}")
-
-        self._expander_tokenizer = AutoTokenizer.from_pretrained(self.EXPANDER_MODEL)
-        self._expander = AutoModelForCausalLM.from_pretrained(
-            self.EXPANDER_MODEL,
-            torch_dtype=torch.float16,
-            attn_implementation="eager",
-        ).to(device)
-
-        self._expander.eval()
-        logger.info(f"[MLXBackend] Loaded expander (torch fallback)")
-
-    def _build_expander_prompt(self, query: str) -> str:
-        """Build the query expansion prompt."""
-        return f"""<|im_start|>system
-You are a query expansion assistant. Given a search query, generate 3 variations:
-1. A lexical variant (lex) - keywords and synonyms for BM25/Fuzzy matching
-2. A vector variant (vec) - semantic rephrasing for vector/ANN search
-3. A hypothetical document (hyde) - what a perfect answer would look like
-
-Format as JSON with keys: lex, vec, hyde
-Each value is a string. Keep variations concise (under 20 words each).<|im_end|>
-<|im_start|>user
-Query: {query}<|im_end|>
-<|im_start|>assistant
-{{"""
-
-    def _parse_expansion_json(self, response: str, query: str) -> Dict[str, str]:
-        """Parse JSON expansion from model response."""
-        import json
-
-        json_start = response.find("{")
-        if json_start == -1:
-            return {"lex": query, "vec": query, "hyde": query}
-
-        json_str = response[json_start:]
-        brace_count = 0
-        end_pos = -1
-        for i, c in enumerate(json_str):
-            if c == "{":
-                brace_count += 1
-            elif c == "}":
-                brace_count -= 1
-                if brace_count == 0:
-                    end_pos = i + 1
-                    break
-
-        if end_pos != -1:
-            json_str = json_str[:end_pos]
-
-        try:
-            expansions = json.loads(json_str)
-            return {
-                "lex": expansions.get("lex", query),
-                "vec": expansions.get("vec", query),
-                "hyde": expansions.get("hyde", query),
-            }
-        except (json.JSONDecodeError, TypeError):
-            return {"lex": query, "vec": query, "hyde": query}
-
-    def expand_query(self, query: str) -> Dict[str, str]:
-        """Generate query expansions."""
-        if not self.needs_expander():
-            return {"lex": query, "vec": query, "hyde": query}
-
-        self._load_expander()
-
-        prompt = self._build_expander_prompt(query)
-
-        if self._expander_is_mlx:
-            return self._expand_query_mlx(prompt, query)
-        else:
-            return self._expand_query_torch(prompt, query)
-
-    def _expand_query_mlx(self, prompt: str, query: str) -> Dict[str, str]:
-        """Generate expansions using native MLX."""
-        from mlx_lm import generate as mlx_generate
-
-        response = mlx_generate(
-            self._expander,
-            self._expander_tokenizer,
-            prompt=prompt,
-            max_tokens=256,
-        )
-
-        return self._parse_expansion_json("{" + response, query)
-
-    def _expand_query_torch(self, prompt: str, query: str) -> Dict[str, str]:
-        """Generate expansions using torch fallback."""
-        tokenizer = self._expander_tokenizer
-        model = self._expander
-
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=256,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return self._parse_expansion_json(response, query)
 
     # =========================================================================
     # Warm-up and Status
@@ -1259,18 +1575,10 @@ Query: {query}<|im_end|>
         t1 = time.time()
         logger.info(f"[MLXBackend]   Embedder+compile: {t1 - start:.1f}s")
 
-        last_checkpoint = t1
-
         if self.needs_reranker():
             self._load_reranker()
             t2 = time.time()
             logger.info(f"[MLXBackend]   Reranker: {t2 - t1:.1f}s")
-            last_checkpoint = t2
-
-        if self.needs_expander():
-            self._load_expander()
-            t3 = time.time()
-            logger.info(f"[MLXBackend]   Expander: {t3 - last_checkpoint:.1f}s")
 
         logger.info(f"[MLXBackend] Ready in {time.time() - start:.1f}s")
 
@@ -1281,8 +1589,6 @@ Query: {query}<|im_end|>
             mem += 2000 if self._quantization == "4bit" else 4000
         if self._reranker_model:
             mem += 2000 if self._quantization == "4bit" else 4000
-        if self._expander:
-            mem += 4000
 
         return BackendInfo(
             name="mlx",
@@ -1290,7 +1596,6 @@ Query: {query}<|im_end|>
             dtype=self._quantization,
             embedder_loaded=self._embedder_model is not None,
             reranker_loaded=self._reranker_model is not None,
-            expander_loaded=self._expander is not None,
             memory_allocated_gb=mem / 1000,
             supports_images=True,
             quantization=self._quantization,
@@ -1298,10 +1603,75 @@ Query: {query}<|im_end|>
 
     def set_mode(self, mode: str) -> None:
         """Set the search mode."""
-        if mode not in ("embed", "hybrid", "full"):
-            raise ValueError(f"Invalid mode: {mode}")
+        if mode not in ("embed", "hybrid"):
+            raise ValueError(f"Invalid mode: {mode}. Must be 'embed' or 'hybrid'")
         self._mode = mode
 
     def get_mode(self) -> str:
         """Get current search mode."""
         return self._mode
+
+    def get_model_ids(self) -> Dict[str, str]:
+        """Return current model IDs for embedder, reranker, and captioner."""
+        return {
+            "embedder_model": self.EMBEDDER_MODEL,
+            "reranker_model": self.RERANKER_MODEL,
+            "captioner_model": self.CAPTION_MODEL,
+        }
+
+    def set_model_ids(
+        self,
+        embedder_model: Optional[str] = None,
+        reranker_model: Optional[str] = None,
+        captioner_model: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """
+        Update model IDs and unload cached models so they reload on next use.
+
+        Args:
+            embedder_model: New embedder model ID (optional)
+            reranker_model: New reranker model ID (optional)
+            captioner_model: New captioner model ID (optional)
+
+        Returns:
+            Dict with the updated model IDs
+        """
+        with self._model_lock:
+            changed = []
+            if embedder_model is not None and embedder_model != self.EMBEDDER_MODEL:
+                self.EMBEDDER_MODEL = embedder_model
+                old = self._embedder_model
+                self._embedder_model = None
+                self._embedder_processor = None
+                self._embedder_num_layers = None
+                self._embed_text_max_tokens = None
+                self._embed_warmed = False
+                del old
+                changed.append("embedder")
+
+            if reranker_model is not None and reranker_model != self.RERANKER_MODEL:
+                self.RERANKER_MODEL = reranker_model
+                old = self._reranker_model
+                self._reranker_model = None
+                self._reranker_processor = None
+                self._reranker_score_linear = None
+                self._reranker_score_weight = None
+                self._reranker_score_bias = None
+                self._reranker_yes_token_id = None
+                self._reranker_no_token_id = None
+                self._reranker_use_direct_logits = False
+                del old
+                changed.append("reranker")
+
+            if captioner_model is not None and captioner_model != self.CAPTION_MODEL:
+                self.CAPTION_MODEL = captioner_model
+                self._unload_captioner()
+                changed.append("captioner")
+
+            if changed:
+                gc.collect()
+                logger.info(
+                    "model_swap changed=%s", ", ".join(changed)
+                )
+
+        return self.get_model_ids()

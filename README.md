@@ -32,8 +32,7 @@ One query. Any modality. All local.
 | Video support [Beta] | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
-| Query expansion | ✅ Multimodal | ❌ | ❌ | ❌ | ✅ Generative |
-| MCP-native | ✅ 16 tools | ❌ | ❌ | ❌ | ❌ |
+| MCP-native | ✅ 20 tools | ❌ | ❌ | ❌ | ❌ |
 | 100% local | ✅ | ✅ | ⚠️ Cloud default | ✅ | ✅ Docker |
 | Apple Silicon optimized | ✅ MLX 4-bit | ❌ | ❌ | ❌ | ❌ |
 | Cloud option | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -49,19 +48,20 @@ One query. Any modality. All local.
 
 ### Pipeline ablation (Mac mini M4 16GB, MLX 4-bit)
 
-Each stage of the pipeline improves retrieval quality. The architecture is the product.
+Each stage of the pipeline improves retrieval quality. The reranker is the quality peak.
 
 | Stage | R@1 | R@5 | R@10 | MRR | p50 |
 |-------|-----|-----|------|-----|-----|
-| Vector-only | 68.3% | 68.3% | 70.0% | 68.5% | 17ms |
-| BM25-only | 55.0% | 55.0% | 85.0% | 60.0% | 15ms |
-| Vector + BM25 (RRF) | 71.7% | 86.7% | 86.7% | 76.4% | 93ms |
-| **+ Reranker (hybrid mode)** | **83.3%** | **91.7%** | **95.0%** | **86.9%** | 3.9s |
-| + Query expansion (full mode) | 83.3% | 90.0% | 93.3% | 85.7% | 5.7s |
+| Vector-only | 65.2% | 65.2% | 67.4% | 67.3% | 20ms |
+| BM25-only | 57.6% | 57.6% | 93.5% | 64.4% | 17ms |
+| Vector + BM25 (RRF) | 69.6% | 88.0% | 90.2% | 77.5% | 100ms |
+| **+ Reranker (hybrid mode)** | **85.9%** | **92.4%** | **97.8%** | **89.2%** | 3.8s |
 
-The reranker is the big win: **+22% R@1 over raw embeddings**, pushing R@10 to 95%. Embed mode gives you 17ms searches for speed-sensitive workloads. Hybrid/full mode gives you 83%+ R@1 when quality matters.
+The reranker delivers **+20.7% R@1 over RRF fusion** and pushes R@10 to 97.8%. Embed mode gives you 20ms searches for speed-sensitive workloads. Hybrid mode gives you 85.9% R@1 when quality matters.
 
-*Measured on 200 text documents + 50 images with ground-truth queries. See `benchmarks/` for methodology.*
+*Benchmark categories: text_only (30 queries), image_only (30 queries), long_query (12 queries), typo_query (20 queries). See `benchmarks/results/pipeline_ablation_modality_results.json` for full breakdown.*
+
+For release validation, use `benchmarks/cross_modal_ablation.py`. It now checkpoints JSON output as it runs, so long MLX benchmark sessions still leave behind a partial artifact if interrupted.
 
 ### Latency & resource usage
 
@@ -71,9 +71,10 @@ The reranker is the big win: **+22% R@1 over raw embeddings**, pushing R@10 to 9
 | Warm search p95 (embed) | 55ms | — |
 | Cold start | 7.6s | ~20s |
 | Peak RSS (embed) | 329MB* | ~4GB |
+| Peak RSS (hybrid) | ~1.5GB* | ~5GB |
 | Text indexing | 5.0 docs/sec | — |
 
-*\*MLX maps model weights lazily via memory-mapped files. RSS reflects resident pages, not full model size (~1.7GB on disk for embed mode). Actual memory pressure is low.*
+*\*MLX maps model weights lazily via memory-mapped files. RSS reflects resident pages, not full model size (~1.7GB embedder + ~1.7GB reranker on disk). Actual memory pressure is low.*
 
 ### COCO 1K retrieval (raw embeddings, no pipeline)
 
@@ -90,6 +91,7 @@ For transparency: raw embedding quality on the standard COCO benchmark (1,000 im
 
 ```bash
 pip install recallforge[mlx]       # Apple Silicon (recommended, 4-bit quantization)
+pip install "recallforge[mlx,server]"  # Apple Silicon + HTTP/SSE server
 pip install recallforge[cuda]      # NVIDIA GPU
 pip install recallforge[torch]     # CPU / other PyTorch targets
 pip install recallforge[docs]      # add richer PDF extraction (optional)
@@ -97,6 +99,7 @@ pip install recallforge[docs]      # add richer PDF extraction (optional)
 
 > **Note:** `pip install recallforge` installs the core without a backend.
 > You need at least one of `[mlx]`, `[cuda]`, or `[torch]` to run inference.
+> Add `[server]` only when you want HTTP/SSE transport (`recallforge serve --http`).
 
 From source:
 
@@ -110,7 +113,7 @@ pip install -e ".[mlx]"
 
 - Python 3.12 or 3.13 required (3.14 not yet supported, pending pyarrow wheel)
 - Disk: ~2-5GB free for model downloads on first run
-- RAM (MLX 4-bit): ~1.7GB (`embed`) to ~4.4GB (`full`)
+- RAM (MLX 4-bit): ~1.7GB (`embed`) to ~3.4GB (`hybrid`)
 - `ffmpeg` recommended for video indexing/search
 - First run downloads models automatically and may take a few minutes
 
@@ -123,19 +126,25 @@ RecallForge is designed as a **Model Context Protocol server for AI agents**. Co
   "mcpServers": {
     "recallforge": {
       "command": "recallforge",
-      "args": ["serve", "--mode", "full"]
+      "args": ["serve", "--mode", "hybrid"]
     }
   }
 }
 ```
 
-Run manually:
+Run manually (stdio):
 
 ```bash
 recallforge serve --mode embed --backend mlx --quantize 4bit
 ```
 
-Exposes **16 tools** for agents: `ingest`, `search`, `search_fts`, `search_vec`, `index_document`, `index_image`, `memory_add`, `memory_update`, `memory_delete`, `status`, `rebuild_fts`, `list_collections`, `list_namespaces`, `batch`, `get_config`, `set_config`.
+Run over HTTP/SSE:
+
+```bash
+recallforge serve --http --host 127.0.0.1 --port 7433 --mode embed
+```
+
+RecallForge now exposes **20 MCP tools** across search, ingest, memory, collection admin, and runtime config. HTTP/SSE mode also exposes `/health`, `/sse`, and `/messages/`.
 
 See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 
@@ -144,8 +153,7 @@ See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 | Mode | Models loaded | Memory (MLX 4-bit) | Quality | Best for |
 |------|--------------|-------------------|---------|----------|
 | `embed` | Embedder | ~1.7GB | Good | Memory-constrained, fast searches |
-| `hybrid` | + Reranker | ~3.4GB | Better | Balanced quality and memory |
-| `full` | + Query Expander | ~4.4GB | Best | Maximum retrieval quality |
+| `hybrid` | Embedder + Reranker | ~3.4GB | Best | Maximum retrieval quality |
 
 > **Video [Beta] note:** Video support requires `ffmpeg`. The torch backend video path has a known upstream issue (see [QwenLM/Qwen3.5#58](https://github.com/QwenLM/Qwen3.5/issues/58)).
 
@@ -184,7 +192,7 @@ graph TD
     end
 ```
 
-**Pipeline:** BM25 probe → Query expansion (full mode) → Parallel BM25 + Vector → RRF fusion → Reranking (hybrid/full) → Score blending
+**Pipeline:** BM25 probe → Parallel BM25 + Vector → RRF fusion → Reranking (hybrid mode) → Score blending
 
 ## CLI (development & debugging)
 
@@ -241,9 +249,12 @@ for r in results:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RECALLFORGE_BACKEND` | `auto` | `auto`, `mlx`, `torch` |
-| `RECALLFORGE_MODE` | `full` | `embed`, `hybrid`, `full` |
+| `RECALLFORGE_MODE` | `hybrid` | `embed`, `hybrid` |
 | `RECALLFORGE_MLX_QUANTIZE` | `4bit` | `4bit`, `bf16` |
 | `RECALLFORGE_STORE_PATH` | `~/.recallforge` | Storage directory |
+
+Full reference (including advanced tuning and server/storage internals):
+[`docs/ENV_VARS.md`](docs/ENV_VARS.md)
 
 ## Project structure
 
@@ -256,7 +267,7 @@ src/recallforge/
 │   └── lancedb_backend.py # LanceDB + Tantivy FTS
 ├── cache.py              # LRU embedding cache
 ├── search.py             # Hybrid search pipeline (BM25 + vector + RRF)
-├── server.py             # MCP server (16 tools)
+├── server.py             # MCP server (20 tools, stdio + HTTP/SSE)
 ├── documents.py          # PDF/DOCX/PPTX extraction
 ├── video.py              # Frame/transcript extraction
 ├── watch_folder.py       # Folder monitoring with dedup
@@ -270,11 +281,17 @@ pytest tests/ -m "not live"    # Unit tests (no model download needed)
 pytest tests/ -m live -v       # Integration tests (requires models)
 ```
 
+## Release Workflow
+
+CI in `.github/workflows/ci.yml` runs the test matrix, builds distributions, runs `twine check`, smoke-tests wheel installation, and smoke-tests the HTTP server extra from the built wheel. Tagged pushes matching `v*` trigger `.github/workflows/publish.yml`, which publishes to PyPI with trusted publishing.
+
+Before tagging a release, run the repo test suite plus the install/CLI UAT scripts, and if you are on a capable host, run the live integration slice and expanded benchmark. The full checklist lives in [docs/RELEASE.md](docs/RELEASE.md).
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full development guidelines.
 
 ## Attribution
 
-RecallForge is inspired by [QMD](https://github.com/tobil/qmd) by Tobi. QMD pioneered the multi-stage retrieval pipeline (embedding, reranking, query expansion). RecallForge extends this pattern to vision-language with cross-modal retrieval and multi-backend support.
+RecallForge is inspired by [QMD](https://github.com/tobil/qmd) by Tobi. QMD pioneered the multi-stage retrieval pipeline (embedding, reranking). RecallForge extends this pattern to vision-language with cross-modal retrieval and multi-backend support.
 
 ## License
 

@@ -1,4 +1,4 @@
-"""Indexing operations for LanceDB storage backend."""
+"""Indexing operations service for LanceDB storage backend."""
 
 import fnmatch
 import hashlib
@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..documents import extract_document_artifacts, is_document_file
 from ..video import extract_video_artifacts, is_video_file
@@ -23,12 +23,73 @@ from .lancedb_shared import (
     trace_log,
 )
 
+if TYPE_CHECKING:
+    from .lancedb_backend import LanceDBBackend
+
 logger = logging.getLogger("recallforge.storage")
 
 DEFAULT_MAX_FILE_SIZE_MB = 100
 
 
-class LanceDBIndexingMixin:
+class IndexingOps:
+    """Service class for indexing operations."""
+
+    def __init__(self, backend: "LanceDBBackend"):
+        self._backend = backend
+
+    def _resolve_captioner(self, embed_func, method_name: str):
+        """Resolve optional caption/description method from callable or its bound object."""
+        if embed_func is None:
+            return None
+        direct = getattr(embed_func, method_name, None)
+        if callable(direct):
+            return direct
+        owner = getattr(embed_func, "__self__", None)
+        candidate = getattr(owner, method_name, None) if owner is not None else None
+        if callable(candidate):
+            return candidate
+        return None
+
+    def _describe_image(self, embed_func, image_path: str, enabled: bool) -> str:
+        if not enabled:
+            return ""
+        describer = self._resolve_captioner(embed_func, "describe_image") or self._resolve_captioner(embed_func, "caption_image")
+        if not describer:
+            return ""
+        try:
+            caption = describer(image_path)
+            return caption.strip() if isinstance(caption, str) else ""
+        except Exception as e:
+            logger.warning("index_image: caption generation failed for %s: %s", image_path, e)
+            return ""
+
+    def _describe_video(self, embed_image_func, embed_video_func, video_path: str, frame_paths: List[str], enabled: bool) -> str:
+        if not enabled:
+            return ""
+
+        describer = (
+            self._resolve_captioner(embed_video_func, "describe_video")
+            or self._resolve_captioner(embed_image_func, "describe_video")
+        )
+        if describer:
+            try:
+                caption = describer(video_path, frame_paths=frame_paths)
+                if isinstance(caption, str) and caption.strip():
+                    return caption.strip()
+            except Exception as e:
+                logger.warning("index_video: video caption generation failed for %s: %s", video_path, e)
+
+        # Fallback: summarize first keyframes through image captions.
+        if frame_paths:
+            parts: List[str] = []
+            for frame_path in frame_paths[:3]:
+                frame_caption = self._describe_image(embed_image_func, frame_path, enabled=True)
+                if frame_caption:
+                    parts.append(frame_caption)
+            return " ".join(parts).strip()
+
+        return ""
+
     def index_document(
         self,
         path: str,
@@ -161,12 +222,12 @@ class LanceDBIndexingMixin:
 
             # Remove prior vectors for this memory path to prevent duplicate chunks.
             try:
-                self._embeddings_table.delete(del_filter)
+                self._backend._embeddings_table.delete(del_filter)
             except Exception as e:
                 logger.warning(f"upsert_memory: failed to delete old vectors for {collection}/{normalized_path}: {e}")
 
-        self.insert_content(content_hash, text, "text")
-        self.insert_document(
+        self._backend.insert_content(content_hash, text, "text")
+        self._backend.insert_document(
             collection, normalized_path, title, content_hash, "text",
             user_id=user_id, session_id=session_id, project_id=project_id, profile=profile
         )
@@ -174,7 +235,7 @@ class LanceDBIndexingMixin:
         chunks = chunk_document(text)
         vectors = self._embed_chunks_batch(chunks, embed_func)
         for i, chunk in enumerate(chunks):
-            self.insert_embedding(
+            self._backend.insert_embedding(
                 content_hash=content_hash,
                 seq=i,
                 pos=chunk["pos"],
@@ -196,7 +257,7 @@ class LanceDBIndexingMixin:
             )
 
         # Schedule debounced FTS rebuild instead of immediate rebuild
-        self._schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
 
         trace_log("upsert_memory_done", path=normalized_path, hash=content_hash[:8], chunks=len(chunks))
         return content_hash
@@ -232,7 +293,7 @@ class LanceDBIndexingMixin:
         removed_vectors = 0
         try:
             removed_vectors = len(
-                self._embeddings_table.search()
+                self._backend._embeddings_table.search()
                 .where(del_filter)
                 .to_list()
             )
@@ -241,14 +302,14 @@ class LanceDBIndexingMixin:
             removed_vectors = 0
 
         try:
-            self._embeddings_table.delete(del_filter)
+            self._backend._embeddings_table.delete(del_filter)
         except Exception as e:
             logger.error(f"delete_memory: failed to delete embeddings for {collection}/{normalized_path}: {e}")
 
-        self.deactivate_document(collection, normalized_path)
+        self._backend.deactivate_document(collection, normalized_path)
 
         # Schedule debounced FTS rebuild
-        self._schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
 
         trace_log("delete_memory_done", path=normalized_path, removed_vectors=removed_vectors)
         return {
@@ -263,7 +324,7 @@ class LanceDBIndexingMixin:
         }
 
     def _video_frames_dir_for_logical_path(self, logical_path: str) -> Path:
-        artifact_root = Path(self._store_path or DEFAULT_INDEX_DIR) / "video_frames"
+        artifact_root = Path(self._backend._store_path or DEFAULT_INDEX_DIR) / "video_frames"
         digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
         return artifact_root / digest
 
@@ -312,7 +373,7 @@ class LanceDBIndexingMixin:
         )
         if include_children:
             self._delete_video_frame_artifacts(normalized_path)
-        self._schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
         return {
             "success": True,
             "path": normalized_path,
@@ -434,12 +495,12 @@ class LanceDBIndexingMixin:
         filter_clause = " AND ".join(filters)
         removed_vectors = 0
         try:
-            removed_vectors = len(self._embeddings_table.search().where(filter_clause).to_list())
+            removed_vectors = len(self._backend._embeddings_table.search().where(filter_clause).to_list())
         except Exception as e:
             logger.debug(f"_delete_path_entries: failed to count rows for {logical_path}: {e}")
 
         try:
-            self._embeddings_table.delete(filter_clause)
+            self._backend._embeddings_table.delete(filter_clause)
         except Exception as e:
             logger.debug(f"_delete_path_entries: failed to delete embeddings for {logical_path}: {e}")
 
@@ -458,7 +519,7 @@ class LanceDBIndexingMixin:
             doc_filters.append(_safe_filter("content_type", content_type))
 
         try:
-            self._documents_table.update(
+            self._backend._documents_table.update(
                 where=" AND ".join(doc_filters),
                 values={"active": 0, "updated_at": int(time.time() * 1000)},
             )
@@ -513,7 +574,7 @@ class LanceDBIndexingMixin:
             skipped_details.append({"path": item_path, "reason": reason})
 
         # Use bulk mode to defer FTS rebuilds until the end
-        with self.bulk_mode():
+        with self._backend.bulk_mode():
             for file_path in self._iter_folder_files(root, recursive):
                 rel = file_path.relative_to(root).as_posix()
                 if include and not any(fnmatch.fnmatch(rel, pattern) for pattern in include):
@@ -602,6 +663,7 @@ class LanceDBIndexingMixin:
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
         max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
+        caption_media: bool = True,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text, file, or folder inputs."""
         content_types = content_types or ["text", "image", "video", "document"]
@@ -674,6 +736,7 @@ class LanceDBIndexingMixin:
                         session_id=session_id,
                         project_id=project_id,
                         profile=profile,
+                        caption_media=caption_media,
                     )
                     summary["indexed_images"] += 1
                     mark(item_path, "image", "indexed")
@@ -696,6 +759,7 @@ class LanceDBIndexingMixin:
                         session_id=session_id,
                         project_id=project_id,
                         profile=profile,
+                        caption_media=caption_media,
                     )
                     summary["indexed_videos"] += 1
                     summary["indexed_images"] += video_summary["indexed_frames"]
@@ -715,6 +779,7 @@ class LanceDBIndexingMixin:
                         path=str(candidate),
                         collection=collection,
                         embed_func=embed_text_func,
+                        embed_image_func=embed_image_func,
                         model=model,
                         stored_path=item_path,
                         user_id=user_id,
@@ -722,13 +787,15 @@ class LanceDBIndexingMixin:
                         project_id=project_id,
                         profile=profile,
                     )
-                    if document_summary.get("indexed_sections", 0) == 0:
+                    total_sections = document_summary.get("indexed_sections", 0) + document_summary.get("indexed_images", 0)
+                    if total_sections == 0:
                         summary["skipped"] += 1
                         mark(item_path, "document", "skipped", reason="empty_content")
                     else:
                         summary["indexed_documents"] += 1
-                        summary["indexed_document_sections"] += document_summary["indexed_sections"]
-                        summary["indexed_text"] += document_summary["indexed_sections"]
+                        summary["indexed_document_sections"] += total_sections
+                        summary["indexed_text"] += document_summary.get("indexed_sections", 0)
+                        summary["indexed_images"] += document_summary.get("indexed_images", 0)
                         mark(item_path, "document", "indexed")
                     return
 
@@ -772,7 +839,7 @@ class LanceDBIndexingMixin:
                 mark(item_path, item_type, "error", str(e))
 
         # Use bulk mode to defer FTS rebuilds until the end
-        with self.bulk_mode():
+        with self._backend.bulk_mode():
             if text is not None:
                 if "text" not in allowed:
                     summary["skipped"] += 1
@@ -838,6 +905,15 @@ class LanceDBIndexingMixin:
         # FTS rebuild happens once at context exit
 
         summary["total_seen"] = len(summary["items"])
+
+        # Unload captioner after ingest batch to reclaim ~0.9 GB.
+        # The captioner lives on the model backend (MLXBackend), not the
+        # storage backend (LanceDBBackend). Access it via the bound method.
+        if caption_media and embed_image_func is not None:
+            model_backend = getattr(embed_image_func, '__self__', None)
+            if model_backend is not None and hasattr(model_backend, '_unload_captioner'):
+                model_backend._unload_captioner()
+
         trace_log("ingest_done", collection=collection, indexed_text=summary["indexed_text"], indexed_images=summary["indexed_images"])
         return summary
 
@@ -853,6 +929,7 @@ class LanceDBIndexingMixin:
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        caption_media: bool = True,
     ) -> str:
         """
         Index an image file.
@@ -902,8 +979,8 @@ class LanceDBIndexingMixin:
             content_type="image",
         )
 
-        self.insert_content(content_hash, actual_path, content_type="image")
-        self.insert_document(
+        self._backend.insert_content(content_hash, actual_path, content_type="image")
+        self._backend.insert_document(
             collection=collection,
             file_path=logical_path,
             title=resolved_title,
@@ -918,7 +995,8 @@ class LanceDBIndexingMixin:
         )
 
         vector = embed_func(actual_path)
-        self.insert_embedding(
+        image_caption = self._describe_image(embed_func, actual_path, enabled=caption_media)
+        self._backend.insert_embedding(
             content_hash=content_hash,
             seq=0,
             pos=0,
@@ -927,7 +1005,7 @@ class LanceDBIndexingMixin:
             collection=collection,
             file_path=logical_path,
             title=resolved_title,
-            text_body="",
+            text_body=image_caption,
             content_type="image",
             user_id=user_id,
             session_id=session_id,
@@ -936,7 +1014,7 @@ class LanceDBIndexingMixin:
         )
 
         # Schedule debounced FTS rebuild
-        self._schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
 
         trace_log("index_image_done", path=logical_path, hash=content_hash[:8])
         return content_hash
@@ -956,6 +1034,7 @@ class LanceDBIndexingMixin:
         profile: Optional[str] = None,
         frame_interval_seconds: float = 5.0,
         max_frames: int = 8,
+        caption_media: bool = True,
     ) -> Dict[str, Any]:
         """Index a video into a top-level video embedding plus derived assets."""
         actual_path = str(Path(path).expanduser().resolve())
@@ -963,7 +1042,7 @@ class LanceDBIndexingMixin:
         resolved_title = os.path.splitext(os.path.basename(logical_path))[0]
         video_embed = embed_video_func or embed_image_func
 
-        artifact_root = Path(self._store_path or DEFAULT_INDEX_DIR) / "video_frames"
+        artifact_root = Path(self._backend._store_path or DEFAULT_INDEX_DIR) / "video_frames"
         digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
         output_dir = artifact_root / digest
 
@@ -998,7 +1077,16 @@ class LanceDBIndexingMixin:
             for segment in artifacts.transcripts
             if isinstance(segment.text, str) and segment.text.strip()
         ).strip()
-        video_body = transcript_summary[:4000]
+        frame_paths = [frame.image_path for frame in artifacts.frames]
+        video_caption = self._describe_video(
+            embed_image_func=embed_image_func,
+            embed_video_func=embed_video_func,
+            video_path=actual_path,
+            frame_paths=frame_paths,
+            enabled=caption_media,
+        )
+        parts = [part for part in (video_caption, transcript_summary) if part]
+        video_body = "\n\n".join(parts)[:4000]
 
         try:
             modified_at = int(os.path.getmtime(actual_path) * 1000)
@@ -1011,8 +1099,8 @@ class LanceDBIndexingMixin:
         indexed_video_embeddings = 0
         try:
             vector = video_embed(actual_path)
-            self.insert_content(content_hash, actual_path, content_type="video")
-            self.insert_document(
+            self._backend.insert_content(content_hash, actual_path, content_type="video")
+            self._backend.insert_document(
                 collection=collection,
                 file_path=logical_path,
                 title=resolved_title,
@@ -1025,7 +1113,7 @@ class LanceDBIndexingMixin:
                 project_id=project_id,
                 profile=profile,
             )
-            self.insert_embedding(
+            self._backend.insert_embedding(
                 content_hash=content_hash,
                 seq=0,
                 pos=0,
@@ -1064,6 +1152,7 @@ class LanceDBIndexingMixin:
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
+                caption_media=caption_media,
             )
             indexed_frames += 1
 
@@ -1099,6 +1188,7 @@ class LanceDBIndexingMixin:
         path: str,
         collection: str,
         embed_func,
+        embed_image_func=None,
         model: str = "Qwen3-VL-Embedding-2B",
         stored_path: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -1122,26 +1212,71 @@ class LanceDBIndexingMixin:
 
         artifacts = extract_document_artifacts(actual_path, logical_path)
         indexed_sections = 0
+        indexed_images = 0
+
+        # Track temp dirs from PDF vision fallback for cleanup
+        _temp_dirs_to_clean: set = set()
 
         for section in artifacts.sections:
-            self.upsert_memory(
-                path=section.logical_path,
-                text=section.text,
-                collection=collection,
-                embed_func=embed_func,
-                model=model,
-                user_id=user_id,
-                session_id=session_id,
-                project_id=project_id,
-                profile=profile,
-                _skip_delete=True,
-            )
-            indexed_sections += 1
+            if section.content_type == "image" and section.image_path:
+                # Track the parent temp dir for cleanup after embedding
+                import os
+                _temp_dirs_to_clean.add(os.path.dirname(section.image_path))
+
+                # Use image embedding for image sections
+                image_embed = embed_image_func or embed_func
+                if embed_image_func is None:
+                    logger.warning(
+                        "No image embedder provided for PDF page image %s; "
+                        "falling back to text embedder which may produce poor results. "
+                        "Pass embed_image_func for proper vision embedding.",
+                        section.image_path,
+                    )
+                self.index_image(
+                    path=section.image_path,
+                    collection=collection,
+                    embed_func=image_embed,
+                    model=model,
+                    stored_path=section.logical_path,
+                    title=section.title,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                )
+                # Override content entry to reference source PDF, not temp image.
+                # Temp images are cleaned up after this loop; the embedding vector
+                # persists and is the primary retrieval artifact.
+                from recallforge.storage.lancedb_shared import hash_content
+                content_hash = hash_content(f"pdf_page_image:{actual_path}:page:{section.index}")
+                self._backend.insert_content(content_hash, actual_path, content_type="pdf_page_image")
+                indexed_images += 1
+            else:
+                # Use text embedding for text sections
+                self.upsert_memory(
+                    path=section.logical_path,
+                    text=section.text,
+                    collection=collection,
+                    embed_func=embed_func,
+                    model=model,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                    _skip_delete=True,
+                )
+                indexed_sections += 1
+
+        # Clean up temp dirs from PDF page-to-image rendering
+        import shutil
+        for temp_dir in _temp_dirs_to_clean:
+            if temp_dir and "recallforge_pdf_" in temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
         # Ensure FTS rebuild is scheduled even when no sections were indexed,
         # since _delete_path_entries above may have removed stale entries.
-        if indexed_sections == 0:
-            self._schedule_fts_rebuild()
+        if indexed_sections == 0 and indexed_images == 0:
+            self._backend._fts.schedule_fts_rebuild()
 
         return {
             "success": True,
@@ -1150,4 +1285,5 @@ class LanceDBIndexingMixin:
             "document_type": artifacts.document_type,
             "extractor": artifacts.extractor,
             "indexed_sections": indexed_sections,
+            "indexed_images": indexed_images,
         }

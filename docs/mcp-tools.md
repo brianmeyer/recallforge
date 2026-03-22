@@ -1,13 +1,25 @@
 # RecallForge MCP Tool Reference
 
 ## Overview
-RecallForge exposes a local Model Context Protocol (MCP) server over stdio for multimodal retrieval and memory operations. It supports text, images, video, and document ingest/search, plus runtime configuration.
+RecallForge exposes a local Model Context Protocol (MCP) server over stdio or HTTP/SSE for multimodal retrieval and memory operations. It supports text, images, video, and document ingest/search, collection administration, and runtime configuration.
 
-Start the server:
+Start the server over stdio:
 
 ```bash
-recallforge serve --mode full
+recallforge serve --mode hybrid
 ```
+
+Start the server over HTTP/SSE:
+
+```bash
+recallforge serve --http --host 127.0.0.1 --port 7433 --mode hybrid
+```
+
+HTTP mode also exposes:
+
+- `/health`
+- `/sse`
+- `/messages/`
 
 Example MCP client config (Claude Desktop):
 
@@ -16,7 +28,7 @@ Example MCP client config (Claude Desktop):
   "mcpServers": {
     "recallforge": {
       "command": "recallforge",
-      "args": ["serve", "--mode", "full"]
+      "args": ["serve", "--mode", "hybrid"]
     }
   }
 }
@@ -26,8 +38,10 @@ Example MCP client config (Claude Desktop):
 
 ### Search
 - `search`
+- `explain_results`
 - `search_fts`
 - `search_vec`
+- `search_batch`
 
 ### Ingest
 - `ingest`
@@ -44,6 +58,8 @@ Example MCP client config (Claude Desktop):
 - `rebuild_fts`
 - `list_collections`
 - `list_namespaces`
+- `rename_collection`
+- `delete_collection`
 - `batch`
 - `get_config`
 - `set_config`
@@ -52,7 +68,7 @@ Example MCP client config (Claude Desktop):
 
 ## search
 
-**Description:** Full hybrid search combining BM25, vector search, query expansion (in `full` mode), and reranking (in `hybrid`/`full`).
+**Description:** Full hybrid search combining BM25, vector search, and reranking (in `hybrid` mode).
 
 **Parameters:**
 | Name | Type | Required | Default | Description |
@@ -67,6 +83,7 @@ Example MCP client config (Claude Desktop):
 | session_id | string | No | — | Session namespace filter |
 | project_id | string | No | — | Project namespace filter |
 | profile | string | No | — | Profile namespace filter |
+| rerank_top_k | integer | No | 20 | Max top RRF candidates to rerank (`0` disables reranking) |
 
 \* Exactly one of `query`, `image_path`, or `video_path` must be provided.
 
@@ -85,7 +102,7 @@ Example MCP client config (Claude Desktop):
   "query": "whiteboard diagram from last meeting",
   "image_path": null,
   "video_path": null,
-  "mode": "full",
+  "mode": "hybrid",
   "count": 1,
   "results": [
     {
@@ -110,6 +127,85 @@ Example MCP client config (Claude Desktop):
 - `INTERNAL_ERROR`: uncaught exceptions in dispatch/call path.
 
 **Notes:** Best default search tool for agents. Output includes fused/reranked metrics.
+
+---
+
+## explain_results
+
+**Description:** Run the same hybrid search pipeline as `search`, but return detailed relevance provenance for each result so users can understand why it was retrieved and where its final rank came from.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| query | string | Conditionally* | — | Text query |
+| image_path | string | Conditionally* | — | Image query path |
+| video_path | string | Conditionally* | — | Video query path |
+| limit | integer | No | 10 | Max results |
+| collection | string | No | server default collection | Collection filter |
+| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| user_id | string | No | — | User namespace filter |
+| session_id | string | No | — | Session namespace filter |
+| project_id | string | No | — | Project namespace filter |
+| profile | string | No | — | Profile namespace filter |
+| intent | string (`exact_lookup`\|`semantic`\|`broad`) | No | — | Intent steering for RRF weights |
+| rerank_top_k | integer | No | 20 | Max top RRF candidates to rerank (`0` disables reranking) |
+| expand | boolean | No | false | Enable VL-aware query expansion |
+
+\* Exactly one of `query`, `image_path`, or `video_path` must be provided.
+
+**Example Request:**
+```json
+{
+  "query": "whiteboard diagram from last meeting",
+  "limit": 3,
+  "intent": "semantic"
+}
+```
+
+**Example Response:**
+```json
+{
+  "query": "whiteboard diagram from last meeting",
+  "image_path": null,
+  "video_path": null,
+  "mode": "hybrid",
+  "count": 1,
+  "results": [
+    {
+      "filepath": "/notes/meeting.md",
+      "title": "meeting.md",
+      "final_score": 0.8921,
+      "content_type": "text",
+      "source": "original_fts+original_vec",
+      "provenance": {
+        "rrf": {
+          "sources": {"original_fts": 0, "original_vec": 1},
+          "rrf_score": 0.05765,
+          "media_compensation_applied": false
+        },
+        "reranker": {
+          "raw_score": 0.9334,
+          "normalized_score": 0.8123,
+          "scoring_path": "text"
+        },
+        "blend": {
+          "weights": {"rrf": 0.75, "rerank": 0.25},
+          "final_blended_score": 0.8921
+        }
+      },
+      "rrf_rank": 1,
+      "rerank_score": 0.9334,
+      "snippet": "..."
+    }
+  ]
+}
+```
+
+**Notes:**
+- Reuses the same retrieval pipeline as `search`, so explanations reflect the actual ranking path.
+- `provenance.rrf.sources` maps each contributing RRF list to that result’s rank in the list.
+- `provenance.reranker.scoring_path` shows whether the reranker used text or VL scoring.
+- `media_compensation_applied` is `true` for image/video candidates that received RRF compensation because BM25 cannot surface them structurally.
 
 ---
 
@@ -221,6 +317,91 @@ Example MCP client config (Claude Desktop):
 - `INTERNAL_ERROR`: uncaught exceptions.
 
 **Notes:** Uses only vector similarity, no BM25/reranking.
+
+---
+
+## search_batch
+
+**Description:** Run multiple search queries in parallel and merge results using Reciprocal Rank Fusion (RRF). Each query executes independently in a thread pool, then results are deduplicated with best-score-wins ranking.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| queries | array | Yes | — | List of queries (1-20 items) |
+| limit | integer | No | 10 | Max final results after merge |
+| collection | string | No | server default collection | Collection filter |
+| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| user_id | string | No | — | User namespace filter |
+| session_id | string | No | — | Session namespace filter |
+| project_id | string | No | — | Project namespace filter |
+| profile | string | No | — | Profile namespace filter |
+
+**Query object schema (within `queries` array):**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| query | string | Yes | — | Search query text |
+| mode | string (`hybrid`\|`fts`\|`vec`) | No | hybrid | Search mode for this query |
+| intent | string (`exact_lookup`\|`semantic`\|`broad`) | No | — | Intent steering for hybrid mode |
+| weight | number | No | 1.0 | Weight multiplier for RRF merging (≥0) |
+
+**Example Request:**
+```json
+{
+  "queries": [
+    "deployment checklist",
+    {"query": "runbook", "mode": "fts", "weight": 2.0},
+    {"query": "incident response", "mode": "vec", "intent": "semantic"}
+  ],
+  "limit": 10,
+  "collection": "work"
+}
+```
+
+**Example Response:**
+```json
+{
+  "query_count": 3,
+  "limit": 10,
+  "count": 5,
+  "results": [
+    {
+      "filepath": "/docs/runbook.md",
+      "title": "runbook.md",
+      "score": 0.0847,
+      "source": "0,1",
+      "query_scores": {"0": 0.8921, "1": 0.9102},
+      "snippet": "...",
+      "user_id": null,
+      "session_id": null,
+      "project_id": null,
+      "profile": null
+    },
+    {
+      "filepath": "/docs/deploy.md",
+      "title": "deploy.md",
+      "score": 0.0723,
+      "source": "0",
+      "query_scores": {"0": 0.8456},
+      "snippet": "...",
+      "user_id": null,
+      "session_id": null,
+      "project_id": null,
+      "profile": null
+    }
+  ]
+}
+```
+
+**Errors:**
+- `INVALID_INPUT`: when `queries` is empty, exceeds 20 items, or has invalid query objects.
+- `INTERNAL_ERROR`: uncaught exceptions.
+
+**Notes:**
+- Useful for multi-intent searches where different queries target different aspects of a topic.
+- The `source` field shows which query indices (0-indexed) found each result.
+- The `query_scores` field shows the individual score from each query that matched.
+- Parallel execution reduces latency compared to sequential `search` calls.
+- RRF fusion handles deduplication: same document from multiple queries gets combined score.
 
 ---
 
@@ -517,17 +698,16 @@ Example MCP client config (Claude Desktop):
 **Example Response:**
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "models": {
     "backend": "mlx",
     "device": "mps",
     "dtype": "float16",
     "embedder_loaded": true,
     "reranker_loaded": true,
-    "expander_loaded": true,
     "memory_gb": 1.9,
     "quantization": "4bit",
-    "mode": "full"
+    "mode": "hybrid"
   },
   "database": {
     "embeddings_count": 1024,
@@ -539,7 +719,7 @@ Example MCP client config (Claude Desktop):
 **Errors:**
 - `INTERNAL_ERROR`: uncaught exceptions.
 
-**Notes:** Useful heartbeat/health endpoint for agent startup checks.
+**Notes:** Useful MCP-side heartbeat/status call for agent startup checks. HTTP mode also exposes a separate `/health` route.
 
 ---
 
@@ -708,20 +888,22 @@ Operation object schema:
 **Example Response:**
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "backend": "mlx",
-  "mode": "full",
+  "mode": "hybrid",
   "quantize": "4bit",
   "data_dir": "/Users/me/.recallforge",
   "collection": "default",
-  "max_file_size_mb": 100
+  "max_file_size_mb": 100,
+  "rerank_top_k": 20,
+  "caption_media": true
 }
 ```
 
 **Errors:**
 - `INTERNAL_ERROR`: uncaught exceptions.
 
-**Notes:** Reflects mutable runtime values (`mode`, `collection`, `max_file_size_mb`) when changed via `set_config`.
+**Notes:** Reflects mutable runtime values (`mode`, `collection`, `max_file_size_mb`, `rerank_top_k`) when changed via `set_config`.
 
 ---
 
@@ -732,29 +914,33 @@ Operation object schema:
 **Parameters:**
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| mode | string (`embed`\|`hybrid`\|`full`) | No | current mode | Search mode |
+| mode | string (`embed`\|`hybrid`) | No | current mode | Search mode |
 | collection | string | No | current default collection | Default collection for tools that omit `collection` |
 | max_file_size_mb | number | No | current max | Default ingest file-size limit (must be >= 1) |
+| rerank_top_k | number | No | current value | Max top RRF candidates to rerank during `search` (must be >= 0) |
 
 **Example Request:**
 ```json
 {
   "mode": "hybrid",
   "collection": "work",
-  "max_file_size_mb": 64
+  "max_file_size_mb": 64,
+  "rerank_top_k": 20
 }
 ```
 
 **Example Response:**
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "backend": "mlx",
   "mode": "hybrid",
   "quantize": "4bit",
   "data_dir": "/Users/me/.recallforge",
   "collection": "work",
-  "max_file_size_mb": 64
+  "max_file_size_mb": 64,
+  "rerank_top_k": 20,
+  "caption_media": true
 }
 ```
 

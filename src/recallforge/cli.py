@@ -15,7 +15,7 @@ import signal
 import sys
 import threading
 
-from . import __version__, RECALLFORGE_BACKEND, RECALLFORGE_MODE, RECALLFORGE_STORAGE
+from . import __version__
 from .documents import is_document_file
 from .video import is_video_file
 
@@ -38,7 +38,7 @@ def main():
     serve_parser = subparsers.add_parser("serve", help="Start MCP server")
     serve_parser.add_argument(
         "--mode", "-m",
-        choices=["embed", "hybrid", "full"],
+        choices=["embed", "hybrid"],
         default=None,
         help="Search mode (default: from RECALLFORGE_MODE env)",
     )
@@ -54,6 +54,49 @@ def main():
         help="Path to storage directory (default: ~/.recallforge)",
     )
     serve_parser.add_argument(
+        "--quantize",
+        choices=["bf16", "4bit"],
+        default=None,
+        help="MLX quantization (default: bf16)",
+    )
+    transport_group = serve_parser.add_mutually_exclusive_group()
+    transport_group.add_argument(
+        "--stdio",
+        action="store_true",
+        help="Use stdio transport (default)",
+    )
+    transport_group.add_argument(
+        "--http",
+        action="store_true",
+        help="Use HTTP/SSE transport",
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=7433,
+        help="HTTP server port (default: 7433)",
+    )
+    serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP server bind host (default: 127.0.0.1)",
+    )
+
+    # warmup command
+    warmup_parser = subparsers.add_parser("warmup", help="Pre-load models and exit")
+    warmup_parser.add_argument(
+        "--mode", "-m",
+        choices=["embed", "hybrid"],
+        default=None,
+        help="Search mode (default: from RECALLFORGE_MODE env)",
+    )
+    warmup_parser.add_argument(
+        "--backend", "-b",
+        choices=["torch", "mlx", "auto"],
+        default=None,
+        help="Model backend (default: from RECALLFORGE_BACKEND env)",
+    )
+    warmup_parser.add_argument(
         "--quantize",
         choices=["bf16", "4bit"],
         default=None,
@@ -116,9 +159,15 @@ def main():
     )
     search_parser.add_argument(
         "--mode", "-m",
-        choices=["embed", "hybrid", "full"],
+        choices=["embed", "hybrid"],
         default=None,
         help="Search mode",
+    )
+    search_parser.add_argument(
+        "--intent",
+        choices=["exact_lookup", "semantic", "broad"],
+        default=None,
+        help="Intent for query steering: exact_lookup (boost BM25), semantic (boost vector), broad (equal weights)",
     )
     search_parser.add_argument(
         "--store-path",
@@ -129,6 +178,46 @@ def main():
     # status command
     status_parser = subparsers.add_parser("status", help="Show system status")
     status_parser.add_argument(
+        "--store-path",
+        default=None,
+        help="Path to storage directory",
+    )
+    
+    # collections command
+    collections_parser = subparsers.add_parser("collections", help="Manage collections")
+    collections_subparsers = collections_parser.add_subparsers(dest="collections_command", help="Collection commands")
+    
+    # collections list
+    collections_list_parser = collections_subparsers.add_parser("list", help="List all collections")
+    collections_list_parser.add_argument(
+        "--store-path",
+        default=None,
+        help="Path to storage directory",
+    )
+    
+    # collections rename
+    collections_rename_parser = collections_subparsers.add_parser("rename", help="Rename a collection")
+    collections_rename_parser.add_argument(
+        "old_name",
+        help="Current collection name",
+    )
+    collections_rename_parser.add_argument(
+        "new_name",
+        help="New collection name",
+    )
+    collections_rename_parser.add_argument(
+        "--store-path",
+        default=None,
+        help="Path to storage directory",
+    )
+    
+    # collections delete
+    collections_delete_parser = collections_subparsers.add_parser("delete", help="Delete a collection")
+    collections_delete_parser.add_argument(
+        "name",
+        help="Collection name to delete",
+    )
+    collections_delete_parser.add_argument(
         "--store-path",
         default=None,
         help="Path to storage directory",
@@ -228,27 +317,50 @@ def main():
         return cmd_search(args)
     elif args.command == "status":
         return cmd_status(args)
+    elif args.command == "collections":
+        return cmd_collections(args)
     elif args.command == "watch":
         return cmd_watch(args)
+    elif args.command == "warmup":
+        return cmd_warmup(args)
     else:
         parser.print_help()
         return 1
 
 
+def _apply_model_env(args):
+    """Set shared model/storage environment flags from CLI args."""
+    if getattr(args, "mode", None):
+        os.environ["RECALLFORGE_MODE"] = args.mode
+    if getattr(args, "backend", None):
+        os.environ["RECALLFORGE_BACKEND"] = args.backend
+    if getattr(args, "quantize", None):
+        os.environ["RECALLFORGE_MLX_QUANTIZE"] = args.quantize
+    if getattr(args, "store_path", None):
+        os.environ["RECALLFORGE_STORE_PATH"] = args.store_path
+
+
 def cmd_serve(args):
     """Start the MCP server."""
-    # Set environment from CLI args
-    if args.mode:
-        os.environ["RECALLFORGE_MODE"] = args.mode
-    if args.backend:
-        os.environ["RECALLFORGE_BACKEND"] = args.backend
-    if args.quantize:
-        os.environ["RECALLFORGE_MLX_QUANTIZE"] = args.quantize
-    if args.store_path:
-        os.environ["RECALLFORGE_STORE_PATH"] = args.store_path
-    
+    _apply_model_env(args)
+
+    transport = "http" if args.http else "stdio"
+
     from .server import run_server
-    run_server()
+    run_server(
+        transport=transport,
+        port=args.port,
+        host=args.host,
+        mode=args.mode,
+    )
+    return 0
+
+
+def cmd_warmup(args):
+    """Warm models and exit."""
+    _apply_model_env(args)
+    from .server import warmup_models
+    warmup_models()
     return 0
 
 
@@ -389,6 +501,7 @@ def cmd_search(args):
         limit=args.limit,
         collection=args.collection,
         content_type=args.content_type,
+        intent=args.intent,
     )
 
     query_text = args.query.strip() if isinstance(args.query, str) else ""
@@ -444,7 +557,6 @@ def cmd_status(args):
     print("Models:")
     print(f"  Embedder:     {'✓' if info.embedder_loaded else '✗'}")
     print(f"  Reranker:     {'✓' if info.reranker_loaded else '✗'}")
-    print(f"  Expander:     {'✓' if info.expander_loaded else '✗'}")
     print(f"  Memory:       {info.memory_allocated_gb:.1f} GB")
     print()
     print("Storage:")
@@ -454,6 +566,32 @@ def cmd_status(args):
     
     return 0
 
+
+def cmd_collections(args):
+    """Manage collections."""
+    from . import get_storage
+
+    store_path = args.store_path or os.environ.get("RECALLFORGE_STORE_PATH")
+    storage = get_storage(store_path)
+    
+    if args.collections_command == "list":
+        collections = storage.list_collections()
+        print(json.dumps({"collections": collections, "count": len(collections)}, indent=2))
+        return 0
+    
+    elif args.collections_command == "rename":
+        result = storage.rename_collection(args.old_name, args.new_name)
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("success") else 1
+    
+    elif args.collections_command == "delete":
+        result = storage.delete_collection(args.name)
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("success") else 1
+    
+    else:
+        print("collections requires subcommand: list|rename|delete", file=sys.stderr)
+        return 2
 
 
 def cmd_watch(args):

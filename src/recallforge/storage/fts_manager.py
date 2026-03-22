@@ -1,8 +1,12 @@
-"""FTS helpers for LanceDB storage backend."""
+"""FTS (Full-Text Search) manager service for LanceDB storage backend."""
 
 import time
+from typing import TYPE_CHECKING
 
 from .lancedb_shared import logger, trace_log
+
+if TYPE_CHECKING:
+    from .lancedb_backend import LanceDBBackend
 
 
 class _BulkModeContext:
@@ -20,6 +24,11 @@ class _BulkModeContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._backend._bulk_mode = self._was_in_bulk
+
+        # Flush batched writes once when leaving outermost bulk mode.
+        if not self._was_in_bulk:
+            self._backend._flush_pending_writes(force=True)
+
         trace_log("bulk_mode_exit", needs_rebuild=self._backend._fts_needs_rebuild)
 
         # Trigger a single rebuild at the end of bulk mode if needed
@@ -29,8 +38,13 @@ class _BulkModeContext:
         return False  # Don't suppress exceptions
 
 
-class LanceDBFTSMixin:
-    def _schedule_fts_rebuild(self) -> None:
+class FTSManager:
+    """Service class for FTS (Full-Text Search) operations."""
+
+    def __init__(self, backend: "LanceDBBackend"):
+        self._backend = backend
+
+    def schedule_fts_rebuild(self) -> None:
         """
         Schedule a debounced FTS rebuild.
 
@@ -39,36 +53,36 @@ class LanceDBFTSMixin:
 
         In bulk mode, all rebuilds are deferred until bulk mode ends.
         """
-        self._fts_rebuild_pending += 1
-        self._fts_needs_rebuild = True
+        self._backend._fts_rebuild_pending += 1
+        self._backend._fts_needs_rebuild = True
 
-        trace_log("schedule_fts_rebuild", pending=self._fts_rebuild_pending, bulk_mode=self._bulk_mode)
+        trace_log("schedule_fts_rebuild", pending=self._backend._fts_rebuild_pending, bulk_mode=self._backend._bulk_mode)
 
         # In bulk mode, defer all rebuilds until bulk ends
-        if self._bulk_mode:
+        if self._backend._bulk_mode:
             return
 
         # Immediate rebuild if threshold exceeded
-        if self._fts_rebuild_pending >= self.FTS_REBUILD_PENDING_THRESHOLD:
-            self._do_fts_rebuild()
+        if self._backend._fts_rebuild_pending >= self._backend.FTS_REBUILD_PENDING_THRESHOLD:
+            self.do_fts_rebuild()
 
-    def _do_fts_rebuild(self) -> None:
+    def do_fts_rebuild(self) -> None:
         """
         Execute the actual FTS rebuild with rate limiting.
         """
         now = time.time()
-        elapsed = now - self._fts_last_rebuild
+        elapsed = now - self._backend._fts_last_rebuild
 
         # Rate limit: don't rebuild more than once per min interval
-        if elapsed < self.FTS_REBUILD_MIN_INTERVAL and self._fts_rebuild_pending < self.FTS_REBUILD_PENDING_THRESHOLD:
+        if elapsed < self._backend.FTS_REBUILD_MIN_INTERVAL and self._backend._fts_rebuild_pending < self._backend.FTS_REBUILD_PENDING_THRESHOLD:
             trace_log("fts_rebuild_skipped", reason="rate_limited", elapsed=elapsed)
             return
 
-        trace_log("fts_rebuild_executing", pending=self._fts_rebuild_pending)
+        trace_log("fts_rebuild_executing", pending=self._backend._fts_rebuild_pending)
 
-        self._fts_last_rebuild = now
-        self._fts_rebuild_pending = 0
-        self._fts_needs_rebuild = False
+        self._backend._fts_last_rebuild = now
+        self._backend._fts_rebuild_pending = 0
+        self._backend._fts_needs_rebuild = False
 
         try:
             self.ensure_fts_index(force_rebuild=True)
@@ -89,15 +103,15 @@ class LanceDBFTSMixin:
         Returns:
             Context manager that defers FTS rebuilds.
         """
-        return _BulkModeContext(self)
+        return _BulkModeContext(self._backend)
 
     def ensure_fts_index(self, force_rebuild: bool = False) -> None:
         """Ensure the FTS index exists."""
-        if self._embeddings_table is None:
+        if self._backend._embeddings_table is None:
             return
 
         try:
-            row_count = self._embeddings_table.count_rows()
+            row_count = self._backend._embeddings_table.count_rows()
         except Exception as e:
             logger.error(f"ensure_fts_index: failed to count rows: {e}")
             return
@@ -107,14 +121,14 @@ class LanceDBFTSMixin:
 
         if force_rebuild:
             try:
-                self._embeddings_table.create_fts_index("text_body", replace=True)
+                self._backend._embeddings_table.create_fts_index("text_body", replace=True)
                 trace_log("fts_index_created", force=True, rows=row_count)
             except Exception as e:
                 logger.error(f"ensure_fts_index: failed to create FTS index: {e}")
             return
 
         try:
-            indices = self._embeddings_table.list_indices()
+            indices = self._backend._embeddings_table.list_indices()
         except Exception as e:
             logger.warning(f"ensure_fts_index: failed to list indices: {e}")
             return
@@ -126,24 +140,24 @@ class LanceDBFTSMixin:
 
         if not has_fts:
             try:
-                self._embeddings_table.create_fts_index("text_body", replace=True)
+                self._backend._embeddings_table.create_fts_index("text_body", replace=True)
                 trace_log("fts_index_created", force=False, rows=row_count)
             except Exception as e:
                 logger.error(f"ensure_fts_index: failed to create FTS index: {e}")
 
     def rebuild_fts_index(self) -> None:
         """Rebuild the FTS index."""
-        if self._embeddings_table is None:
+        if self._backend._embeddings_table is None:
             return
 
-        row_count = self._embeddings_table.count_rows()
+        row_count = self._backend._embeddings_table.count_rows()
         if row_count == 0:
             return
 
-        indices = self._embeddings_table.list_indices()
+        indices = self._backend._embeddings_table.list_indices()
         for idx in indices:
             if "text_body" in (idx.columns or []) and "FTS" in str(idx.index_type or idx.type or "").upper():
-                self._embeddings_table.drop_index(idx.name)
+                self._backend._embeddings_table.drop_index(idx.name)
                 break
 
         self.ensure_fts_index()

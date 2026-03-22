@@ -216,3 +216,32 @@ def test_extract_pptx_empty_graceful_skip(tmp_path):
 
     assert artifacts.document_type == "pptx"
     assert artifacts.sections == []
+
+
+def test_document_section_supports_image_content():
+    """DocumentSection should support image content type and image_path."""
+    from recallforge.documents import DocumentSection
+
+    # Text section (default)
+    text_section = DocumentSection(
+        logical_path="doc::page:0001",
+        title="Page 1",
+        text="Some text content",
+        section_type="page",
+        index=1,
+    )
+    assert text_section.content_type == "text"
+    assert text_section.image_path is None
+
+    # Image section
+    image_section = DocumentSection(
+        logical_path="doc::page:0001",
+        title="Page 1",
+        text="",
+        section_type="page",
+        index=1,
+        content_type="image",
+        image_path="/tmp/page_0001.png",
+    )
+    assert image_section.content_type == "image"
+    assert image_section.image_path == "/tmp/page_0001.png"

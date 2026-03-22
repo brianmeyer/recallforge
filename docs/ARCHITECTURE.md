@@ -33,8 +33,8 @@ It is inspired by and builds upon [QMD](https://github.com/tobil/qmd) by [Tobi](
 │  │           │                          │                            │   │
 │  │           └──> Vector Search ───────┼──> RRF Fusion ──> Rerank   │   │
 │  │                                       │                  │        │   │
-│  │   [full mode: Query Expansion]        ▼                  ▼        │   │
-│  │   Lex/Vec/HyDE expansions ──> Scored Results ──> Final Ranking   │   │
+│  │                                       ▼                  ▼        │   │
+│  │                           Scored Results ──> Final Ranking       │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -55,7 +55,6 @@ class MyBackend(ModelBackend):
     def embed_image(self, image_path: str) -> np.ndarray: ...
     def embed_images(self, image_paths: List[str]) -> np.ndarray: ...
     def rerank(self, query: str, documents: List[Dict]) -> List[float]: ...
-    def expand_query(self, query: str) -> Dict[str, str]: ...
     def warm_up(self) -> None: ...
     def get_info(self) -> BackendInfo: ...
 ```
@@ -65,21 +64,18 @@ class MyBackend(ModelBackend):
 | Mode | Models Loaded | Memory (MLX 4-bit) | Quality |
 |------|---------------|-------------------|---------|
 | `embed` | Embedder only | ~1.7 GB | Baseline |
-| `hybrid` | Embedder + Reranker | ~3.4 GB | Better |
-| `full` | Embedder + Reranker + Expander | ~4.4 GB | Best |
+| `hybrid` | Embedder + Reranker | ~3.4 GB | Best |
 
-> **Note:** Memory values are model download sizes for MLX 4-bit on Apple Silicon. Runtime process memory (RSS) is lower: ~329MB peak for embed mode. PyTorch fp16 uses significantly more memory (~4GB for embedder alone).
+> **Note:** Memory values are model download sizes for MLX 4-bit on Apple Silicon. Runtime process memory (RSS) is lower: ~329MB peak for embed mode, ~1.5GB for hybrid mode. PyTorch fp16 uses significantly more memory (~4GB for embedder alone).
 
 #### Concrete Backends
 
 - **TorchBackend** (`torch_backend.py`): PyTorch — CUDA > MPS > CPU, float16
   - Embedder: `Qwen/Qwen3-VL-Embedding-2B`
   - Reranker: `Qwen/Qwen3-VL-Reranker-2B`
-  - Expander: `tobil/qmd-query-expansion-qwen3.5-2B`
 - **MLXBackend** (`mlx_backend.py`): Apple Silicon MLX
   - BF16: `arthurcollet/Qwen3-VL-Embedding-2B-mlx`
   - 4-bit: `arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit`
-  - Expander: Torch fallback
 
 ### 2. StorageBackend ABC (`src/recallforge/storage/base.py`)
 
@@ -134,27 +130,36 @@ Query
   │
   ├──[all modes]──> BM25 probe
   │
-  ├──[full mode]──> Query expansion (lex/vec/hyde)
-  │
   ├──[all modes]──> Parallel searches (ThreadPoolExecutor)
-  │                  ├── BM25 (original + lex expansions)
-  │                  └── Vector (original + vec + hyde)
+  │                  ├── BM25
+  │                  └── Vector
   │
-  ├──[all modes]──> RRF fusion (k=60, weighted)
+  ├──[all modes]──> RRF fusion (k=60, weighted, modality-aware)
   │
-  ├──[hybrid/full]─> Cross-encoder reranking
+  ├──[hybrid mode]─> Cross-encoder reranking
   │
   └──[all modes]──> Score blending → top-K HybridResult
 ```
 
-#### RRF Weights
-- First 2 result lists: weight=2.0
-- Additional expansion lists: weight=1.0
+#### RRF Defaults
+
+- Text-targeted searches lean vector-first by default: `original_vec=2.5`, `original_fts=1.5`
+- Image/video-targeted searches lean BM25-caption/transcript support: `original_vec=1.5`, `original_fts=2.5`
+- Expanded query branches inherit their parent weight at `0.5x`
+- Intent-specific weights (`exact_lookup`, `semantic`, `broad`) override the defaults when explicitly requested
+- Media compensation only applies for explicit image/video target searches, and only when a media result never appeared in any BM25/FTS list
 
 #### Score Blending
-- RRF rank 1-3: 75% RRF + 25% reranker
-- RRF rank 4-10: 60% RRF + 40% reranker
-- RRF rank 11+: 40% RRF + 60% reranker
+
+- Text-only rerank path:
+  - RRF rank 1-3: 90% RRF + 10% reranker
+  - RRF rank 4-10: 85% RRF + 15% reranker
+  - RRF rank 11+: 75% RRF + 25% reranker
+- Cross-modal or media-target rerank path:
+  - RRF rank 1-3: 75% RRF + 25% reranker
+  - RRF rank 4-10: 60% RRF + 40% reranker
+  - RRF rank 11+: 40% RRF + 60% reranker
+- `embed` mode skips reranking entirely and returns fused RRF scores directly
 
 ### 4. Auto Backend Selection (`src/recallforge/__init__.py`)
 
@@ -174,11 +179,17 @@ backend = recallforge.get_backend()
 ### 5. MCP Server (`src/recallforge/server.py`)
 
 ```
-Tools: search, search_fts, search_vec, index_document, index_image, status, rebuild_fts
-Transport: stdio
+Tools: 20 MCP tools across search, ingest, memory, collection admin, batch, and runtime config
+Transport: stdio (default) or HTTP/SSE (`/health`, `/sse`, `/messages/`)
 Startup: backend.warm_up() for predictable latency
 Signals: SIGTERM/SIGINT graceful shutdown
 ```
+
+Key runtime details:
+
+- Blocking tool work is routed through a bounded async semaphore to avoid overloading local model/runtime resources
+- HTTP mode requires the optional `server` extra (`starlette` + `uvicorn`)
+- Runtime-safe config changes (`mode`, `collection`, `rerank_top_k`, `caption_media`, model IDs) are exposed through `get_config` / `set_config`
 
 ## Storage Layout
 

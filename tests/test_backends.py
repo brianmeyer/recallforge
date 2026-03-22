@@ -30,26 +30,23 @@ class StubBackend(ModelBackend):
     def embed_text(self, text: str) -> np.ndarray:
         return np.ones(2048, dtype=np.float32)
 
-    def embed_texts(self, texts: List[str]) -> np.ndarray:
-        return np.ones((len(texts), 2048), dtype=np.float32)
+    def embed_texts(self, texts: List[str]) -> List[np.ndarray]:
+        return [np.ones(2048, dtype=np.float32) for _ in texts]
 
     def embed_image(self, image_path: str) -> np.ndarray:
         return np.ones(2048, dtype=np.float32)
 
-    def embed_images(self, image_paths: List[str]) -> np.ndarray:
-        return np.ones((len(image_paths), 2048), dtype=np.float32)
+    def embed_images(self, image_paths: List[str]) -> List[np.ndarray]:
+        return [np.ones(2048, dtype=np.float32) for _ in image_paths]
 
     def embed_video(self, video_path: str) -> np.ndarray:
         return np.ones(2048, dtype=np.float32)
 
-    def embed_videos(self, video_paths: List[str]) -> np.ndarray:
-        return np.ones((len(video_paths), 2048), dtype=np.float32)
+    def embed_videos(self, video_paths: List[str]) -> List[np.ndarray]:
+        return [np.ones(2048, dtype=np.float32) for _ in video_paths]
 
-    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
+    def rerank(self, query: str, documents: List[Dict[str, Any]], **kwargs) -> List[float]:
         return [0.9 - i * 0.1 for i in range(len(documents))]
-
-    def expand_query(self, query: str) -> Dict[str, str]:
-        return {"lex": query + " keywords", "vec": query + " semantic", "hyde": "hypothetical " + query}
 
     def warm_up(self) -> None:
         pass
@@ -61,7 +58,6 @@ class StubBackend(ModelBackend):
             dtype="float32",
             embedder_loaded=True,
             reranker_loaded=True,
-            expander_loaded=True,
             memory_allocated_gb=0.0,
             supports_images=True,
             quantization=None,
@@ -91,8 +87,8 @@ class TestBackendABC(unittest.TestCase):
         backend = StubBackend()
         texts = ["one", "two", "three"]
         result = backend.embed_texts(texts)
-        self.assertIsInstance(result, np.ndarray)
-        self.assertEqual(result.shape, (3, 2048))
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 3)
 
     def test_embed_image_returns_ndarray(self):
         backend = StubBackend()
@@ -111,13 +107,6 @@ class TestBackendABC(unittest.TestCase):
         for s in scores:
             self.assertIsInstance(s, float)
 
-    def test_expand_query_returns_dict_with_keys(self):
-        backend = StubBackend()
-        result = backend.expand_query("search query")
-        self.assertIn("lex", result)
-        self.assertIn("vec", result)
-        self.assertIn("hyde", result)
-
     def test_get_info_returns_backend_info(self):
         backend = StubBackend()
         info = backend.get_info()
@@ -126,11 +115,11 @@ class TestBackendABC(unittest.TestCase):
 
 
 class TestTieredModes(unittest.TestCase):
-    """Tests for tiered mode support (embed / hybrid / full)."""
+    """Tests for tiered mode support (embed / hybrid)."""
 
-    def test_default_mode_is_full(self):
+    def test_default_mode_is_hybrid(self):
         backend = StubBackend()
-        self.assertEqual(backend.get_mode(), "full")
+        self.assertEqual(backend.get_mode(), "hybrid")
 
     def test_set_mode_embed(self):
         backend = StubBackend()
@@ -142,10 +131,11 @@ class TestTieredModes(unittest.TestCase):
         backend.set_mode("hybrid")
         self.assertEqual(backend.get_mode(), "hybrid")
 
-    def test_set_mode_full(self):
+    def test_set_mode_full_raises(self):
+        """'full' mode was removed — should raise ValueError."""
         backend = StubBackend()
-        backend.set_mode("full")
-        self.assertEqual(backend.get_mode(), "full")
+        with self.assertRaises(ValueError):
+            backend.set_mode("full")
 
     def test_set_invalid_mode_raises(self):
         backend = StubBackend()
@@ -162,26 +152,6 @@ class TestTieredModes(unittest.TestCase):
         backend.set_mode("hybrid")
         self.assertTrue(backend.needs_reranker())
 
-    def test_needs_reranker_full_mode(self):
-        backend = StubBackend()
-        backend.set_mode("full")
-        self.assertTrue(backend.needs_reranker())
-
-    def test_needs_expander_embed_mode(self):
-        backend = StubBackend()
-        backend.set_mode("embed")
-        self.assertFalse(backend.needs_expander())
-
-    def test_needs_expander_hybrid_mode(self):
-        backend = StubBackend()
-        backend.set_mode("hybrid")
-        self.assertFalse(backend.needs_expander())
-
-    def test_needs_expander_full_mode(self):
-        backend = StubBackend()
-        backend.set_mode("full")
-        self.assertTrue(backend.needs_expander())
-
 
 class TestBackendInfo(unittest.TestCase):
     """Tests for BackendInfo dataclass."""
@@ -190,7 +160,6 @@ class TestBackendInfo(unittest.TestCase):
         info = BackendInfo(name="test", device="cpu", dtype="float32")
         self.assertFalse(info.embedder_loaded)
         self.assertFalse(info.reranker_loaded)
-        self.assertFalse(info.expander_loaded)
         self.assertEqual(info.memory_allocated_gb, 0.0)
         self.assertTrue(info.supports_images)
         self.assertIsNone(info.quantization)
@@ -202,15 +171,13 @@ class TestBackendInfo(unittest.TestCase):
             dtype="float16",
             embedder_loaded=True,
             reranker_loaded=True,
-            expander_loaded=True,
-            memory_allocated_gb=12.5,
+            memory_allocated_gb=8.0,
             supports_images=True,
             quantization=None,
         )
         self.assertTrue(info.embedder_loaded)
         self.assertTrue(info.reranker_loaded)
-        self.assertTrue(info.expander_loaded)
-        self.assertAlmostEqual(info.memory_allocated_gb, 12.5)
+        self.assertAlmostEqual(info.memory_allocated_gb, 8.0)
 
     def test_backend_info_mlx_quantized(self):
         info = BackendInfo(

@@ -7,10 +7,10 @@ Device selection: CUDA > MPS > CPU.
 Model IDs:
 - Embedder: Qwen/Qwen3-VL-Embedding-2B
 - Reranker: Qwen/Qwen3-VL-Reranker-2B
-- Expander: tobil/qmd-query-expansion-qwen3.5-2B (MULTIMODAL Image-Text-to-Text)
 """
 
 import os
+import re
 import sys
 import warnings
 import logging
@@ -48,7 +48,7 @@ class TorchBackend(ModelBackend):
     
     def __init__(
         self,
-        mode: str = "full",
+        mode: str = "hybrid",
         device: str = "auto",
         dtype: str = "float16",
     ):
@@ -56,7 +56,7 @@ class TorchBackend(ModelBackend):
         Initialize PyTorch backend.
         
         Args:
-            mode: Search mode - 'embed', 'hybrid', or 'full'
+            mode: Search mode - 'embed' or 'hybrid'
             device: 'auto', 'cuda', 'mps', or 'cpu'
             dtype: 'float16', 'bfloat16', or 'float32'
         """
@@ -67,8 +67,6 @@ class TorchBackend(ModelBackend):
         # Lazy-loaded models
         self._embedder = None
         self._reranker = None
-        self._expander = None
-        self._expander_tokenizer = None
         
         # Resolved device/dtype
         self._device = None
@@ -77,7 +75,6 @@ class TorchBackend(ModelBackend):
         # Model IDs
         self.EMBEDDER_MODEL = "Qwen/Qwen3-VL-Embedding-2B"
         self.RERANKER_MODEL = "Qwen/Qwen3-VL-Reranker-2B"
-        self.EXPANDER_MODEL = "tobil/qmd-query-expansion-qwen3.5-2B"
         
         # Apply transformers compatibility patch
         self._apply_transformers_patch()
@@ -297,6 +294,38 @@ class TorchBackend(ModelBackend):
         embeddings = self._embedder.process(inputs)
         return self._coerce_embeddings(embeddings)
 
+    def caption_image(self, image_path: str) -> str:
+        """Generate a short one-sentence image caption for BM25 indexing."""
+        self._load_embedder()
+
+        prompt = "Describe this image in one sentence for search indexing."
+
+        try:
+            if hasattr(self._embedder, "caption_image") and callable(self._embedder.caption_image):
+                caption = self._embedder.caption_image(
+                    image_path=image_path,
+                    prompt=prompt,
+                    max_new_tokens=50,
+                )
+                if isinstance(caption, str) and caption.strip():
+                    return re.sub(r"\s+", " ", caption).strip()
+
+            if hasattr(self._embedder, "generate") and callable(self._embedder.generate):
+                generated = self._embedder.generate(
+                    [{"image": image_path, "text": prompt}],
+                    max_new_tokens=50,
+                )
+                if isinstance(generated, str) and generated.strip():
+                    return re.sub(r"\s+", " ", generated).strip()
+                if isinstance(generated, list) and generated:
+                    first = generated[0]
+                    if isinstance(first, str) and first.strip():
+                        return re.sub(r"\s+", " ", first).strip()
+
+            raise RuntimeError("embedder does not expose a supported caption generation API")
+        except Exception as exc:
+            raise RuntimeError(f"caption_image failed for '{image_path}': {exc}") from exc
+
     def embed_video(self, video_path: str) -> np.ndarray:
         """Embed a single video."""
         self._load_embedder()
@@ -401,25 +430,55 @@ class TorchBackend(ModelBackend):
         
         logger.info("[TorchBackend] Loaded reranker on %s with %s", device, dtype)
     
-    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
-        """Rerank documents for a query."""
+    def rerank(
+        self,
+        query: str,
+        documents: List[Dict[str, Any]],
+        query_image_path: Optional[str] = None,
+        query_video_path: Optional[str] = None,
+    ) -> List[float]:
+        """Rerank documents for a query.
+
+        Args:
+            query: Text query.  May be empty when query_image_path/query_video_path
+                is provided.
+            documents: Document dicts.
+            query_image_path: Optional query image path (REC-138/139/150).
+            query_video_path: Optional query video path.
+
+        Note: TorchBackend does not yet support query-side VL reranking.
+        The caller (HybridSearcher._rerank_candidates) falls back to captioning
+        the query media and passing the caption as the text query when this backend
+        is active, so scores remain meaningful.
+        """
         if not documents:
             return []
-        
+
         if not self.needs_reranker():
-            # Hybrid/full mode not active, return neutral scores
+            # Hybrid mode not active, return neutral scores
             return [0.5] * len(documents)
-        
+
         self._load_reranker()
-        
-        doc_texts = [
-            d.get("text", "") or d.get("text_body", "") or ""
-            for d in documents
-        ]
-        
+
+        # Build query dict: prefer caption text already resolved by the caller.
+        # query_image_path / query_video_path are accepted but not used natively here.
+        query_entry: dict = {"text": query}
+
+        doc_entries = []
+        for d in documents:
+            text = d.get("text", "") or d.get("text_body", "") or ""
+            image_path = d.get("image_path")
+            video_path = d.get("video_path")
+            if image_path:
+                doc_entries.append({"text": text, "image": image_path})
+            elif video_path:
+                doc_entries.append({"text": text, "video": video_path})
+            else:
+                doc_entries.append({"text": text})
+
         inputs = {
-            "query": {"text": query},
-            "documents": [{"text": t} for t in doc_texts],
+            "query": query_entry,
+            "documents": doc_entries,
             "instruction": "Given a search query, retrieve relevant candidates that answer the query.",
         }
         
@@ -429,117 +488,7 @@ class TorchBackend(ModelBackend):
         except Exception as e:
             logger.error("[TorchBackend] Rerank error: %s", e)
             return [0.5] * len(documents)
-    
-    # =========================================================================
-    # Query Expander (tobil/qmd-query-expansion-qwen3.5-2B, ~4GB)
-    # =========================================================================
-    
-    def _load_expander(self):
-        """Lazy-load the query expansion model."""
-        if self._expander is not None:
-            return
-        
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-        
-        device = self._get_device()
-        dtype = self._get_dtype()
-        attn = self._get_attention_implementation()
-        
-        model_name = self.EXPANDER_MODEL
-        
-        if not _check_model_cached(model_name):
-            logger.info(
-                "[RecallForge] Downloading expander model (%s, ~4GB)... first run only.",
-                model_name.split("/")[-1],
-            )
 
-        # Suppress flash-linear-attention not-installed warning
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*The fast path is not available.*")
-            warnings.filterwarnings("ignore", message=".*causal_conv1d.*")
-            
-            self._expander_tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self._expander = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=dtype,
-                attn_implementation=attn,
-            ).to(device)
-        
-        self._expander.eval()
-        
-        logger.info("[TorchBackend] Loaded expander (%s) on %s with %s", model_name, device, dtype)
-    
-    def expand_query(self, query: str) -> Dict[str, str]:
-        """Generate query expansions."""
-        if not self.needs_expander():
-            # Full mode not active, return original query
-            return {"lex": query, "vec": query, "hyde": query}
-        
-        self._load_expander()
-        
-        import torch
-        import json
-        
-        tokenizer = self._expander_tokenizer
-        model = self._expander
-        
-        prompt = f"""<|im_start|>system
-You are a query expansion assistant. Given a search query, generate 3 variations:
-1. A lexical variant (lex) - keywords and synonyms for BM25/Fuzzy matching
-2. A vector variant (vec) - semantic rephrasing for vector/ANN search
-3. A hypothetical document (hyde) - what a perfect answer would look like
-
-Format as JSON with keys: lex, vec, hyde
-Each value is a string. Keep variations concise (under 20 words each).<|im_end|>
-<|im_start|>user
-Query: {query}<|im_end|>
-<|im_start|>assistant
-{{"""
-        
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        
-        with torch.no_grad():
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=256,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # Extract JSON
-        json_start = response.find("{")
-        if json_start == -1:
-            return {"lex": query, "vec": query, "hyde": query}
-        
-        json_str = response[json_start:]
-        brace_count = 0
-        end_pos = -1
-        for i, c in enumerate(json_str):
-            if c == "{":
-                brace_count += 1
-            elif c == "}":
-                brace_count -= 1
-                if brace_count == 0:
-                    end_pos = i + 1
-                    break
-        
-        if end_pos != -1:
-            json_str = json_str[:end_pos]
-        
-        try:
-            expansions = json.loads(json_str)
-            return {
-                "lex": expansions.get("lex", query),
-                "vec": expansions.get("vec", query),
-                "hyde": expansions.get("hyde", query),
-            }
-        except (json.JSONDecodeError, TypeError):
-            return {"lex": query, "vec": query, "hyde": query}
-    
     # =========================================================================
     # Warm-up and Status
     # =========================================================================
@@ -554,20 +503,13 @@ Query: {query}<|im_end|>
         # Always load embedder
         self._load_embedder()
         t1 = time.time()
-        last_checkpoint = t1
         logger.info("[TorchBackend]   Embedder loaded in %.1fs", t1 - start)
         
-        # Load reranker for hybrid/full
+        # Load reranker for hybrid mode
         if self.needs_reranker():
             self._load_reranker()
-            last_checkpoint = time.time()
-            logger.info("[TorchBackend]   Reranker loaded in %.1fs", last_checkpoint - t1)
-        
-        # Load expander for full
-        if self.needs_expander():
-            self._load_expander()
-            t_exp = time.time()
-            logger.info("[TorchBackend]   Expander loaded in %.1fs", t_exp - last_checkpoint)
+            t2 = time.time()
+            logger.info("[TorchBackend]   Reranker loaded in %.1fs", t2 - t1)
         
         logger.info("[TorchBackend] All models ready in %.1fs total", time.time() - start)
     
@@ -584,8 +526,6 @@ Query: {query}<|im_end|>
             mem += 4000  # ~4GB
         if self._reranker:
             mem += 4000  # ~4GB
-        if self._expander:
-            mem += 4000  # ~4GB (larger model)
         
         return BackendInfo(
             name="torch",
@@ -593,7 +533,6 @@ Query: {query}<|im_end|>
             dtype=dtype,
             embedder_loaded=self._embedder is not None,
             reranker_loaded=self._reranker is not None,
-            expander_loaded=self._expander is not None,
             memory_allocated_gb=mem / 1000,
             supports_images=True,
             quantization=None,
@@ -601,8 +540,8 @@ Query: {query}<|im_end|>
     
     def set_mode(self, mode: str) -> None:
         """Set the search mode."""
-        if mode not in ("embed", "hybrid", "full"):
-            raise ValueError(f"Invalid mode: {mode}")
+        if mode not in ("embed", "hybrid"):
+            raise ValueError(f"Invalid mode: {mode}. Must be 'embed' or 'hybrid'")
         self._mode = mode
     
     def get_mode(self) -> str:

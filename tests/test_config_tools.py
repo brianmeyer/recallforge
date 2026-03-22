@@ -36,18 +36,28 @@ class _FakeInfo:
     dtype = "float16"
     embedder_loaded = True
     reranker_loaded = False
-    expander_loaded = False
     memory_allocated_gb = 1.0
     quantization = "4bit"
 
 
-def _make_backend(mode="full"):
+def _make_backend(mode="hybrid"):
     b = MagicMock()
     b.get_mode.return_value = mode
     b.embed_text.return_value = np.ones(128, dtype=np.float32)
     b.embed_image.return_value = np.ones(128, dtype=np.float32)
     b.get_info.return_value = _FakeInfo()
     b.set_mode = MagicMock()
+    # REC-116: Model ID methods
+    b.get_model_ids.return_value = {
+        "embedder_model": "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit",
+        "reranker_model": "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit",
+        "captioner_model": "mlx-community/Qwen3.5-0.8B-4bit",
+    }
+    b.set_model_ids = MagicMock(return_value={
+        "embedder_model": "arthurcollet/Qwen3-VL-Embedding-2B-mlx-4bit",
+        "reranker_model": "arthurcollet/Qwen3-VL-Reranker-2B-mlx-4bit",
+        "captioner_model": "mlx-community/Qwen3.5-0.8B-4bit",
+    })
     return b
 
 
@@ -60,7 +70,7 @@ def _make_storage(store_path="/tmp/test-store"):
 
 
 def _mutable_config(**overrides):
-    cfg = {"mode": "full", "collection": "default", "max_file_size_mb": 100}
+    cfg = {"mode": "hybrid", "collection": "default", "max_file_size_mb": 100, "rerank_top_k": 20}
     cfg.update(overrides)
     return cfg
 
@@ -78,7 +88,7 @@ class TestHandleGetConfig(unittest.IsolatedAsyncioTestCase):
         result = await _handle_get_config(backend, storage, cfg)
         self.assertEqual(len(result), 1)
         data = json.loads(result[0].text)
-        for key in ("version", "backend", "mode", "quantize", "data_dir", "collection", "max_file_size_mb"):
+        for key in ("version", "backend", "mode", "quantize", "data_dir", "collection", "max_file_size_mb", "rerank_top_k"):
             self.assertIn(key, data, f"Missing key: {key}")
 
     async def test_version_matches_package(self):
@@ -150,6 +160,7 @@ class TestHandleGetConfig(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertEqual(data["collection"], "default")
         self.assertEqual(data["max_file_size_mb"], 100)
+        self.assertEqual(data["rerank_top_k"], 20)
 
 
 # ---------------------------------------------------------------------------
@@ -176,12 +187,15 @@ class TestHandleSetConfig(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertEqual(data["mode"], "hybrid")
 
-    async def test_set_mode_full(self):
+    async def test_set_mode_full_rejected(self):
+        """'full' mode was removed — should be rejected as invalid."""
         backend = _make_backend()
         storage = _make_storage()
         cfg = _mutable_config()
-        await _handle_set_config({"mode": "full"}, backend, storage, cfg)
-        self.assertEqual(cfg["mode"], "full")
+        result = await _handle_set_config({"mode": "full"}, backend, storage, cfg)
+        data = json.loads(result[0].text)
+        self.assertTrue(data.get("error"))
+        self.assertEqual(data["code"], "INVALID_INPUT")
 
     async def test_set_mode_invalid(self):
         backend = _make_backend()
@@ -245,6 +259,24 @@ class TestHandleSetConfig(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertTrue(data.get("error"))
 
+    async def test_set_rerank_top_k(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        cfg = _mutable_config()
+        result = await _handle_set_config({"rerank_top_k": 42}, backend, storage, cfg)
+        data = json.loads(result[0].text)
+        self.assertEqual(data["rerank_top_k"], 42)
+        self.assertEqual(cfg["rerank_top_k"], 42)
+
+    async def test_set_rerank_top_k_negative_rejected(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        cfg = _mutable_config()
+        result = await _handle_set_config({"rerank_top_k": -1}, backend, storage, cfg)
+        data = json.loads(result[0].text)
+        self.assertTrue(data.get("error"))
+        self.assertEqual(data["code"], "INVALID_INPUT")
+
     async def test_immutable_backend_rejected(self):
         backend = _make_backend()
         storage = _make_storage()
@@ -302,7 +334,7 @@ class TestHandleSetConfig(unittest.IsolatedAsyncioTestCase):
         cfg = _mutable_config()
         result = await _handle_set_config({"mode": "hybrid"}, backend, storage, cfg)
         data = json.loads(result[0].text)
-        for key in ("version", "backend", "mode", "quantize", "data_dir", "collection", "max_file_size_mb"):
+        for key in ("version", "backend", "mode", "quantize", "data_dir", "collection", "max_file_size_mb", "rerank_top_k"):
             self.assertIn(key, data, f"Missing key in set_config response: {key}")
 
     async def test_empty_arguments_returns_current_config(self):
@@ -373,6 +405,10 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         names = await self._get_tool_names()
         self.assertIn("set_config", names)
 
+    async def test_explain_results_registered(self):
+        names = await self._get_tool_names()
+        self.assertIn("explain_results", names)
+
     async def test_all_original_tools_still_present(self):
         names = await self._get_tool_names()
         expected = {
@@ -381,7 +417,8 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
             "memory_add", "memory_update", "memory_delete",
             "status", "rebuild_fts", "batch",
             "list_collections", "list_namespaces",
-            "get_config", "set_config",
+            "rename_collection", "delete_collection",
+            "search_batch", "get_config", "set_config", "explain_results",
         }
         missing = expected - set(names)
         self.assertFalse(missing, f"Missing tools: {missing}")
@@ -408,9 +445,24 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("mode", schema["properties"])
         self.assertIn("collection", schema["properties"])
         self.assertIn("max_file_size_mb", schema["properties"])
+        self.assertIn("rerank_top_k", schema["properties"])
         # mode is an enum
         self.assertIn("enum", schema["properties"]["mode"])
-        self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid", "full"])
+        self.assertCountEqual(schema["properties"]["mode"]["enum"], ["embed", "hybrid"])
+
+    async def test_explain_results_schema(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        server = await create_server(backend=backend, storage=storage)
+        handler = server.request_handlers[ListToolsRequest]
+        result = await handler(ListToolsRequest(method="tools/list", params=None))
+        tool = next(t for t in result.root.tools if t.name == "explain_results")
+        schema = tool.inputSchema
+        self.assertEqual(schema["type"], "object")
+        self.assertIn("query", schema["properties"])
+        self.assertIn("image_path", schema["properties"])
+        self.assertIn("video_path", schema["properties"])
+        self.assertIn("rerank_top_k", schema["properties"])
 
     async def test_get_config_via_server_call(self):
         """Integration: get_config round-trip through create_server closure."""
@@ -421,7 +473,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         # Verify tool is registered; actual call_tool requires MCP plumbing,
         # so we just confirm dispatch works directly.
         from recallforge.server import _dispatch_tool
-        cfg = {"mode": "embed", "collection": "default", "max_file_size_mb": 100}
+        cfg = {"mode": "embed", "collection": "default", "max_file_size_mb": 100, "rerank_top_k": 20}
         result = await _dispatch_tool("get_config", {}, backend, storage, cfg)
         data = json.loads(result[0].text)
         self.assertEqual(data["mode"], "embed")

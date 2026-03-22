@@ -121,6 +121,33 @@ class TestHandleSearchErrors:
 # _handle_search_fts — INVALID_INPUT
 # ---------------------------------------------------------------------------
 
+class TestHandleExplainResultsErrors:
+    """_handle_explain_results should mirror search input validation."""
+
+    @pytest.fixture
+    def mocks(self):
+        backend = MagicMock()
+        storage = MagicMock()
+        return backend, storage
+
+    @pytest.mark.asyncio
+    async def test_no_query_inputs_returns_invalid_input(self, mocks):
+        from recallforge.server import _handle_explain_results
+        backend, storage = mocks
+        result = _parse(await _handle_explain_results({}, backend, storage))
+        assert result["error"] is True
+        assert result["code"] == "INVALID_INPUT"
+
+    @pytest.mark.asyncio
+    async def test_multiple_query_inputs_returns_invalid_input(self, mocks):
+        from recallforge.server import _handle_explain_results
+        backend, storage = mocks
+        args = {"query": "hello", "image_path": "/img.png"}
+        result = _parse(await _handle_explain_results(args, backend, storage))
+        assert result["error"] is True
+        assert result["code"] == "INVALID_INPUT"
+
+
 class TestHandleSearchFtsErrors:
     @pytest.fixture
     def storage(self):

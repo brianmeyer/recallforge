@@ -1,0 +1,2330 @@
+#!/usr/bin/env python3
+"""Cross-modal pipeline ablation benchmark for RecallForge.
+
+Tests REAL cross-modal retrieval using actual images, text docs, and documents
+from the UAT corpus. Measures what RecallForge is actually built for:
+vision-language retrieval where text queries find images and vice versa.
+
+Stages:
+1. Vector-only (embed mode, no reranker)
+2. BM25-only (full-text search)
+3. Vector + BM25 via RRF
+4. Vector + BM25 + Reranker (full hybrid)
+
+Categories:
+- text_to_text: text query → text document
+- text_to_image: text query → relevant image (CROSS-MODAL)
+- image_to_text: image as query → relevant text document (CROSS-MODAL)
+- mixed_modal: query that should find BOTH text and image results
+
+Metrics: R@1, R@5, R@10, P@5, P@10, NDCG@10, MRR, latency p50/p95
+Difficulty tiers: easy, medium, hard with per-tier reporting
+Graded relevance: 0 (irrelevant), 1 (partial), 2 (fully relevant)
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import shutil
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+# Add project root to path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from recallforge import __version__
+
+CORPUS_DIR = PROJECT_ROOT / "tests" / "uat" / "corpus"
+CORPUS_TEXT = CORPUS_DIR / "text"
+CORPUS_IMAGES = CORPUS_DIR / "images"
+CORPUS_VIDEOS = CORPUS_DIR / "videos"
+CORPUS_DOCUMENTS = CORPUS_DIR / "documents"
+
+# ---------------------------------------------------------------------------
+# Corpus document registry - all available documents
+# ---------------------------------------------------------------------------
+
+CORPUS_DOCS = {
+    # Original text documents
+    "text/ai_embeddings.md",
+    "text/ai_transformers.md",
+    "text/ai_agents.md",
+    "text/cooking_pasta.md",
+    "text/cooking_sourdough.md",
+    "text/cooking_grilling.md",
+    "text/nature_forests.md",
+    "text/nature_mountains.md",
+    "text/nature_oceans.md",
+    "text/architecture_gothic.md",
+    "text/architecture_blueprints.md",
+    "text/architecture_modern.md",
+    "text/sports_basketball.md",
+    "text/sports_running.md",
+    "text/sports_soccer.md",
+    # New expanded corpus
+    "text/tech_quantum_computing.md",
+    "text/tech_cybersecurity.md",
+    "text/tech_blockchain.md",
+    "text/tech_cloud_computing.md",
+    "text/tech_edge_ai.md",
+    "text/science_genetics.md",
+    "text/science_climate.md",
+    "text/science_astronomy.md",
+    "text/science_neuroscience.md",
+    "text/science_renewable_energy.md",
+    "text/cooking_baking.md",
+    "text/cooking_asian_cuisine.md",
+    "text/cooking_bbq.md",
+    "text/cooking_desserts.md",
+    "text/cooking_spices.md",
+    "text/sports_tennis.md",
+    "text/sports_swimming.md",
+    "text/sports_cycling.md",
+    "text/sports_golf.md",
+    "text/sports_yoga.md",
+    "text/history_ancient_rome.md",
+    "text/history_renaissance.md",
+    "text/history_industrial_revolution.md",
+    "text/history_ww2.md",
+    "text/history_space_race.md",
+    "text/medicine_cardiology.md",
+    "text/medicine_nutrition.md",
+    "text/medicine_mental_health.md",
+    "text/medicine_immunology.md",
+    "text/medicine_surgery.md",
+    "text/music_classical.md",
+    "text/music_jazz.md",
+    "text/music_production.md",
+    "text/art_impressionism.md",
+    "text/art_photography.md",
+    "text/finance_investing.md",
+    "text/finance_cryptocurrency.md",
+    "text/travel_japan.md",
+    "text/travel_national_parks.md",
+    # Images
+    "images/neural_network_diagram.png",
+    "images/whiteboard_architecture.png",
+    "images/whiteboard_brainstorm.png",
+    "images/food_pasta_dish.png",
+    "images/forest_landscape.png",
+    "images/mountain_landscape.png",
+    "images/ocean_beach.png",
+    "images/floor_plan_blueprint.png",
+    "images/code_editor_screenshot.png",
+    "images/handwritten_notes.png",
+    # Videos
+    "videos/architecture_walkthrough.mp4",
+    "videos/coding_demo.mp4",
+    "videos/cooking_tutorial.mp4",
+    "videos/nature_timelapse.mp4",
+    "videos/whiteboard_session.mp4",
+    # Video transcripts
+    "videos/architecture_walkthrough.transcript.json",
+    "videos/coding_demo.transcript.json",
+    "videos/cooking_tutorial.transcript.json",
+    "videos/nature_timelapse.transcript.json",
+    "videos/whiteboard_session.transcript.json",
+    # Documents (PDF, DOCX, PPTX)
+    "documents/ai_strategy_report.docx",
+    "documents/project_status_q1.docx",
+    "documents/recallforge_spec.docx",
+    "documents/ai_architecture_deck.pptx",
+    "documents/quarterly_review.pptx",
+    "documents/embedding_research.pdf",
+    "documents/operations_manual.pdf",
+    "documents/edge_deployment_guide.pdf",
+}
+
+# ---------------------------------------------------------------------------
+# Ground truth definitions — expanded cross-modal pairs with difficulty and graded relevance
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GroundTruth:
+    """A query with its expected relevant documents and metadata."""
+    query: str
+    relevant_paths: List[str]  # paths relative to corpus
+    category: str
+    query_type: str = "text"  # "text", "image", or "video"
+    image_query_path: Optional[str] = None  # for image-as-query
+    video_query_path: Optional[str] = None  # for video-as-query
+    difficulty: str = "medium"  # "easy", "medium", "hard"
+    graded_relevance: Optional[Dict[str, int]] = None  # path -> 0/1/2 relevance score
+    is_negative_control: bool = False  # query with zero expected results
+
+    def get_relevance_score(self, path: str) -> int:
+        """Get graded relevance score for a path (0=irrelevant, 1=partial, 2=full)."""
+        if self.graded_relevance is None:
+            return 2 if path in self.relevant_paths else 0
+        return self.graded_relevance.get(path, 0)
+
+
+# ============================================================================
+# TEXT → TEXT QUERIES (50 queries)
+# ============================================================================
+
+TEXT_TO_TEXT = [
+    # EASY (20 queries) - direct keyword matches
+    GroundTruth(
+        query="how do vector embeddings work for semantic search",
+        relevant_paths=["text/ai_embeddings.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="transformer architecture attention mechanism",
+        relevant_paths=["text/ai_transformers.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="autonomous AI agents with episodic memory",
+        relevant_paths=["text/ai_agents.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="how to make fresh pasta dough at home",
+        relevant_paths=["text/cooking_pasta.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="sourdough starter feeding schedule",
+        relevant_paths=["text/cooking_sourdough.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="charcoal grill two zone setup searing",
+        relevant_paths=["text/cooking_grilling.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="temperate deciduous forest ecosystem oak maple",
+        relevant_paths=["text/nature_forests.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="mountain alpine ecology tectonic plates",
+        relevant_paths=["text/nature_mountains.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="marine biology coral reef phytoplankton",
+        relevant_paths=["text/nature_oceans.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="gothic cathedral flying buttresses ribbed vaults",
+        relevant_paths=["text/architecture_gothic.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="reading architectural blueprints floor plans elevations",
+        relevant_paths=["text/architecture_blueprints.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="Le Corbusier modern architecture glass curtain walls",
+        relevant_paths=["text/architecture_modern.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="NBA basketball three point shooting analytics",
+        relevant_paths=["text/sports_basketball.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="marathon training plan progressive mileage tempo runs",
+        relevant_paths=["text/sports_running.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="soccer formations 4-3-3 wingbacks tactics",
+        relevant_paths=["text/sports_soccer.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="quantum computing qubits superposition",
+        relevant_paths=["text/tech_quantum_computing.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="cybersecurity zero trust architecture MFA",
+        relevant_paths=["text/tech_cybersecurity.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="blockchain smart contracts Ethereum",
+        relevant_paths=["text/tech_blockchain.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="cloud computing AWS Kubernetes microservices",
+        relevant_paths=["text/tech_cloud_computing.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="edge AI on-device machine learning TensorFlow Lite",
+        relevant_paths=["text/tech_edge_ai.md"],
+        category="text_to_text",
+        difficulty="easy",
+    ),
+    
+    # MEDIUM (20 queries) - requires semantic understanding
+    GroundTruth(
+        query="how do computers understand the meaning of words",
+        relevant_paths=["text/ai_embeddings.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="why do transformers process sequences in parallel",
+        relevant_paths=["text/ai_transformers.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="systems that remember past interactions",
+        relevant_paths=["text/ai_agents.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="fermented wheat dough with wild yeast culture",
+        relevant_paths=["text/cooking_sourdough.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="tall trees with seasonal leaf changes",
+        relevant_paths=["text/nature_forests.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="high altitude environments with snow caps",
+        relevant_paths=["text/nature_mountains.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="saltwater ecosystems with coral reefs",
+        relevant_paths=["text/nature_oceans.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="medieval church building techniques",
+        relevant_paths=["text/architecture_gothic.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="how to read construction drawings",
+        relevant_paths=["text/architecture_blueprints.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="professional basketball strategy and analytics",
+        relevant_paths=["text/sports_basketball.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="long distance running preparation plans",
+        relevant_paths=["text/sports_running.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="football team positioning and strategy",
+        relevant_paths=["text/sports_soccer.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="DNA sequencing and gene editing CRISPR",
+        relevant_paths=["text/science_genetics.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="global warming carbon emissions renewable energy",
+        relevant_paths=["text/science_climate.md", "text/science_renewable_energy.md"],
+        category="text_to_text",
+        difficulty="medium",
+        graded_relevance={"text/science_climate.md": 2, "text/science_renewable_energy.md": 1},
+    ),
+    GroundTruth(
+        query="telescopes observing distant galaxies",
+        relevant_paths=["text/science_astronomy.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="brain neurons synapses memory formation",
+        relevant_paths=["text/science_neuroscience.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="bread making fermentation gluten development",
+        relevant_paths=["text/cooking_baking.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="wok cooking stir fry Asian flavors",
+        relevant_paths=["text/cooking_asian_cuisine.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="smoking meat low and slow barbecue",
+        relevant_paths=["text/cooking_bbq.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="French pastry croissants laminated dough",
+        relevant_paths=["text/cooking_desserts.md"],
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    
+    # HARD (10 queries) - abstract or indirect matches
+    GroundTruth(
+        query="the alignment problem in machine learning systems",
+        relevant_paths=["text/ai_agents.md", "text/ai_transformers.md"],
+        category="text_to_text",
+        difficulty="hard",
+        graded_relevance={"text/ai_agents.md": 2, "text/ai_transformers.md": 1},
+    ),
+    GroundTruth(
+        query="why do some baked goods rise while others fall flat",
+        relevant_paths=["text/cooking_baking.md", "text/cooking_sourdough.md"],
+        category="text_to_text",
+        difficulty="hard",
+        graded_relevance={"text/cooking_baking.md": 2, "text/cooking_sourdough.md": 1},
+    ),
+    GroundTruth(
+        query="how civilizations build lasting monuments",
+        relevant_paths=["text/history_ancient_rome.md", "text/architecture_gothic.md"],
+        category="text_to_text",
+        difficulty="hard",
+        graded_relevance={"text/history_ancient_rome.md": 2, "text/architecture_gothic.md": 1},
+    ),
+    GroundTruth(
+        query="the intersection of art and science in understanding nature",
+        relevant_paths=["text/art_impressionism.md", "text/science_astronomy.md"],
+        category="text_to_text",
+        difficulty="hard",
+        graded_relevance={"text/art_impressionism.md": 2, "text/science_astronomy.md": 1},
+    ),
+    GroundTruth(
+        query="competition between nations driving technological advancement",
+        relevant_paths=["text/history_space_race.md", "text/tech_quantum_computing.md"],
+        category="text_to_text",
+        difficulty="hard",
+        graded_relevance={"text/history_space_race.md": 2, "text/tech_quantum_computing.md": 1},
+    ),
+    GroundTruth(
+        query="how the body defends against invaders",
+        relevant_paths=["text/medicine_immunology.md"],
+        category="text_to_text",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="the role of rhythm in human expression",
+        relevant_paths=["text/music_jazz.md", "text/music_classical.md"],
+        category="text_to_text",
+        difficulty="hard",
+        graded_relevance={"text/music_jazz.md": 2, "text/music_classical.md": 1},
+    ),
+    GroundTruth(
+        query="preserving moments through visual recording",
+        relevant_paths=["text/art_photography.md"],
+        category="text_to_text",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="managing risk while seeking returns",
+        relevant_paths=["text/finance_investing.md"],
+        category="text_to_text",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="healing through mindfulness and movement",
+        relevant_paths=["text/sports_yoga.md", "text/medicine_mental_health.md"],
+        category="text_to_text",
+        difficulty="hard",
+        graded_relevance={"text/sports_yoga.md": 2, "text/medicine_mental_health.md": 1},
+    ),
+]
+
+# ============================================================================
+# TEXT → IMAGE QUERIES (20 queries)
+# ============================================================================
+
+TEXT_TO_IMAGE = [
+    # EASY (8 queries)
+    GroundTruth(
+        query="neural network layers diagram with connections",
+        relevant_paths=["images/neural_network_diagram.png"],
+        category="text_to_image",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="system architecture diagram with API gateway and database",
+        relevant_paths=["images/whiteboard_architecture.png"],
+        category="text_to_image",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="AI strategy brainstorming mind map whiteboard",
+        relevant_paths=["images/whiteboard_brainstorm.png"],
+        category="text_to_image",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="plate of pasta with tomato sauce and basil",
+        relevant_paths=["images/food_pasta_dish.png"],
+        category="text_to_image",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="forest with tall trees and walking path",
+        relevant_paths=["images/forest_landscape.png"],
+        category="text_to_image",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="mountain landscape with snow peaks and meadow",
+        relevant_paths=["images/mountain_landscape.png"],
+        category="text_to_image",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="ocean waves beach sand and shells",
+        relevant_paths=["images/ocean_beach.png"],
+        category="text_to_image",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="floor plan blueprint with rooms and dimensions",
+        relevant_paths=["images/floor_plan_blueprint.png"],
+        category="text_to_image",
+        difficulty="easy",
+    ),
+    
+    # MEDIUM (8 queries)
+    GroundTruth(
+        query="software development IDE with Python code",
+        relevant_paths=["images/code_editor_screenshot.png"],
+        category="text_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="handwritten meeting notes sprint review action items",
+        relevant_paths=["images/handwritten_notes.png"],
+        category="text_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="diagram showing deep learning model architecture",
+        relevant_paths=["images/neural_network_diagram.png"],
+        category="text_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="Italian cuisine dish photography",
+        relevant_paths=["images/food_pasta_dish.png"],
+        category="text_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="architectural technical drawing",
+        relevant_paths=["images/floor_plan_blueprint.png"],
+        category="text_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="nature scenery with coniferous trees",
+        relevant_paths=["images/forest_landscape.png"],
+        category="text_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="coastal landscape photography",
+        relevant_paths=["images/ocean_beach.png"],
+        category="text_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="whiteboard session with diagrams and arrows",
+        relevant_paths=["images/whiteboard_brainstorm.png", "images/whiteboard_architecture.png"],
+        category="text_to_image",
+        difficulty="medium",
+        graded_relevance={"images/whiteboard_brainstorm.png": 2, "images/whiteboard_architecture.png": 1},
+    ),
+    
+    # HARD (4 queries) - abstract descriptions
+    GroundTruth(
+        query="visual representation of artificial intelligence concepts",
+        relevant_paths=["images/neural_network_diagram.png", "images/whiteboard_brainstorm.png"],
+        category="text_to_image",
+        difficulty="hard",
+        graded_relevance={"images/neural_network_diagram.png": 2, "images/whiteboard_brainstorm.png": 1},
+    ),
+    GroundTruth(
+        query="documentation of outdoor environments",
+        relevant_paths=["images/forest_landscape.png", "images/mountain_landscape.png", "images/ocean_beach.png"],
+        category="text_to_image",
+        difficulty="hard",
+        graded_relevance={"images/forest_landscape.png": 2, "images/mountain_landscape.png": 2, "images/ocean_beach.png": 2},
+    ),
+]
+
+# ============================================================================
+# IMAGE → TEXT QUERIES (15 queries)
+# ============================================================================
+
+IMAGE_TO_TEXT = [
+    # EASY (6 queries)
+    GroundTruth(
+        query="",
+        relevant_paths=["text/ai_transformers.md", "text/ai_embeddings.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/neural_network_diagram.png",
+        difficulty="easy",
+        graded_relevance={"text/ai_transformers.md": 2, "text/ai_embeddings.md": 1},
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/cooking_pasta.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/food_pasta_dish.png",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/nature_forests.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/forest_landscape.png",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/nature_mountains.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/mountain_landscape.png",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/nature_oceans.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/ocean_beach.png",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/architecture_blueprints.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/floor_plan_blueprint.png",
+        difficulty="easy",
+    ),
+    
+    # MEDIUM (6 queries)
+    GroundTruth(
+        query="",
+        relevant_paths=["text/ai_agents.md", "text/tech_edge_ai.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/whiteboard_architecture.png",
+        difficulty="medium",
+        graded_relevance={"text/ai_agents.md": 2, "text/tech_edge_ai.md": 1},
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/ai_agents.md", "text/tech_cloud_computing.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/whiteboard_brainstorm.png",
+        difficulty="medium",
+        graded_relevance={"text/ai_agents.md": 2, "text/tech_cloud_computing.md": 1},
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/tech_edge_ai.md", "text/ai_embeddings.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/code_editor_screenshot.png",
+        difficulty="medium",
+        graded_relevance={"text/tech_edge_ai.md": 2, "text/ai_embeddings.md": 1},
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/ai_agents.md", "text/sports_running.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/handwritten_notes.png",
+        difficulty="medium",
+        graded_relevance={"text/ai_agents.md": 2, "text/sports_running.md": 1},
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/cooking_asian_cuisine.md", "text/cooking_spices.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/food_pasta_dish.png",
+        difficulty="medium",
+        graded_relevance={"text/cooking_asian_cuisine.md": 1, "text/cooking_spices.md": 1},
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/architecture_modern.md", "text/architecture_gothic.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/floor_plan_blueprint.png",
+        difficulty="medium",
+        graded_relevance={"text/architecture_modern.md": 1, "text/architecture_gothic.md": 1},
+    ),
+    
+    # HARD (3 queries)
+    GroundTruth(
+        query="",
+        relevant_paths=["text/ai_transformers.md", "text/tech_edge_ai.md", "text/ai_agents.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/neural_network_diagram.png",
+        difficulty="hard",
+        graded_relevance={"text/ai_transformers.md": 2, "text/tech_edge_ai.md": 1, "text/ai_agents.md": 1},
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/nature_forests.md", "text/nature_mountains.md", "text/nature_oceans.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/mountain_landscape.png",
+        difficulty="hard",
+        graded_relevance={"text/nature_mountains.md": 2, "text/nature_forests.md": 1, "text/nature_oceans.md": 1},
+    ),
+    GroundTruth(
+        query="",
+        relevant_paths=["text/tech_cybersecurity.md", "text/tech_blockchain.md", "text/tech_cloud_computing.md"],
+        category="image_to_text",
+        query_type="image",
+        image_query_path="images/whiteboard_architecture.png",
+        difficulty="hard",
+        graded_relevance={"text/tech_cybersecurity.md": 1, "text/tech_blockchain.md": 1, "text/tech_cloud_computing.md": 1},
+    ),
+]
+
+# ============================================================================
+# MIXED MODAL QUERIES (20 queries) - find BOTH text and image
+# ============================================================================
+
+MIXED_MODAL = [
+    # EASY (8 queries)
+    GroundTruth(
+        query="pasta cooking recipe and food photo",
+        relevant_paths=["text/cooking_pasta.md", "images/food_pasta_dish.png"],
+        category="mixed_modal",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="forest ecology trees landscape",
+        relevant_paths=["text/nature_forests.md", "images/forest_landscape.png"],
+        category="mixed_modal",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="mountain environment alpine peaks meadow",
+        relevant_paths=["text/nature_mountains.md", "images/mountain_landscape.png"],
+        category="mixed_modal",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="ocean marine beach waves",
+        relevant_paths=["text/nature_oceans.md", "images/ocean_beach.png"],
+        category="mixed_modal",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="neural network deep learning architecture diagram",
+        relevant_paths=["text/ai_transformers.md", "images/neural_network_diagram.png"],
+        category="mixed_modal",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="floor plan building architecture blueprint design",
+        relevant_paths=["text/architecture_blueprints.md", "images/floor_plan_blueprint.png"],
+        category="mixed_modal",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="software architecture API gateway backend system design",
+        relevant_paths=["text/ai_agents.md", "images/whiteboard_architecture.png"],
+        category="mixed_modal",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="AI brainstorming session whiteboard notes",
+        relevant_paths=["text/ai_agents.md", "images/whiteboard_brainstorm.png"],
+        category="mixed_modal",
+        difficulty="easy",
+    ),
+    
+    # MEDIUM (8 queries)
+    GroundTruth(
+        query="baking bread fermentation process and techniques",
+        relevant_paths=["text/cooking_baking.md", "text/cooking_sourdough.md"],
+        category="mixed_modal",
+        difficulty="medium",
+        graded_relevance={"text/cooking_baking.md": 2, "text/cooking_sourdough.md": 2},
+    ),
+    GroundTruth(
+        query="barbecue smoking meat techniques wood selection",
+        relevant_paths=["text/cooking_bbq.md", "text/cooking_grilling.md"],
+        category="mixed_modal",
+        difficulty="medium",
+        graded_relevance={"text/cooking_bbq.md": 2, "text/cooking_grilling.md": 1},
+    ),
+    GroundTruth(
+        query="quantum computing and edge AI hardware",
+        relevant_paths=["text/tech_quantum_computing.md", "text/tech_edge_ai.md"],
+        category="mixed_modal",
+        difficulty="medium",
+        graded_relevance={"text/tech_quantum_computing.md": 2, "text/tech_edge_ai.md": 2},
+    ),
+    GroundTruth(
+        query="cloud security and blockchain technology",
+        relevant_paths=["text/tech_cybersecurity.md", "text/tech_blockchain.md", "text/tech_cloud_computing.md"],
+        category="mixed_modal",
+        difficulty="medium",
+        graded_relevance={"text/tech_cybersecurity.md": 2, "text/tech_blockchain.md": 1, "text/tech_cloud_computing.md": 1},
+    ),
+    GroundTruth(
+        query="DNA genetics and neuroscience brain research",
+        relevant_paths=["text/science_genetics.md", "text/science_neuroscience.md"],
+        category="mixed_modal",
+        difficulty="medium",
+        graded_relevance={"text/science_genetics.md": 2, "text/science_neuroscience.md": 2},
+    ),
+    GroundTruth(
+        query="renewable energy and climate change solutions",
+        relevant_paths=["text/science_renewable_energy.md", "text/science_climate.md"],
+        category="mixed_modal",
+        difficulty="medium",
+        graded_relevance={"text/science_renewable_energy.md": 2, "text/science_climate.md": 2},
+    ),
+    GroundTruth(
+        query="tennis and golf sports techniques",
+        relevant_paths=["text/sports_tennis.md", "text/sports_golf.md"],
+        category="mixed_modal",
+        difficulty="medium",
+        graded_relevance={"text/sports_tennis.md": 2, "text/sports_golf.md": 2},
+    ),
+    GroundTruth(
+        query="swimming and cycling endurance training",
+        relevant_paths=["text/sports_swimming.md", "text/sports_cycling.md"],
+        category="mixed_modal",
+        difficulty="medium",
+        graded_relevance={"text/sports_swimming.md": 2, "text/sports_cycling.md": 2},
+    ),
+    
+    # HARD (4 queries)
+    GroundTruth(
+        query="visual and textual documentation of natural environments",
+        relevant_paths=["text/nature_forests.md", "text/nature_mountains.md", "text/nature_oceans.md",
+                        "images/forest_landscape.png", "images/mountain_landscape.png", "images/ocean_beach.png"],
+        category="mixed_modal",
+        difficulty="hard",
+        graded_relevance={"text/nature_forests.md": 2, "text/nature_mountains.md": 2, "text/nature_oceans.md": 2,
+                         "images/forest_landscape.png": 2, "images/mountain_landscape.png": 2, "images/ocean_beach.png": 2},
+    ),
+    GroundTruth(
+        query="artistic and technical representations of architecture",
+        relevant_paths=["text/architecture_gothic.md", "text/architecture_modern.md", "text/architecture_blueprints.md",
+                        "images/floor_plan_blueprint.png"],
+        category="mixed_modal",
+        difficulty="hard",
+        graded_relevance={"text/architecture_gothic.md": 2, "text/architecture_modern.md": 2, 
+                         "text/architecture_blueprints.md": 2, "images/floor_plan_blueprint.png": 2},
+    ),
+    GroundTruth(
+        query="AI system design from concept to implementation",
+        relevant_paths=["text/ai_agents.md", "text/ai_transformers.md", "text/tech_edge_ai.md",
+                        "images/neural_network_diagram.png", "images/whiteboard_architecture.png", "images/code_editor_screenshot.png"],
+        category="mixed_modal",
+        difficulty="hard",
+        graded_relevance={"text/ai_agents.md": 2, "text/ai_transformers.md": 1, "text/tech_edge_ai.md": 1,
+                         "images/neural_network_diagram.png": 2, "images/whiteboard_architecture.png": 2, "images/code_editor_screenshot.png": 1},
+    ),
+    GroundTruth(
+        query="comprehensive guide to athletic performance",
+        relevant_paths=["text/sports_running.md", "text/sports_cycling.md", "text/sports_swimming.md",
+                        "text/sports_yoga.md", "text/medicine_nutrition.md", "text/medicine_cardiology.md"],
+        category="mixed_modal",
+        difficulty="hard",
+        graded_relevance={"text/sports_running.md": 2, "text/sports_cycling.md": 2, "text/sports_swimming.md": 2,
+                         "text/sports_yoga.md": 1, "text/medicine_nutrition.md": 1, "text/medicine_cardiology.md": 1},
+    ),
+]
+
+# ============================================================================
+# TEXT → VIDEO QUERIES (15 queries)
+# ============================================================================
+
+TEXT_TO_VIDEO = [
+    # EASY (6 queries)
+    GroundTruth(
+        query="architecture walkthrough building tour presentation",
+        relevant_paths=["videos/architecture_walkthrough.mp4"],
+        category="text_to_video",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="coding demonstration software development tutorial",
+        relevant_paths=["videos/coding_demo.mp4"],
+        category="text_to_video",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="cooking tutorial recipe demonstration video",
+        relevant_paths=["videos/cooking_tutorial.mp4"],
+        category="text_to_video",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="nature timelapse video forest mountains",
+        relevant_paths=["videos/nature_timelapse.mp4"],
+        category="text_to_video",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="whiteboard session brainstorming meeting recording",
+        relevant_paths=["videos/whiteboard_session.mp4"],
+        category="text_to_video",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="video content with transcript about buildings",
+        relevant_paths=["videos/architecture_walkthrough.mp4", "videos/architecture_walkthrough.transcript.json"],
+        category="text_to_video",
+        difficulty="easy",
+        graded_relevance={"videos/architecture_walkthrough.mp4": 2, "videos/architecture_walkthrough.transcript.json": 2},
+    ),
+    
+    # MEDIUM (6 queries)
+    GroundTruth(
+        query="programming and software engineering video content",
+        relevant_paths=["videos/coding_demo.mp4", "videos/whiteboard_session.mp4"],
+        category="text_to_video",
+        difficulty="medium",
+        graded_relevance={"videos/coding_demo.mp4": 2, "videos/whiteboard_session.mp4": 1},
+    ),
+    GroundTruth(
+        query="food preparation and culinary instruction videos",
+        relevant_paths=["videos/cooking_tutorial.mp4"],
+        category="text_to_video",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="natural environment scenery video footage",
+        relevant_paths=["videos/nature_timelapse.mp4"],
+        category="text_to_video",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="meeting recordings with transcripts for review",
+        relevant_paths=["videos/whiteboard_session.mp4", "videos/whiteboard_session.transcript.json"],
+        category="text_to_video",
+        difficulty="medium",
+        graded_relevance={"videos/whiteboard_session.mp4": 2, "videos/whiteboard_session.transcript.json": 2},
+    ),
+    GroundTruth(
+        query="educational video content with searchable transcripts",
+        relevant_paths=["videos/cooking_tutorial.mp4", "videos/cooking_tutorial.transcript.json",
+                        "videos/coding_demo.mp4", "videos/coding_demo.transcript.json"],
+        category="text_to_video",
+        difficulty="medium",
+        graded_relevance={"videos/cooking_tutorial.mp4": 2, "videos/cooking_tutorial.transcript.json": 2,
+                         "videos/coding_demo.mp4": 2, "videos/coding_demo.transcript.json": 2},
+    ),
+    GroundTruth(
+        query="visual documentation of outdoor spaces",
+        relevant_paths=["videos/nature_timelapse.mp4", "videos/architecture_walkthrough.mp4"],
+        category="text_to_video",
+        difficulty="medium",
+        graded_relevance={"videos/nature_timelapse.mp4": 2, "videos/architecture_walkthrough.mp4": 1},
+    ),
+    
+    # HARD (3 queries)
+    GroundTruth(
+        query="multimedia content for learning and development",
+        relevant_paths=["videos/cooking_tutorial.mp4", "videos/coding_demo.mp4", "videos/whiteboard_session.mp4",
+                        "videos/cooking_tutorial.transcript.json", "videos/coding_demo.transcript.json", "videos/whiteboard_session.transcript.json"],
+        category="text_to_video",
+        difficulty="hard",
+        graded_relevance={"videos/cooking_tutorial.mp4": 2, "videos/coding_demo.mp4": 2, "videos/whiteboard_session.mp4": 2,
+                         "videos/cooking_tutorial.transcript.json": 2, "videos/coding_demo.transcript.json": 2, "videos/whiteboard_session.transcript.json": 2},
+    ),
+    GroundTruth(
+        query="archived recordings with searchable text content",
+        relevant_paths=["videos/architecture_walkthrough.mp4", "videos/architecture_walkthrough.transcript.json",
+                        "videos/nature_timelapse.mp4", "videos/nature_timelapse.transcript.json"],
+        category="text_to_video",
+        difficulty="hard",
+        graded_relevance={"videos/architecture_walkthrough.mp4": 2, "videos/architecture_walkthrough.transcript.json": 2,
+                         "videos/nature_timelapse.mp4": 2, "videos/nature_timelapse.transcript.json": 2},
+    ),
+    GroundTruth(
+        query="comprehensive video library with transcripts",
+        relevant_paths=["videos/cooking_tutorial.mp4", "videos/coding_demo.mp4", "videos/whiteboard_session.mp4", "videos/architecture_walkthrough.mp4", "videos/nature_timelapse.mp4"],
+        category="text_to_video",
+        difficulty="hard",
+        graded_relevance={"videos/cooking_tutorial.mp4": 2, "videos/coding_demo.mp4": 2, "videos/whiteboard_session.mp4": 2,
+                         "videos/architecture_walkthrough.mp4": 2, "videos/nature_timelapse.mp4": 2},
+    ),
+]
+
+# ============================================================================
+# HARD NEGATIVES (queries similar to but NOT about the target)
+# ============================================================================
+
+HARD_NEGATIVES = [
+    # Similar to pasta but about Asian noodles
+    GroundTruth(
+        query="ramen noodle soup recipe Japanese cuisine",
+        relevant_paths=["text/cooking_asian_cuisine.md"],  # NOT pasta
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    # Similar to neural networks but about brain biology
+    GroundTruth(
+        query="biological neurons in the human brain synapses",
+        relevant_paths=["text/science_neuroscience.md"],  # NOT AI
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    # Similar to architecture but about software
+    GroundTruth(
+        query="software design patterns and system architecture",
+        relevant_paths=["text/ai_agents.md", "text/tech_cloud_computing.md"],  # NOT building architecture
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    # Similar to blockchain but about traditional banking
+    GroundTruth(
+        query="investment banking and stock market trading",
+        relevant_paths=["text/finance_investing.md"],  # NOT crypto
+        category="text_to_text",
+        difficulty="medium",
+    ),
+    # Similar to yoga but about competitive sports
+    GroundTruth(
+        query="competitive swimming techniques and training",
+        relevant_paths=["text/sports_swimming.md"],  # NOT yoga
+        category="text_to_text",
+        difficulty="easy",
+    ),
+]
+
+# ============================================================================
+# NEGATIVE CONTROLS (queries with zero expected results)
+# ============================================================================
+
+NEGATIVE_CONTROLS = [
+    GroundTruth(
+        query="underwater basket weaving techniques",
+        relevant_paths=[],
+        category="text_to_text",
+        difficulty="easy",
+        is_negative_control=True,
+    ),
+    GroundTruth(
+        query="medieval jousting tournament rules and equipment",
+        relevant_paths=[],
+        category="text_to_text",
+        difficulty="easy",
+        is_negative_control=True,
+    ),
+    GroundTruth(
+        query="antique clock repair and horology",
+        relevant_paths=[],
+        category="text_to_text",
+        difficulty="easy",
+        is_negative_control=True,
+    ),
+    GroundTruth(
+        query="mycology and wild mushroom foraging",
+        relevant_paths=[],
+        category="text_to_text",
+        difficulty="easy",
+        is_negative_control=True,
+    ),
+    GroundTruth(
+        query="vintage typewriter maintenance and repair",
+        relevant_paths=[],
+        category="text_to_text",
+        difficulty="easy",
+        is_negative_control=True,
+    ),
+]
+
+# ── Text → Document queries ──────────────────────────────────
+TEXT_TO_DOCUMENT = [
+    GroundTruth(
+        query="enterprise AI strategy roadmap deployment",
+        relevant_paths=["documents/ai_strategy_report.docx"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="retrieval augmented generation RAG productivity",
+        relevant_paths=["documents/ai_strategy_report.docx"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="defense AI studio quarterly milestones sensor fusion",
+        relevant_paths=["documents/project_status_q1.docx"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="$38M portfolio budget burn rate GPU supply chain",
+        relevant_paths=["documents/project_status_q1.docx"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="RecallForge multimodal memory search engine technical specification",
+        relevant_paths=["documents/recallforge_spec.docx"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="Qwen3-VL embedding reranker captioner model stack",
+        relevant_paths=["documents/recallforge_spec.docx", "documents/ai_architecture_deck.pptx"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="multimodal AI architecture presentation slides BM25 vector fusion",
+        relevant_paths=["documents/ai_architecture_deck.pptx"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="defense portfolio business review customer satisfaction",
+        relevant_paths=["documents/quarterly_review.pptx"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="cross-modal embedding unified memory search research paper abstract",
+        relevant_paths=["documents/embedding_research.pdf"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="pip install recallforge configuration environment variables",
+        relevant_paths=["documents/operations_manual.pdf"],
+        category="text_to_document",
+        difficulty="easy",
+    ),
+    GroundTruth(
+        query="edge AI deployment NVIDIA Jetson quantization pruning",
+        relevant_paths=["documents/edge_deployment_guide.pdf"],
+        category="text_to_document",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="Raspberry Pi Qualcomm Snapdragon Hexagon hardware acceleration",
+        relevant_paths=["documents/edge_deployment_guide.pdf"],
+        category="text_to_document",
+        difficulty="hard",
+    ),
+]
+
+# Combine all queries
+# ── Image → Image queries (visual similarity) ────────────────
+IMAGE_TO_IMAGE = [
+    GroundTruth(
+        query="similar landscape",
+        query_type="image",
+        image_query_path="images/forest_landscape.png",
+        relevant_paths=["images/mountain_landscape.png", "images/ocean_beach.png"],
+        category="image_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="similar whiteboard",
+        query_type="image",
+        image_query_path="images/whiteboard_architecture.png",
+        relevant_paths=["images/whiteboard_brainstorm.png"],
+        category="image_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="similar food",
+        query_type="image",
+        image_query_path="images/food_pasta_dish.png",
+        relevant_paths=["images/food_pasta_dish.png"],
+        category="image_to_image",
+        difficulty="easy",
+        is_negative_control=True,  # exact match test
+    ),
+]
+
+# ── Image → Video queries ─────────────────────────────────────
+IMAGE_TO_VIDEO = [
+    GroundTruth(
+        query="related video",
+        query_type="image",
+        image_query_path="images/forest_landscape.png",
+        relevant_paths=["videos/nature_timelapse.mp4"],
+        category="image_to_video",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="related video",
+        query_type="image",
+        image_query_path="images/whiteboard_architecture.png",
+        relevant_paths=["videos/architecture_walkthrough.mp4", "videos/whiteboard_session.mp4"],
+        category="image_to_video",
+        difficulty="hard",
+    ),
+]
+
+# ── Image → Document queries ──────────────────────────────────
+IMAGE_TO_DOCUMENT = [
+    GroundTruth(
+        query="related document",
+        query_type="image",
+        image_query_path="images/neural_network_diagram.png",
+        relevant_paths=["documents/ai_strategy_report.docx", "documents/ai_architecture_deck.pptx", "documents/embedding_research.pdf"],
+        category="image_to_document",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="related document",
+        query_type="image",
+        image_query_path="images/code_editor_screenshot.png",
+        relevant_paths=["documents/recallforge_spec.docx", "documents/operations_manual.pdf"],
+        category="image_to_document",
+        difficulty="hard",
+    ),
+]
+
+# ── Video → Text queries ──────────────────────────────────────
+VIDEO_TO_TEXT = [
+    GroundTruth(
+        query="related text",
+        query_type="video",
+        video_query_path="videos/nature_timelapse.mp4",
+        relevant_paths=["text/nature_forests.md", "text/nature_mountains.md", "text/nature_oceans.md"],
+        category="video_to_text",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="related text",
+        query_type="video",
+        video_query_path="videos/coding_demo.mp4",
+        relevant_paths=["text/tech_cybersecurity.md", "text/tech_cloud_computing.md"],
+        category="video_to_text",
+        difficulty="hard",
+    ),
+    GroundTruth(
+        query="related text",
+        query_type="video",
+        video_query_path="videos/architecture_walkthrough.mp4",
+        relevant_paths=["text/architecture_gothic.md", "text/architecture_modern.md", "text/architecture_blueprints.md"],
+        category="video_to_text",
+        difficulty="medium",
+    ),
+]
+
+# ── Video → Image queries ─────────────────────────────────────
+VIDEO_TO_IMAGE = [
+    GroundTruth(
+        query="related image",
+        query_type="video",
+        video_query_path="videos/nature_timelapse.mp4",
+        relevant_paths=["images/forest_landscape.png", "images/mountain_landscape.png", "images/ocean_beach.png"],
+        category="video_to_image",
+        difficulty="medium",
+    ),
+    GroundTruth(
+        query="related image",
+        query_type="video",
+        video_query_path="videos/whiteboard_session.mp4",
+        relevant_paths=["images/whiteboard_brainstorm.png", "images/whiteboard_architecture.png"],
+        category="video_to_image",
+        difficulty="hard",
+    ),
+]
+
+# ── Video → Video queries (similarity) ────────────────────────
+VIDEO_TO_VIDEO = [
+    GroundTruth(
+        query="similar video",
+        query_type="video",
+        video_query_path="videos/nature_timelapse.mp4",
+        relevant_paths=["videos/nature_timelapse.mp4"],
+        category="video_to_video",
+        difficulty="easy",
+        is_negative_control=True,  # exact match test
+    ),
+]
+
+# ── Video → Document queries ──────────────────────────────────
+VIDEO_TO_DOCUMENT = [
+    GroundTruth(
+        query="related document",
+        query_type="video",
+        video_query_path="videos/architecture_walkthrough.mp4",
+        relevant_paths=["documents/ai_architecture_deck.pptx"],
+        category="video_to_document",
+        difficulty="hard",
+    ),
+]
+
+ALL_GROUND_TRUTH = (
+    TEXT_TO_TEXT + 
+    TEXT_TO_IMAGE + 
+    IMAGE_TO_TEXT + 
+    IMAGE_TO_IMAGE +
+    IMAGE_TO_VIDEO +
+    IMAGE_TO_DOCUMENT +
+    VIDEO_TO_TEXT +
+    VIDEO_TO_IMAGE +
+    VIDEO_TO_VIDEO +
+    VIDEO_TO_DOCUMENT +
+    MIXED_MODAL + 
+    TEXT_TO_VIDEO +
+    TEXT_TO_DOCUMENT +
+    HARD_NEGATIVES +
+    NEGATIVE_CONTROLS
+)
+
+# Export for external use
+QUERIES = ALL_GROUND_TRUTH
+
+# ---------------------------------------------------------------------------
+# Metrics
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StageResult:
+    """Results for one stage across one category."""
+    stage: str
+    category: str
+    total_queries: int = 0
+    skipped: bool = False
+    skip_reason: Optional[str] = None
+    hits_at_1: int = 0
+    hits_at_5: int = 0
+    hits_at_10: int = 0
+    ndcg_sum: float = 0.0
+    mrr_sum: float = 0.0
+    precision_at_5_sum: float = 0.0
+    precision_at_10_sum: float = 0.0
+    latencies_ms: list = field(default_factory=list)
+    per_query_results: list = field(default_factory=list)
+    
+    # Per-difficulty tracking
+    easy_queries: int = 0
+    easy_hits_at_1: int = 0
+    easy_hits_at_5: int = 0
+    medium_queries: int = 0
+    medium_hits_at_1: int = 0
+    medium_hits_at_5: int = 0
+    hard_queries: int = 0
+    hard_hits_at_1: int = 0
+    hard_hits_at_5: int = 0
+
+    @property
+    def recall_at_1(self) -> float:
+        return self.hits_at_1 / max(self.total_queries, 1)
+
+    @property
+    def recall_at_5(self) -> float:
+        return self.hits_at_5 / max(self.total_queries, 1)
+
+    @property
+    def recall_at_10(self) -> float:
+        return self.hits_at_10 / max(self.total_queries, 1)
+
+    @property
+    def ndcg_at_10(self) -> float:
+        return self.ndcg_sum / max(self.total_queries, 1)
+
+    @property
+    def mrr(self) -> float:
+        return self.mrr_sum / max(self.total_queries, 1)
+    
+    @property
+    def precision_at_5(self) -> float:
+        return self.precision_at_5_sum / max(self.total_queries, 1)
+    
+    @property
+    def precision_at_10(self) -> float:
+        return self.precision_at_10_sum / max(self.total_queries, 1)
+
+    @property
+    def p50_ms(self) -> float:
+        if not self.latencies_ms:
+            return 0.0
+        s = sorted(self.latencies_ms)
+        return s[len(s) // 2]
+
+    @property
+    def p95_ms(self) -> float:
+        if not self.latencies_ms:
+            return 0.0
+        s = sorted(self.latencies_ms)
+        return s[int(len(s) * 0.95)]
+    
+    # Per-difficulty metrics
+    @property
+    def easy_recall_at_1(self) -> float:
+        return self.easy_hits_at_1 / max(self.easy_queries, 1)
+    
+    @property
+    def easy_recall_at_5(self) -> float:
+        return self.easy_hits_at_5 / max(self.easy_queries, 1)
+    
+    @property
+    def medium_recall_at_1(self) -> float:
+        return self.medium_hits_at_1 / max(self.medium_queries, 1)
+    
+    @property
+    def medium_recall_at_5(self) -> float:
+        return self.medium_hits_at_5 / max(self.medium_queries, 1)
+    
+    @property
+    def hard_recall_at_1(self) -> float:
+        return self.hard_hits_at_1 / max(self.hard_queries, 1)
+    
+    @property
+    def hard_recall_at_5(self) -> float:
+        return self.hard_hits_at_5 / max(self.hard_queries, 1)
+
+
+def _dcg(relevances: List[float], k: int = 10) -> float:
+    """Discounted Cumulative Gain."""
+    total = 0.0
+    for i, rel in enumerate(relevances[:k]):
+        total += rel / math.log2(i + 2)
+    return total
+
+
+def _ndcg(relevances: List[float], k: int = 10) -> float:
+    """Normalized DCG."""
+    dcg = _dcg(relevances, k)
+    ideal = _dcg(sorted(relevances, reverse=True), k)
+    return dcg / ideal if ideal > 0 else 0.0
+
+
+def evaluate_results(
+    results: List[Dict[str, Any]],
+    gt: GroundTruth,
+    corpus_dir: Path,
+) -> Tuple[bool, bool, bool, float, float, float, float]:
+    """Evaluate search results against ground truth with graded relevance.
+    
+    Returns: (hit@1, hit@5, hit@10, ndcg@10, reciprocal_rank, precision@5, precision@10)
+    """
+    # Normalize GT paths to absolute
+    gt_paths_abs = set()
+    for p in gt.relevant_paths:
+        abs_path = str((corpus_dir / p).resolve())
+        gt_paths_abs.add(abs_path)
+        gt_paths_abs.add(Path(p).stem)
+
+    def get_relevance_score(result: Dict) -> int:
+        fp = result.get("filepath", "")
+        # Check absolute path match
+        for gp in gt.relevant_paths:
+            if gp in fp or Path(gp).stem in fp:
+                return gt.get_relevance_score(gp)
+        return 0
+
+    # Build relevance vector with graded scores
+    relevances = []
+    first_hit_rank = None
+    for i, r in enumerate(results[:10]):
+        rel = get_relevance_score(r)
+        relevances.append(float(rel))
+        if rel > 0 and first_hit_rank is None:
+            first_hit_rank = i + 1
+
+    hit_1 = any(r > 0 for r in relevances[:1])
+    hit_5 = any(r > 0 for r in relevances[:5])
+    hit_10 = any(r > 0 for r in relevances[:10])
+    ndcg = _ndcg(relevances, 10)
+    rr = 1.0 / first_hit_rank if first_hit_rank else 0.0
+    
+    # Precision@K with graded relevance (normalize by max relevance)
+    max_rel = 2.0  # Maximum relevance score
+    prec_5 = sum(relevances[:5]) / (5 * max_rel) if len(relevances) >= 5 else sum(relevances) / (len(relevances) * max_rel) if relevances else 0.0
+    prec_10 = sum(relevances[:10]) / (10 * max_rel) if len(relevances) >= 10 else sum(relevances) / (len(relevances) * max_rel) if relevances else 0.0
+
+    return hit_1, hit_5, hit_10, ndcg, rr, prec_5, prec_10
+
+
+# ---------------------------------------------------------------------------
+# Benchmark runner
+# ---------------------------------------------------------------------------
+
+def ingest_corpus(backend, storage, collection: str, corpus_dir: Path) -> int:
+    """Ingest the full UAT corpus into RecallForge."""
+    indexed = 0
+
+    # Text files
+    for txt_file in sorted((corpus_dir / "text").glob("*.md")):
+        text = txt_file.read_text(encoding="utf-8")
+        try:
+            storage.index_document(
+                path=str(txt_file),
+                text=text,
+                collection=collection,
+                model="benchmark",
+                embed_func=backend.embed_text,
+            )
+            indexed += 1
+        except Exception as e:
+            print(f"  WARN: Failed to index {txt_file.name}: {e}")
+
+    # Images
+    for img_file in sorted((corpus_dir / "images").glob("*.png")):
+        try:
+            storage.index_image(
+                path=str(img_file),
+                collection=collection,
+                embed_func=backend.embed_image,
+                model="benchmark",
+            )
+            indexed += 1
+        except Exception as e:
+            print(f"  WARN: Failed to index {img_file.name}: {e}")
+
+    # Documents (generated)
+    doc_dir = corpus_dir / "documents"
+    if doc_dir.exists():
+        for doc_file in sorted(doc_dir.iterdir()):
+            if doc_file.suffix in (".docx", ".pptx", ".pdf"):
+                try:
+                    storage.index_document_file(
+                        path=str(doc_file),
+                        collection=collection,
+                        embed_func=backend.embed_text,
+                        embed_image_func=backend.embed_image,
+                        model="benchmark",
+                    )
+                    indexed += 1
+                except Exception as e:
+                    print(f"  WARN: Failed to index {doc_file.name}: {e}")
+    
+    # Videos and transcripts
+    video_dir = corpus_dir / "videos"
+    if video_dir.exists():
+        for video_file in sorted(video_dir.glob("*.mp4")):
+            try:
+                # Index video
+                storage.index_video(
+                    path=str(video_file),
+                    collection=collection,
+                    embed_text_func=backend.embed_text,
+                    embed_image_func=backend.embed_image,
+                    embed_video_func=backend.embed_video,
+                    model="benchmark",
+                )
+                indexed += 1
+            except Exception as e:
+                print(f"  WARN: Failed to index video {video_file.name}: {e}")
+            # Reclaim Metal memory between videos to avoid OOM on 16GB devices
+            import gc
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.clear_cache()
+            except Exception:
+                pass
+        
+        # Index transcript JSONs
+        for transcript_file in sorted(video_dir.glob("*.transcript.json")):
+            try:
+                with open(transcript_file) as f:
+                    transcript_data = json.load(f)
+                    text = transcript_data.get("text", "")
+                    if text:
+                        storage.index_document(
+                            path=str(transcript_file),
+                            text=text,
+                            collection=collection,
+                            model="benchmark",
+                            embed_func=backend.embed_text,
+                        )
+                        indexed += 1
+            except Exception as e:
+                print(f"  WARN: Failed to index transcript {transcript_file.name}: {e}")
+
+    # Unload captioner after indexing to reclaim ~0.9GB before search stages
+    if hasattr(backend, '_unload_captioner'):
+        backend._unload_captioner()
+
+    return indexed
+
+
+STAGES = [
+    ("Vector-only", "embed"),
+    ("BM25-only", "bm25"),
+    ("Vector + BM25 (RRF)", "rrf"),
+    ("Vector + BM25 + Reranker", "hybrid"),
+]
+
+
+def _group_queries(
+    category_filters: Optional[List[str]] = None,
+    max_queries_per_category: Optional[int] = None,
+) -> Dict[str, List["GroundTruth"]]:
+    """Group benchmark queries with optional category and per-category limits."""
+    requested = set(category_filters or [])
+    categories: Dict[str, List[GroundTruth]] = {}
+
+    for gt in ALL_GROUND_TRUTH:
+        if requested and gt.category not in requested:
+            continue
+        bucket = categories.setdefault(gt.category, [])
+        if max_queries_per_category is None or len(bucket) < max_queries_per_category:
+            bucket.append(gt)
+
+    if requested:
+        missing = sorted(requested - set(categories.keys()))
+        if missing:
+            raise ValueError(f"Unknown categories requested: {', '.join(missing)}")
+
+    return categories
+
+
+def _select_stages(stage_filters: Optional[List[str]] = None) -> List[Tuple[str, str]]:
+    """Return the selected benchmark stages by mode or display name."""
+    if not stage_filters:
+        return STAGES
+
+    requested = set(stage_filters)
+    selected = [
+        (stage_name, stage_mode)
+        for stage_name, stage_mode in STAGES
+        if stage_mode in requested or stage_name in requested
+    ]
+    if not selected:
+        raise ValueError(f"Unknown stages requested: {', '.join(sorted(requested))}")
+    return selected
+
+
+def _resolve_output_path(output_path: Optional[str]) -> str:
+    """Return the benchmark output path, falling back to the default results file."""
+    return output_path or str(
+        PROJECT_ROOT / "benchmarks" / "results" / "cross_modal_ablation_results.json"
+    )
+
+
+def _build_output_payload(
+    categories: Dict[str, List[GroundTruth]],
+    all_results: Dict[str, Dict[str, StageResult]],
+    stages: List[Tuple[str, str]],
+    *,
+    indexed_items: int,
+    run_status: str,
+    interrupted: bool,
+    completed_stages: List[str],
+    current_stage: Optional[str],
+    current_category: Optional[str],
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Serialize benchmark progress/results into the published JSON payload."""
+    output = {
+        "benchmark": "cross_modal_ablation",
+        "version": __version__,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "run_status": run_status,
+        "interrupted": interrupted,
+        "progress": {
+            "indexed_items": indexed_items,
+            "completed_stages": completed_stages,
+            "completed_categories": {
+                stage_name: sorted(stage_results.keys())
+                for stage_name, stage_results in all_results.items()
+            },
+            "current_stage": current_stage,
+            "current_category": current_category,
+        },
+        "corpus": {
+            "text_docs": len(list((CORPUS_DIR / "text").glob("*.md"))),
+            "images": len(list((CORPUS_DIR / "images").glob("*.png"))),
+            "videos": len(list((CORPUS_DIR / "videos").glob("*.mp4"))),
+            "total_corpus_docs": len(CORPUS_DOCS),
+            "total_queries": sum(len(v) for v in categories.values()),
+            "queries_by_category": {k: len(v) for k, v in categories.items()},
+        },
+        "categories": {},
+        "stages": {},
+    }
+    if error:
+        output["error"] = error
+
+    for cat_name, queries in categories.items():
+        output["categories"][cat_name] = {
+            "queries": len(queries),
+            "by_difficulty": {
+                "easy": sum(1 for q in queries if q.difficulty == "easy"),
+                "medium": sum(1 for q in queries if q.difficulty == "medium"),
+                "hard": sum(1 for q in queries if q.difficulty == "hard"),
+            }
+        }
+
+    for stage_name, _ in stages:
+        output["stages"][stage_name] = {}
+        for cat_name, sr in all_results.get(stage_name, {}).items():
+            output["stages"][stage_name][cat_name] = {
+                "skipped": sr.skipped,
+                "skip_reason": sr.skip_reason,
+                "recall_at_1": None if sr.skipped else round(sr.recall_at_1, 4),
+                "recall_at_5": None if sr.skipped else round(sr.recall_at_5, 4),
+                "recall_at_10": None if sr.skipped else round(sr.recall_at_10, 4),
+                "precision_at_5": None if sr.skipped else round(sr.precision_at_5, 4),
+                "precision_at_10": None if sr.skipped else round(sr.precision_at_10, 4),
+                "ndcg_at_10": None if sr.skipped else round(sr.ndcg_at_10, 4),
+                "mrr": None if sr.skipped else round(sr.mrr, 4),
+                "p50_ms": None if sr.skipped else round(sr.p50_ms, 1),
+                "p95_ms": None if sr.skipped else round(sr.p95_ms, 1),
+                "total_queries": sr.total_queries,
+                "by_difficulty": {
+                    "easy": {
+                        "queries": sr.easy_queries,
+                        "recall_at_1": None if sr.skipped or sr.easy_queries == 0 else round(sr.easy_recall_at_1, 4),
+                        "recall_at_5": None if sr.skipped or sr.easy_queries == 0 else round(sr.easy_recall_at_5, 4),
+                    },
+                    "medium": {
+                        "queries": sr.medium_queries,
+                        "recall_at_1": None if sr.skipped or sr.medium_queries == 0 else round(sr.medium_recall_at_1, 4),
+                        "recall_at_5": None if sr.skipped or sr.medium_queries == 0 else round(sr.medium_recall_at_5, 4),
+                    },
+                    "hard": {
+                        "queries": sr.hard_queries,
+                        "recall_at_1": None if sr.skipped or sr.hard_queries == 0 else round(sr.hard_recall_at_1, 4),
+                        "recall_at_5": None if sr.skipped or sr.hard_queries == 0 else round(sr.hard_recall_at_5, 4),
+                    },
+                },
+                "per_query_results": sr.per_query_results,
+            }
+
+    return output
+
+
+def _write_output_payload(output: Dict[str, Any], save_path: str) -> None:
+    """Write output JSON atomically so interruptions do not leave a partial file."""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    temp_path = f"{save_path}.tmp"
+    with open(temp_path, "w") as f:
+        json.dump(output, f, indent=2)
+    os.replace(temp_path, save_path)
+
+
+def _skip_reason_for_stage(stage_mode: str, queries: List[GroundTruth]) -> Optional[str]:
+    """Return a reason when a stage cannot support a category's query modality."""
+    if stage_mode != "bm25" or not queries:
+        return None
+
+    query_types = {gt.query_type for gt in queries}
+    if "text" in query_types:
+        return None
+    if query_types == {"image"}:
+        return "BM25 can't process image queries"
+    if query_types == {"video"}:
+        return "BM25 can't process video queries"
+    return "BM25 can't process image/video queries"
+
+
+def _result_content_type_for_category(category: str) -> Optional[str]:
+    """Return the expected result modality for category-specific benchmark runs."""
+    mapping = {
+        "text_to_text": "text",
+        "text_to_image": "image",
+        "text_to_video": "video",
+        "image_to_text": "text",
+        "image_to_image": "image",
+        "image_to_video": "video",
+        "video_to_text": "text",
+        "video_to_image": "image",
+        "video_to_video": "video",
+    }
+    return mapping.get(category)
+
+
+def run_search(
+    backend,
+    storage,
+    gt: GroundTruth,
+    collection: str,
+    stage_mode: str,
+    limit: int = 10,
+) -> Tuple[List[Dict], float]:
+    """Run a single search query and return results + latency_ms."""
+    from recallforge.search import HybridSearcher
+
+    t0 = time.perf_counter()
+    result_content_type = _result_content_type_for_category(gt.category)
+
+    if gt.query_type == "image" and gt.image_query_path:
+        image_path = str(CORPUS_DIR / gt.image_query_path)
+
+        if stage_mode == "embed":
+            image_vec = backend.embed_image(image_path)
+            results = storage.search_vec(
+                vector=image_vec,
+                collection=collection,
+                content_type=result_content_type,
+                limit=limit,
+            )
+        elif stage_mode in ("rrf", "hybrid"):
+            searcher = HybridSearcher(
+                backend=backend,
+                storage=storage,
+                limit=limit,
+                collection=collection,
+                content_type=result_content_type,
+            )
+            old_mode = backend.get_mode()
+            backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
+            results = searcher.search_image(image_path)
+            backend.set_mode(old_mode)
+        elif stage_mode == "bm25":
+            results = []
+        else:
+            raise ValueError(f"Unknown stage mode: {stage_mode}")
+
+    elif gt.query_type == "video" and gt.video_query_path:
+        video_path = str(CORPUS_DIR / gt.video_query_path)
+
+        if stage_mode == "embed":
+            video_vec = backend.embed_video(video_path)
+            results = storage.search_vec(
+                vector=video_vec,
+                collection=collection,
+                content_type=result_content_type,
+                limit=limit,
+            )
+        elif stage_mode in ("rrf", "hybrid"):
+            searcher = HybridSearcher(
+                backend=backend,
+                storage=storage,
+                limit=limit,
+                collection=collection,
+                content_type=result_content_type,
+            )
+            old_mode = backend.get_mode()
+            backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
+            results = searcher.search_video(video_path)
+            backend.set_mode(old_mode)
+        elif stage_mode == "bm25":
+            results = []
+        else:
+            raise ValueError(f"Unknown stage mode: {stage_mode}")
+
+    else:
+        # Text query
+        if stage_mode == "embed":
+            # Vector only
+            query_vec = backend.embed_text(gt.query)
+            results = storage.search_vec(
+                vector=query_vec,
+                collection=collection,
+                content_type=result_content_type,
+                limit=limit,
+            )
+        elif stage_mode == "bm25":
+            # BM25 only
+            results = storage.search_fts(
+                query=gt.query,
+                collection=collection,
+                content_type=result_content_type,
+                limit=limit,
+            )
+        elif stage_mode == "rrf":
+            # RRF without reranker (embed mode)
+            searcher = HybridSearcher(
+                backend=backend,
+                storage=storage,
+                limit=limit,
+                collection=collection,
+                content_type=result_content_type,
+            )
+            old_mode = backend.get_mode()
+            backend.set_mode("embed")
+            results = searcher.search(gt.query)
+            backend.set_mode(old_mode)
+        elif stage_mode == "hybrid":
+            # Full hybrid with reranker
+            searcher = HybridSearcher(
+                backend=backend,
+                storage=storage,
+                limit=limit,
+                collection=collection,
+                content_type=result_content_type,
+            )
+            old_mode = backend.get_mode()
+            backend.set_mode("hybrid")
+            results = searcher.search(gt.query)
+            backend.set_mode(old_mode)
+        else:
+            raise ValueError(f"Unknown stage mode: {stage_mode}")
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+
+    # Normalize results to dicts and capture audit trail
+    result_dicts = []
+    for r in results:
+        if isinstance(r, dict):
+            result_dicts.append(r)
+        else:
+            result = {
+                "filepath": getattr(r, "filepath", getattr(r, "path", "")),
+                "title": getattr(r, "title", ""),
+                "score": getattr(r, "score", 0.0),
+            }
+            # Capture audit trail if available (HybridResult has audit)
+            audit = getattr(r, "audit", None)
+            if audit is not None:
+                result["audit"] = {
+                    "filepath": audit.filepath,
+                    "content_type": audit.content_type,
+                    "rrf_sources": audit.rrf_sources,
+                    "reranker_raw_score": audit.reranker_raw_score,
+                    "reranker_normalized_score": audit.reranker_normalized_score,
+                    "reranker_scoring_path": audit.reranker_scoring_path,
+                    "blend_weights": audit.blend_weights,
+                    "final_blended_score": audit.final_blended_score,
+                }
+            result_dicts.append(result)
+
+    return result_dicts, elapsed_ms
+
+
+def run_benchmark(
+    backend,
+    storage,
+    collection: str = "benchmark",
+    output_path: Optional[str] = None,
+    category_filters: Optional[List[str]] = None,
+    stage_filters: Optional[List[str]] = None,
+    max_queries_per_category: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Run the full cross-modal ablation benchmark."""
+
+    categories = _group_queries(
+        category_filters=category_filters,
+        max_queries_per_category=max_queries_per_category,
+    )
+    if not categories:
+        raise ValueError("No benchmark queries selected")
+    stages = _select_stages(stage_filters)
+    save_path = _resolve_output_path(output_path)
+    indexed = 0
+    completed_stages: List[str] = []
+    current_stage_name: Optional[str] = None
+    current_category_name: Optional[str] = None
+
+    def save_checkpoint(
+        *,
+        run_status: str,
+        interrupted: bool = False,
+        error: Optional[str] = None,
+        announce: bool = False,
+    ) -> Dict[str, Any]:
+        output = _build_output_payload(
+            categories,
+            all_results,
+            stages,
+            indexed_items=indexed,
+            run_status=run_status,
+            interrupted=interrupted,
+            completed_stages=completed_stages.copy(),
+            current_stage=current_stage_name,
+            current_category=current_category_name,
+            error=error,
+        )
+        _write_output_payload(output, save_path)
+        if announce:
+            message = "Saved partial results" if interrupted or run_status != "complete" else "Saved"
+            print(f"\n{message}: {save_path}")
+        return output
+
+    print(f"\nQuery categories: {', '.join(f'{k}({len(v)})' for k, v in categories.items())}")
+    print(f"Stages: {', '.join(stage_name for stage_name, _ in stages)}")
+    print(f"Total queries: {sum(len(v) for v in categories.values())}")
+    print(f"Corpus documents: {len(CORPUS_DOCS)}")
+
+    all_results: Dict[str, Dict[str, StageResult]] = {}
+
+    try:
+        # Ingest corpus
+        print("\nIndexing corpus...")
+        indexed = ingest_corpus(backend, storage, collection, CORPUS_DIR)
+        print(f"Indexed {indexed} items.\n")
+        save_checkpoint(run_status="partial")
+
+        # Run all stages × categories
+        for stage_name, stage_mode in stages:
+            current_stage_name = stage_name
+            current_category_name = None
+            all_results[stage_name] = {}
+
+            # Clear Metal cache between stages to avoid OOM on 16GB devices
+            import gc
+            gc.collect()
+            try:
+                import mlx.core as mx
+                mx.clear_cache()
+            except Exception:
+                pass
+
+            for cat_name, queries in categories.items():
+                current_category_name = cat_name
+                sr = StageResult(stage=stage_name, category=cat_name, total_queries=len(queries))
+
+                # Track per-difficulty counts
+                for gt in queries:
+                    if gt.difficulty == "easy":
+                        sr.easy_queries += 1
+                    elif gt.difficulty == "medium":
+                        sr.medium_queries += 1
+                    elif gt.difficulty == "hard":
+                        sr.hard_queries += 1
+
+                skip_reason = _skip_reason_for_stage(stage_mode, queries)
+                if skip_reason:
+                    sr.skipped = True
+                    sr.skip_reason = skip_reason
+                    all_results[stage_name][cat_name] = sr
+                    print(f"  {stage_name} for {cat_name}: SKIPPED ({skip_reason})")
+                    save_checkpoint(run_status="partial")
+                    continue
+
+                effective_mode = stage_mode
+
+                for gt in queries:
+                    try:
+                        results, latency = run_search(
+                            backend, storage, gt,
+                            collection, effective_mode,
+                        )
+                        h1, h5, h10, ndcg, rr, prec_5, prec_10 = evaluate_results(results, gt, CORPUS_DIR)
+
+                        sr.hits_at_1 += int(h1)
+                        sr.hits_at_5 += int(h5)
+                        sr.hits_at_10 += int(h10)
+                        sr.ndcg_sum += ndcg
+                        sr.mrr_sum += rr
+                        sr.precision_at_5_sum += prec_5
+                        sr.precision_at_10_sum += prec_10
+                        sr.latencies_ms.append(latency)
+
+                        # Track per-difficulty hits
+                        if gt.difficulty == "easy":
+                            sr.easy_hits_at_1 += int(h1)
+                            sr.easy_hits_at_5 += int(h5)
+                        elif gt.difficulty == "medium":
+                            sr.medium_hits_at_1 += int(h1)
+                            sr.medium_hits_at_5 += int(h5)
+                        elif gt.difficulty == "hard":
+                            sr.hard_hits_at_1 += int(h1)
+                            sr.hard_hits_at_5 += int(h5)
+
+                        # Store per-query result with audit trail for post-hoc analysis
+                        sr.per_query_results.append({
+                            "query": gt.query,
+                            "query_type": gt.query_type,
+                            "image_query_path": gt.image_query_path,
+                            "relevant_paths": gt.relevant_paths,
+                            "difficulty": gt.difficulty,
+                            "is_negative_control": gt.is_negative_control,
+                            "hit_at_1": h1,
+                            "hit_at_5": h5,
+                            "hit_at_10": h10,
+                            "ndcg": ndcg,
+                            "mrr": rr,
+                            "precision_at_5": prec_5,
+                            "precision_at_10": prec_10,
+                            "latency_ms": latency,
+                            "results": results,
+                        })
+                    except Exception as e:
+                        print(f"    ERROR: {gt.query[:50]}... → {e}")
+                        sr.latencies_ms.append(0)
+                        sr.per_query_results.append({
+                            "query": gt.query,
+                            "query_type": gt.query_type,
+                            "image_query_path": gt.image_query_path,
+                            "relevant_paths": gt.relevant_paths,
+                            "difficulty": gt.difficulty,
+                            "is_negative_control": gt.is_negative_control,
+                            "error": str(e),
+                        })
+
+                all_results[stage_name][cat_name] = sr
+                print(f"  {stage_name} for {cat_name} ({len(queries)}q)... "
+                      f"R@1={sr.recall_at_1:.1%} R@5={sr.recall_at_5:.1%} "
+                      f"R@10={sr.recall_at_10:.1%} P@5={sr.precision_at_5:.3f} "
+                      f"NDCG@10={sr.ndcg_at_10:.3f} MRR={sr.mrr:.3f}")
+                save_checkpoint(run_status="partial")
+
+            completed_stages.append(stage_name)
+            current_category_name = None
+            save_checkpoint(run_status="partial")
+
+    except KeyboardInterrupt:
+        save_checkpoint(
+            run_status="partial",
+            interrupted=True,
+            error="Interrupted by user",
+            announce=True,
+        )
+        raise
+
+    current_stage_name = None
+    current_category_name = None
+    complete_output = save_checkpoint(run_status="complete", announce=True)
+
+    # Print results tables
+    print("\n" + "=" * 120)
+    for cat_name in categories:
+        print(f"\n{'=' * 120}")
+        print(f"  {cat_name.upper()} ({len(categories[cat_name])} queries)")
+        print(f"{'=' * 120}")
+        print(f"{'Stage':<35} {'R@1':>6} {'R@5':>6} {'R@10':>6} {'P@5':>7} {'P@10':>7} "
+              f"{'NDCG@10':>8} {'MRR':>6} {'p50':>8} {'p95':>8}")
+        print("-" * 120)
+
+        for stage_name, _ in stages:
+            sr = all_results[stage_name][cat_name]
+            if sr.total_queries == 0:
+                continue
+            if sr.skipped:
+                print(f"{stage_name:<35} SKIPPED ({sr.skip_reason})")
+                continue
+            print(f"{stage_name:<35} "
+                  f"{sr.recall_at_1:>5.1%} {sr.recall_at_5:>5.1%} {sr.recall_at_10:>5.1%} "
+                  f"{sr.precision_at_5:>6.3f} {sr.precision_at_10:>6.3f} "
+                  f"{sr.ndcg_at_10:>7.3f} {sr.mrr:>5.3f} "
+                  f"{sr.p50_ms:>7.0f}ms {sr.p95_ms:>7.0f}ms")
+
+    # Per-difficulty breakdown
+    print(f"\n{'=' * 120}")
+    print("  DIFFICULTY BREAKDOWN (R@1 / R@5)")
+    print(f"{'=' * 120}")
+    print(f"{'Category':<20} {'Stage':<30} {'Easy':>12} {'Medium':>12} {'Hard':>12}")
+    print("-" * 100)
+
+    for cat_name in categories:
+        for stage_name, _ in stages:
+            sr = all_results[stage_name][cat_name]
+            if sr.total_queries == 0:
+                continue
+            if sr.skipped:
+                print(f"{cat_name:<20} {stage_name:<30} {'SKIPPED':>12}")
+                continue
+            easy_str = f"{sr.easy_recall_at_1:.1%}/{sr.easy_recall_at_5:.1%}" if sr.easy_queries > 0 else "N/A"
+            med_str = f"{sr.medium_recall_at_1:.1%}/{sr.medium_recall_at_5:.1%}" if sr.medium_queries > 0 else "N/A"
+            hard_str = f"{sr.hard_recall_at_1:.1%}/{sr.hard_recall_at_5:.1%}" if sr.hard_queries > 0 else "N/A"
+            print(f"{cat_name:<20} {stage_name:<30} {easy_str:>12} {med_str:>12} {hard_str:>12}")
+
+    # Reranker uplift summary
+    print(f"\n{'=' * 120}")
+    print("  RERANKER UPLIFT SUMMARY (R@1 and NDCG@10)")
+    print(f"{'=' * 120}")
+    print(f"{'Category':<20} {'Vec R@1':>8} {'Rerank R@1':>10} {'Δ R@1':>8} "
+          f"{'Vec NDCG':>9} {'Rerank NDCG':>12} {'Δ NDCG':>8}")
+    print("-" * 90)
+
+    for cat_name in categories:
+        vec = all_results.get("Vector-only", {}).get(cat_name)
+        rerank = all_results.get("Vector + BM25 + Reranker", {}).get(cat_name)
+        if vec and rerank and vec.total_queries > 0:
+            delta_r1 = rerank.recall_at_1 - vec.recall_at_1
+            delta_ndcg = rerank.ndcg_at_10 - vec.ndcg_at_10
+            print(f"{cat_name:<20} "
+                  f"{vec.recall_at_1:>7.1%} {rerank.recall_at_1:>9.1%} "
+                  f"{delta_r1:>+7.1%} "
+                  f"{vec.ndcg_at_10:>8.3f} {rerank.ndcg_at_10:>11.3f} "
+                  f"{delta_ndcg:>+7.3f}")
+
+    return complete_output
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Cross-modal pipeline ablation benchmark"
+    )
+    parser.add_argument(
+        "--backend", choices=["torch", "mlx", "auto"], default="auto",
+        help="Model backend",
+    )
+    parser.add_argument(
+        "--quantization", default="4bit",
+        help="MLX quantization level",
+    )
+    parser.add_argument(
+        "--output", default=None,
+        help="Output JSON path",
+    )
+    parser.add_argument(
+        "--store-path", default=None,
+        help="Storage directory (default: temp dir)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate query structure without running benchmark",
+    )
+    parser.add_argument(
+        "--category",
+        action="append",
+        default=None,
+        help="Benchmark category to run (repeatable)",
+    )
+    parser.add_argument(
+        "--stage-mode",
+        action="append",
+        choices=["embed", "bm25", "rrf", "hybrid"],
+        default=None,
+        help="Benchmark stage mode to run (repeatable)",
+    )
+    parser.add_argument(
+        "--max-queries-per-category",
+        type=int,
+        default=None,
+        help="Cap how many queries to run from each selected category",
+    )
+    args = parser.parse_args()
+
+    if args.dry_run:
+        # Validate query structure
+        print(f"\n{'=' * 60}")
+        print("DRY RUN - Query Structure Validation")
+        print(f"{'=' * 60}")
+        categories = _group_queries(
+            category_filters=args.category,
+            max_queries_per_category=args.max_queries_per_category,
+        )
+        print(f"Total queries: {sum(len(v) for v in categories.values())}")
+        print(f"Corpus documents: {len(CORPUS_DOCS)}")
+
+        print(f"\nQueries by category:")
+        for cat, queries in categories.items():
+            easy = sum(1 for q in queries if q.difficulty == "easy")
+            medium = sum(1 for q in queries if q.difficulty == "medium")
+            hard = sum(1 for q in queries if q.difficulty == "hard")
+            neg = sum(1 for q in queries if q.is_negative_control)
+            print(f"  {cat}: {len(queries)} (easy={easy}, medium={medium}, hard={hard}, negative={neg})")
+        
+        # Validate all relevant_paths exist in corpus
+        missing = []
+        for queries in categories.values():
+            for gt in queries:
+                for path in gt.relevant_paths:
+                    if path not in CORPUS_DOCS:
+                        missing.append((gt.query[:50], path))
+        
+        if missing:
+            print(f"\nWARNING: {len(missing)} paths not in CORPUS_DOCS:")
+            for q, p in missing[:10]:
+                print(f"  Query '{q}...' -> {p}")
+        else:
+            print("\n✓ All relevant_paths validated against CORPUS_DOCS")
+        
+        print(f"\n{'=' * 60}")
+        print("Validation complete")
+        print(f"{'=' * 60}")
+        return
+
+    # Initialize backend
+    from recallforge import get_backend, get_storage
+
+    store_path = args.store_path or tempfile.mkdtemp(prefix="recallforge_bench_")
+    cleanup = args.store_path is None
+
+    try:
+        os.environ["RECALLFORGE_BACKEND"] = args.backend
+        if args.quantization:
+            os.environ["RECALLFORGE_MLX_QUANTIZE"] = args.quantization
+
+        backend = get_backend()
+        storage = get_storage(store_path)
+        storage.initialize(store_path)
+
+        info = backend.get_info()
+        print(f"Backend: {info.name}")
+        print(f"Device: {info.device}")
+        print(f"Quantization: {info.quantization}")
+        print(f"Store: {store_path}")
+
+        run_benchmark(
+            backend,
+            storage,
+            output_path=args.output,
+            category_filters=args.category,
+            stage_filters=args.stage_mode,
+            max_queries_per_category=args.max_queries_per_category,
+        )
+
+    finally:
+        if cleanup and os.path.exists(store_path):
+            shutil.rmtree(store_path, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

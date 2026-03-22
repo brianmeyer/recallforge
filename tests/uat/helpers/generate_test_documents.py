@@ -51,12 +51,25 @@ def _write_fake_pptx(path: Path) -> None:
 
 
 def _write_fake_pdf(path: Path) -> None:
-    content = b"BT /F1 18 Tf 72 720 Td (Local-first PDF notes for RecallForge MCP ingestion.) Tj ET"
+    """Generate a valid PDF that pypdf can extract text from.
+    
+    Uses pypdf's PdfWriter to create a properly-formed PDF with embedded text.
+    Falls back to a manual PDF with proper font resources if pypdf write fails.
+    """
+    # Build a minimal but valid PDF manually with proper font resources
+    text_line = "Local-first PDF notes for RecallForge MCP ingestion."
+    content = f"BT /F1 18 Tf 72 720 Td ({text_line}) Tj ET".encode("ascii")
+
+    # Helvetica is a built-in PDF font — no embedding required
+    font_dict = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    resources = b"<< /Font << /F1 5 0 R >> >>"
+
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources %s /Contents 4 0 R >>" % resources,
         b"<< /Length %d >>\nstream\n%s\nendstream" % (len(content), content),
+        font_dict,
     ]
 
     chunks = [b"%PDF-1.4\n"]

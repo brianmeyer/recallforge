@@ -1,16 +1,24 @@
-"""Search operations for LanceDB storage backend."""
+"""Search operations service for LanceDB storage backend."""
 
 import math
 import re
 import time
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from .base import SearchResult
 from .lancedb_shared import _safe_filter, get_docid, logger, trace_log
 
+if TYPE_CHECKING:
+    from .lancedb_backend import LanceDBBackend
 
-class LanceDBSearchMixin:
+
+class SearchOps:
+    """Service class for search operations."""
+
+    def __init__(self, backend: "LanceDBBackend"):
+        self._backend = backend
+
     def _bm25_fallback(
         self,
         query: str,
@@ -40,9 +48,9 @@ class LanceDBSearchMixin:
             filter_clause = " AND ".join(filter_parts)
 
             # Keep fallback bounded to avoid OOM on large corpora.
-            row_limit = min(self._bm25_fallback_max_rows, max(limit * 50, 200))
+            row_limit = min(self._backend._bm25_fallback_max_rows, max(limit * 50, 200))
             builder = (
-                self._embeddings_table.search()
+                self._backend._embeddings_table.search()
                 .where(filter_clause)
                 .select(["collection", "file_path", "content_hash", "content_type", "title",
                          "text_body", "embedded_at", "modified_at", "user_id", "session_id",
@@ -106,7 +114,7 @@ class LanceDBSearchMixin:
         profile: Optional[str] = None
     ) -> List[SearchResult]:
         """Full-text search using LanceDB Tantivy."""
-        if self._embeddings_table is None:
+        if self._backend._embeddings_table is None:
             return []
 
         trimmed = query.strip()
@@ -116,7 +124,7 @@ class LanceDBSearchMixin:
         trace_log("search_fts_start", query=trimmed[:50], limit=limit, collection=collection, content_type=content_type,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
-        self.ensure_fts_index()
+        self._backend._fts.ensure_fts_index()
 
         # Build filter including TTL and namespace fields
         filter_parts = [self._get_ttl_filter()]
@@ -138,7 +146,7 @@ class LanceDBSearchMixin:
 
         # Run FTS search
         try:
-            builder = self._embeddings_table.search(trimmed, query_type="fts").limit(limit * 2)
+            builder = self._backend._embeddings_table.search(trimmed, query_type="fts").limit(limit * 2)
             if filter_clause:
                 builder = builder.where(filter_clause)
             results = builder.to_list()
@@ -183,10 +191,10 @@ class LanceDBSearchMixin:
         profile: Optional[str] = None
     ) -> List[SearchResult]:
         """Vector similarity search."""
-        if self._embeddings_table is None:
+        if self._backend._embeddings_table is None:
             return []
 
-        if not self.has_vectors():
+        if not self._backend.has_vectors():
             return []
 
         trace_log("search_vec_start", limit=limit, collection=collection, content_type=content_type,
@@ -211,7 +219,7 @@ class LanceDBSearchMixin:
         filter_clause = " AND ".join(filter_parts) if filter_parts else None
 
         # Run vector search
-        builder = self._embeddings_table.search(vector, query_type="vector").metric("cosine").limit(limit * 2)
+        builder = self._backend._embeddings_table.search(vector, query_type="vector").metric("cosine").limit(limit * 2)
         if filter_clause:
             builder = builder.where(filter_clause)
 
@@ -254,7 +262,7 @@ class LanceDBSearchMixin:
         body = row.get("text_body") or ""
         if not body:
             # Fallback only when text_body is empty - lazy load for final output
-            body = self.get_content(content_hash) or ""
+            body = self._backend.get_content(content_hash) or ""
 
         return SearchResult(
             filepath=f"recallforge://{collection}/{file_path}",
@@ -296,7 +304,7 @@ class LanceDBSearchMixin:
         profile: Optional[str] = None,
     ) -> List[str]:
         """Return sorted list of unique collection names, with optional namespace filters."""
-        if self._embeddings_table is None:
+        if self._backend._embeddings_table is None:
             return []
 
         try:
@@ -310,7 +318,7 @@ class LanceDBSearchMixin:
             if profile is not None:
                 filter_parts.append(_safe_filter("profile", profile))
 
-            builder = self._embeddings_table.search().select(["collection"])
+            builder = self._backend._embeddings_table.search().select(["collection"])
             if filter_parts:
                 builder = builder.where(" AND ".join(filter_parts))
 
@@ -330,7 +338,7 @@ class LanceDBSearchMixin:
         collection: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         """Return unique namespace combinations (user_id, session_id, project_id, profile)."""
-        if self._embeddings_table is None:
+        if self._backend._embeddings_table is None:
             return []
 
         try:
@@ -338,7 +346,7 @@ class LanceDBSearchMixin:
             if collection is not None:
                 filter_parts.append(_safe_filter("collection", collection))
 
-            builder = self._embeddings_table.search().select(
+            builder = self._backend._embeddings_table.search().select(
                 ["user_id", "session_id", "project_id", "profile"]
             )
             if filter_parts:

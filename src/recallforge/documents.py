@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import re
+import tempfile
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,8 @@ class DocumentSection:
     text: str
     section_type: str
     index: int
+    content_type: str = "text"
+    image_path: Optional[str] = None
 
 
 @dataclass
@@ -92,6 +95,7 @@ def _group_sections(
                 text=text,
                 section_type=section_type,
                 index=logical_index,
+                content_type="text",
             )
         )
         buffer = []
@@ -176,6 +180,7 @@ def _extract_pptx(path: Path, logical_path: str) -> DocumentArtifacts:
             text=text,
             section_type="slide",
             index=index,
+            content_type="text",
         )
         for index, text in enumerate(slides, start=1)
         if text
@@ -197,6 +202,69 @@ def _extract_pdf(path: Path, logical_path: str) -> DocumentArtifacts:
     return _extract_pdf_fallback(path, logical_path)
 
 
+def _render_pdf_page_as_image(
+    pdf_path: Path, page_number: int, temp_dir: Optional[Path] = None
+) -> Optional[str]:
+    """Render a PDF page as an image. Returns the image path or None if failed.
+
+    Fallback chain:
+    1. Try pypdf to extract embedded images from the page
+    2. Try pymupdf (fitz) to render the page
+    3. Return None if all methods fail
+    """
+    import logging
+
+    logger = logging.getLogger("recallforge.documents")
+
+    # Try pymupdf first (best quality page rendering)
+    if importlib.util.find_spec("fitz") is not None:
+        try:
+            import fitz  # type: ignore
+
+            # Create temp dir if not provided
+            if temp_dir is None:
+                temp_dir = Path(tempfile.mkdtemp(prefix="recallforge_pdf_"))
+
+            doc = fitz.open(str(pdf_path))
+            page = doc.load_page(page_number - 1)  # 0-indexed
+            pix = page.get_pixmap(dpi=150)
+            image_path = temp_dir / f"page_{page_number:04d}.png"
+            pix.save(str(image_path))
+            doc.close()
+            return str(image_path)
+        except Exception as e:
+            logger.debug("pymupdf page rendering failed for %s page %d: %s", pdf_path, page_number, e)
+
+    # Try pypdf to extract embedded images
+    if importlib.util.find_spec("pypdf") is not None:
+        try:
+            from pypdf import PdfReader  # type: ignore
+
+            reader = PdfReader(str(pdf_path))
+            if page_number <= len(reader.pages):
+                page = reader.pages[page_number - 1]
+                if hasattr(page, "images") and page.images:
+                    # Create temp dir if not provided
+                    if temp_dir is None:
+                        temp_dir = Path(tempfile.mkdtemp(prefix="recallforge_pdf_"))
+
+                    # Extract the first image from the page
+                    for img_index, image in enumerate(page.images):
+                        try:
+                            image_data = image.data
+                            image_path = temp_dir / f"page_{page_number:04d}_img_{img_index:02d}.png"
+                            with open(image_path, "wb") as f:
+                                f.write(image_data)
+                            return str(image_path)
+                        except Exception as img_e:
+                            logger.debug("Failed to extract image %d from page %d: %s", img_index, page_number, img_e)
+                            continue
+        except Exception as e:
+            logger.debug("pypdf image extraction failed for %s page %d: %s", pdf_path, page_number, e)
+
+    return None
+
+
 def _extract_pdf_with_pypdf(path: Path, logical_path: str) -> DocumentArtifacts:
     import logging
     from pypdf import PdfReader  # type: ignore
@@ -205,21 +273,44 @@ def _extract_pdf_with_pypdf(path: Path, logical_path: str) -> DocumentArtifacts:
 
     reader = PdfReader(str(path))
     sections: List[DocumentSection] = []
+
+    # Create temp directory for page images if needed
+    temp_dir: Optional[Path] = None
+
     for index, page in enumerate(reader.pages, start=1):
         text = _clean_text(page.extract_text() or "")
-        if not text:
-            continue
-        sections.append(
-            DocumentSection(
-                logical_path=f"{logical_path}::page:{index:04d}",
-                title=f"{path.stem} page {index}",
-                text=text,
-                section_type="page",
-                index=index,
+        if text:
+            sections.append(
+                DocumentSection(
+                    logical_path=f"{logical_path}::page:{index:04d}",
+                    title=f"{path.stem} page {index}",
+                    text=text,
+                    section_type="page",
+                    index=index,
+                    content_type="text",
+                )
             )
-        )
+            continue
+
+        # No text extracted - try to render page as image
+        if temp_dir is None:
+            temp_dir = Path(tempfile.mkdtemp(prefix="recallforge_pdf_"))
+        image_path = _render_pdf_page_as_image(path, index, temp_dir)
+        if image_path:
+            sections.append(
+                DocumentSection(
+                    logical_path=f"{logical_path}::page:{index:04d}",
+                    title=f"{path.stem} page {index}",
+                    text="",  # No text, image will be embedded
+                    section_type="page",
+                    index=index,
+                    content_type="image",
+                    image_path=image_path,
+                )
+            )
+
     if not sections:
-        logger.warning("No extractable text found in PDF: %s", path)
+        logger.warning("No extractable text or images found in PDF: %s", path)
         return DocumentArtifacts(sections=[], document_type="pdf", extractor="pypdf")
     return DocumentArtifacts(sections=sections, document_type="pdf", extractor="pypdf")
 
@@ -237,26 +328,46 @@ def _extract_pdf_fallback(path: Path, logical_path: str) -> DocumentArtifacts:
             texts.append(_clean_text(" ".join(strings)))
 
     merged = _clean_text("\n\n".join(texts))
-    if not merged:
-        logger.warning(
-            "No extractable text found in PDF: %s. Install recallforge[docs] for richer PDF parsing.",
-            path,
+    if merged:
+        return DocumentArtifacts(
+            sections=[
+                DocumentSection(
+                    logical_path=f"{logical_path}::page:0001",
+                    title=f"{path.stem} page 1",
+                    text=merged,
+                    section_type="page",
+                    index=1,
+                    content_type="text",
+                )
+            ],
+            document_type="pdf",
+            extractor="builtin-pdf-fallback",
         )
-        return DocumentArtifacts(sections=[], document_type="pdf", extractor="builtin-pdf-fallback")
 
-    return DocumentArtifacts(
-        sections=[
-            DocumentSection(
-                logical_path=f"{logical_path}::page:0001",
-                title=f"{path.stem} page 1",
-                text=merged,
-                section_type="page",
-                index=1,
-            )
-        ],
-        document_type="pdf",
-        extractor="builtin-pdf-fallback",
+    # No text extracted - try to render first page as image using pymupdf
+    image_path = _render_pdf_page_as_image(path, 1, None)
+    if image_path:
+        return DocumentArtifacts(
+            sections=[
+                DocumentSection(
+                    logical_path=f"{logical_path}::page:0001",
+                    title=f"{path.stem} page 1",
+                    text="",
+                    section_type="page",
+                    index=1,
+                    content_type="image",
+                    image_path=image_path,
+                )
+            ],
+            document_type="pdf",
+            extractor="builtin-pdf-fallback",
+        )
+
+    logger.warning(
+        "No extractable text or images found in PDF: %s. Install recallforge[docs] for richer PDF parsing.",
+        path,
     )
+    return DocumentArtifacts(sections=[], document_type="pdf", extractor="builtin-pdf-fallback")
 
 
 def _iter_pdf_streams(raw: bytes) -> Iterable[bytes]:

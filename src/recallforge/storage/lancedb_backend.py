@@ -51,9 +51,9 @@ from .lancedb_shared import (
     logger,
     trace_log,
 )
-from .fts import LanceDBFTSMixin
-from .search_ops import LanceDBSearchMixin
-from .indexing import LanceDBIndexingMixin
+from .fts_manager import FTSManager
+from .search_ops import SearchOps
+from .indexing_ops import IndexingOps
 
 
 # =============================================================================
@@ -64,20 +64,10 @@ DEFAULT_MAX_FILE_SIZE_MB = 100
 
 
 # =============================================================================
-# Helper Functions
-# =============================================================================
-
-# =============================================================================
-# Chunking
-# =============================================================================
-
-
-
-# =============================================================================
 # LanceDB Backend Implementation
 # =============================================================================
 
-class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, StorageBackend):
+class LanceDBBackend(StorageBackend):
     """
     LanceDB-based storage backend.
     
@@ -93,6 +83,8 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
     # FTS rebuild debounce configuration
     FTS_REBUILD_MIN_INTERVAL = 2.0  # Minimum seconds between rebuilds
     FTS_REBUILD_PENDING_THRESHOLD = 10  # Rebuild after this many pending writes
+    BULK_FLUSH_DOCS_THRESHOLD = max(1, int(os.environ.get("RECALLFORGE_BULK_FLUSH_DOCS", "75")))
+    BULK_FLUSH_EMBEDDINGS_THRESHOLD = max(1, int(os.environ.get("RECALLFORGE_BULK_FLUSH_EMBEDDINGS", "600")))
     
     def __init__(self, store_path: Optional[str] = None):
         """
@@ -113,10 +105,19 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
         self._fts_last_rebuild = 0.0
         self._fts_needs_rebuild = False
         self._bulk_mode = False  # When True, defer all FTS rebuilds until bulk ends
+        self._pending_documents: Dict[str, Dict[str, Any]] = {}
+        self._pending_content: Dict[str, Dict[str, Any]] = {}
+        self._pending_embeddings: Dict[str, Dict[str, Any]] = {}
+        self._pending_embedding_deletes: set[str] = set()
         self._bm25_fallback_max_rows = max(
             100,
             int(os.environ.get("RECALLFORGE_BM25_FALLBACK_MAX_ROWS", "5000")),
         )
+        
+        # Initialize composed service objects (must be done here for tests that use __new__)
+        self._fts = FTSManager(self)
+        self._search = SearchOps(self)
+        self._indexer = IndexingOps(self)
     
     def initialize(self, store_path: Optional[str] = None) -> None:
         """Initialize the LanceDB database."""
@@ -264,9 +265,12 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
 
     def close(self) -> None:
         """Close the database connection."""
+        # Flush pending buffered writes before rebuilding FTS.
+        self._flush_pending_writes(force=True)
+
         # Flush any pending FTS rebuild before closing
         if self._fts_needs_rebuild or self._fts_rebuild_pending > 0:
-            self._do_fts_rebuild()
+            self._fts.do_fts_rebuild()
         
         self._conn = None
         self._embeddings_table = None
@@ -388,6 +392,57 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
         except Exception as e:
             logger.warning(f"_ensure_indices: failed to create cache index: {e}")
     
+    def _ensure_bulk_buffers(self) -> None:
+        """Initialize bulk-write buffers for tests that construct via __new__."""
+        if not hasattr(self, "_pending_documents") or self._pending_documents is None:
+            self._pending_documents = {}
+        if not hasattr(self, "_pending_content") or self._pending_content is None:
+            self._pending_content = {}
+        if not hasattr(self, "_pending_embeddings") or self._pending_embeddings is None:
+            self._pending_embeddings = {}
+        if not hasattr(self, "_pending_embedding_deletes") or self._pending_embedding_deletes is None:
+            self._pending_embedding_deletes = set()
+
+    def _flush_pending_writes(self, force: bool = False) -> None:
+        """Flush buffered bulk writes to LanceDB in large Arrow batches."""
+        self._ensure_bulk_buffers()
+
+        should_flush = force
+        if not should_flush:
+            should_flush = (
+                len(self._pending_documents) >= self.BULK_FLUSH_DOCS_THRESHOLD
+                or len(self._pending_content) >= self.BULK_FLUSH_DOCS_THRESHOLD
+                or len(self._pending_embeddings) >= self.BULK_FLUSH_EMBEDDINGS_THRESHOLD
+            )
+        if not should_flush:
+            return
+
+        if self._pending_embedding_deletes:
+            expr = " OR ".join(
+                _safe_filter("hash_seq", hash_seq)
+                for hash_seq in sorted(self._pending_embedding_deletes)
+            )
+            self._embeddings_table.delete(expr)
+            self._pending_embedding_deletes.clear()
+
+        if self._pending_content:
+            rows = list(self._pending_content.values())
+            self._content_table.add(pa.Table.from_pylist(rows, schema=self._build_content_schema()))
+            self._pending_content.clear()
+
+        if self._pending_documents:
+            rows = list(self._pending_documents.values())
+            if rows:
+                delete_expr = " OR ".join(_safe_filter("id", row["id"]) for row in rows)
+                self._documents_table.delete(delete_expr)
+                self._documents_table.add(pa.Table.from_pylist(rows, schema=self._build_documents_schema()))
+            self._pending_documents.clear()
+
+        if self._pending_embeddings:
+            rows = list(self._pending_embeddings.values())
+            self._embeddings_table.add(pa.Table.from_pylist(rows, schema=self._build_embeddings_schema()))
+            self._pending_embeddings.clear()
+
     # =========================================================================
     # Document Operations
     # =========================================================================
@@ -422,36 +477,37 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
         if profile is not None:
             ns_filter += f" AND {_safe_filter('profile', profile)}"
 
-        # Check for existing
-        try:
-            existing = list(self._documents_table.search()
-                .where(ns_filter)
-                .limit(1)
-                .to_list())
+        self._ensure_bulk_buffers()
 
-            if len(existing) > 0:
-                doc_id = existing[0]["id"]
-                self._documents_table.update(
-                    where=_safe_filter("id", doc_id),
-                    values={
-                        "title": title,
-                        "content_hash": content_hash,
-                        "content_type": content_type,
-                        "active": 1,
-                        "updated_at": modified_ts,
-                        "user_id": user_id,
-                        "session_id": session_id,
-                        "project_id": project_id,
-                        "profile": profile,
-                    }
-                )
-                return doc_id
-        except Exception as e:
-            logger.warning(f"insert_document: failed to check existing doc {collection}/{file_path}: {e}")
+        # Check for existing (including staged bulk rows)
+        existing_row = None
+        if self._bulk_mode:
+            for row in self._pending_documents.values():
+                if (
+                    row["collection"] == collection
+                    and row["file_path"] == file_path
+                    and row.get("user_id") == user_id
+                    and row.get("session_id") == session_id
+                    and row.get("project_id") == project_id
+                    and row.get("profile") == profile
+                ):
+                    existing_row = row
+                    break
 
-        # Insert new
-        doc_id = str(uuid.uuid4())
-        self._documents_table.add([{
+        if existing_row is None:
+            try:
+                existing = list(self._documents_table.search()
+                    .where(ns_filter)
+                    .limit(1)
+                    .to_list())
+                if len(existing) > 0:
+                    existing_row = existing[0]
+            except Exception as e:
+                logger.warning(f"insert_document: failed to check existing doc {collection}/{file_path}: {e}")
+
+        doc_id = existing_row["id"] if existing_row else str(uuid.uuid4())
+        created_value = existing_row.get("created_at", created_ts) if existing_row else created_ts
+        row = {
             "id": doc_id,
             "collection": collection,
             "file_path": file_path,
@@ -459,13 +515,20 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
             "content_hash": content_hash,
             "content_type": content_type,
             "active": 1,
-            "created_at": created_ts,
+            "created_at": created_value,
             "updated_at": modified_ts,
             "user_id": user_id,
             "session_id": session_id,
             "project_id": project_id,
             "profile": profile,
-        }])
+        }
+
+        if self._bulk_mode:
+            self._pending_documents[doc_id] = row
+            self._flush_pending_writes(force=False)
+        else:
+            self._documents_table.delete(_safe_filter("id", doc_id))
+            self._documents_table.add(pa.Table.from_pylist([row], schema=self._build_documents_schema()))
 
         return doc_id
     
@@ -509,6 +572,11 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
     
     def insert_content(self, hash_str: str, content: str, content_type: str = "text") -> None:
         """Store content by hash."""
+        self._ensure_bulk_buffers()
+
+        if hash_str in self._pending_content:
+            return
+
         try:
             existing = list(self._content_table.search()
                 .where(_safe_filter("hash", hash_str))
@@ -518,13 +586,18 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
                 return
         except Exception as e:
             logger.warning(f"insert_content: failed to check existing hash {hash_str[:8]}: {e}")
-        
-        self._content_table.add([{
+
+        row = {
             "hash": hash_str,
             "doc": content,
             "content_type": content_type,
             "created_at": int(time.time() * 1000),
-        }])
+        }
+        if self._bulk_mode:
+            self._pending_content[hash_str] = row
+            self._flush_pending_writes(force=False)
+        else:
+            self._content_table.add(pa.Table.from_pylist([row], schema=self._build_content_schema()))
     
     def get_content(self, hash_str: str) -> Optional[str]:
         """Retrieve content by hash."""
@@ -579,17 +652,22 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
             import json
             tags_json = json.dumps(tags)
 
-        # Delete existing
-        try:
-            self._embeddings_table.delete(_safe_filter("hash_seq", hash_seq))
-        except Exception as e:
-            logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
+        self._ensure_bulk_buffers()
+
+        if self._bulk_mode:
+            self._pending_embedding_deletes.add(hash_seq)
+        else:
+            # Delete existing
+            try:
+                self._embeddings_table.delete(_safe_filter("hash_seq", hash_seq))
+            except Exception as e:
+                logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
 
         trace_log("insert_embedding", hash_seq=hash_seq, collection=collection, file_path=file_path, seq=seq,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
                   importance=importance, ttl_seconds=ttl_seconds, tags=tags)
 
-        self._embeddings_table.add([{
+        row = {
             "hash_seq": hash_seq,
             "content_hash": content_hash,
             "collection": collection,
@@ -610,7 +688,13 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
             "ttl_seconds": ttl_seconds,
             "tags": tags_json,
             "expires_at": expires_at,
-        }])
+        }
+
+        if self._bulk_mode:
+            self._pending_embeddings[hash_seq] = row
+            self._flush_pending_writes(force=False)
+        else:
+            self._embeddings_table.add(pa.Table.from_pylist([row], schema=self._build_embeddings_schema()))
     
     def has_vectors(self) -> bool:
         """Check if index has any vectors."""
@@ -622,8 +706,556 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
             return False
     
     # =========================================================================
-    # Search Operations
+    # Search Operations - Delegated to SearchOps
     # =========================================================================
+    
+    def search_fts(
+        self,
+        query: str,
+        limit: int = 20,
+        collection: Optional[str] = None,
+        content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
+    ) -> List[Any]:
+        """Full-text search using LanceDB Tantivy."""
+        return self._search.search_fts(
+            query=query,
+            limit=limit,
+            collection=collection,
+            content_type=content_type,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile
+        )
+    
+    def search_vec(
+        self,
+        vector: List[float],
+        limit: int = 20,
+        collection: Optional[str] = None,
+        content_type: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None
+    ) -> List[Any]:
+        """Vector similarity search."""
+        return self._search.search_vec(
+            vector=vector,
+            limit=limit,
+            collection=collection,
+            content_type=content_type,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile
+        )
+    
+    def list_collections(
+        self,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> List[str]:
+        """Return sorted list of unique collection names, with optional namespace filters."""
+        return self._search.list_collections(
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile
+        )
+    
+    def list_namespaces(
+        self,
+        collection: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        """Return unique namespace combinations (user_id, session_id, project_id, profile)."""
+        return self._search.list_namespaces(collection=collection)
+
+    def rename_collection(
+        self,
+        old_name: str,
+        new_name: str,
+    ) -> Dict[str, Any]:
+        """
+        Rename a collection atomically.
+
+        Updates all rows in both embeddings and documents tables.
+        Returns a summary of the operation.
+        """
+        if not old_name or not new_name:
+            raise ValueError("old_name and new_name are required")
+        if old_name == new_name:
+            return {"success": True, "old_name": old_name, "new_name": new_name, "embeddings_updated": 0, "documents_updated": 0}
+
+        # Check if target collection already exists
+        existing_collections = self.list_collections()
+        if new_name in existing_collections:
+            raise ValueError(
+                f"Cannot rename '{old_name}' to '{new_name}': target collection already exists. "
+                f"Delete '{new_name}' first or choose a different name."
+            )
+
+        # Flush any pending writes first
+        self._flush_pending_writes(force=True)
+
+        # Update embeddings table
+        embeddings_filter = _safe_filter("collection", old_name)
+        embeddings_updated = 0
+        try:
+            # Fetch all rows for this collection
+            all_rows = list(self._embeddings_table.search()
+                .where(embeddings_filter)
+                .limit(10_000_000)
+                .to_list())
+
+            embeddings_updated = len(all_rows)
+
+            if all_rows:
+                # Delete all rows for this collection
+                self._embeddings_table.delete(embeddings_filter)
+
+                # Modify and re-insert
+                for row in all_rows:
+                    row["collection"] = new_name
+
+                # Re-insert
+                if all_rows:
+                    self._embeddings_table.add(pa.Table.from_pylist(all_rows, schema=self._build_embeddings_schema()))
+
+        except Exception as e:
+            logger.error(f"rename_collection: failed to update embeddings: {e}")
+            raise
+
+        # Update documents table
+        documents_filter = _safe_filter("collection", old_name)
+        documents_updated = 0
+        try:
+            all_doc_rows = list(self._documents_table.search()
+                .where(documents_filter)
+                .limit(10_000_000)
+                .to_list())
+
+            documents_updated = len(all_doc_rows)
+
+            if all_doc_rows:
+                # Delete all rows for this collection
+                self._documents_table.delete(documents_filter)
+
+                # Modify and re-insert
+                for row in all_doc_rows:
+                    row["collection"] = new_name
+
+                # Re-insert
+                if all_doc_rows:
+                    self._documents_table.add(pa.Table.from_pylist(all_doc_rows, schema=self._build_documents_schema()))
+
+        except Exception as e:
+            logger.error(f"rename_collection: failed to update documents: {e}")
+            raise
+
+        # Schedule FTS rebuild since we modified embeddings
+        self._schedule_fts_rebuild()
+
+        return {
+            "success": True,
+            "old_name": old_name,
+            "new_name": new_name,
+            "embeddings_updated": embeddings_updated,
+            "documents_updated": documents_updated,
+        }
+
+    def delete_collection(
+        self,
+        name: str,
+    ) -> Dict[str, Any]:
+        """
+        Delete all data for a collection.
+
+        Removes all documents and embeddings for the collection,
+        and cleans up orphaned content entries.
+        """
+        if not name:
+            raise ValueError("name is required")
+
+        # Flush any pending writes first
+        self._flush_pending_writes(force=True)
+
+        # Track content hashes to potentially clean up
+        content_hashes_to_check: set = set()
+
+        # Delete from embeddings table
+        embeddings_deleted = 0
+        try:
+            embeddings_filter = _safe_filter("collection", name)
+
+            # Get content hashes before deletion for orphan cleanup
+            rows = list(self._embeddings_table.search()
+                .where(embeddings_filter)
+                .select(["content_hash"])
+                .limit(10_000_000)
+                .to_list())
+            content_hashes_to_check.update(r["content_hash"] for r in rows)
+            embeddings_deleted = len(rows)
+
+            # Delete all embeddings for this collection
+            self._embeddings_table.delete(embeddings_filter)
+        except Exception as e:
+            logger.error(f"delete_collection: failed to delete embeddings: {e}")
+            raise
+
+        # Delete from documents table
+        documents_deleted = 0
+        try:
+            documents_filter = _safe_filter("collection", name)
+
+            # Get content hashes before deletion for orphan cleanup
+            rows = list(self._documents_table.search()
+                .where(documents_filter)
+                .select(["content_hash"])
+                .limit(10_000_000)
+                .to_list())
+            content_hashes_to_check.update(r["content_hash"] for r in rows)
+            documents_deleted = len(rows)
+
+            # Delete all documents for this collection
+            self._documents_table.delete(documents_filter)
+        except Exception as e:
+            logger.error(f"delete_collection: failed to delete documents: {e}")
+            raise
+
+        # Clean up orphaned content entries
+        orphans_cleaned = 0
+        if content_hashes_to_check:
+            for content_hash in content_hashes_to_check:
+                # Check if this content hash is still referenced anywhere
+                try:
+                    embedding_refs = list(self._embeddings_table.search()
+                        .where(_safe_filter("content_hash", content_hash))
+                        .limit(1)
+                        .to_list())
+                    document_refs = list(self._documents_table.search()
+                        .where(_safe_filter("content_hash", content_hash))
+                        .limit(1)
+                        .to_list())
+
+                    if not embedding_refs and not document_refs:
+                        # Orphaned - delete from content table
+                        self._content_table.delete(_safe_filter("hash", content_hash))
+                        orphans_cleaned += 1
+                except Exception as e:
+                    logger.warning(f"delete_collection: failed to check orphan {content_hash[:8]}: {e}")
+
+        # Schedule FTS rebuild
+        self._schedule_fts_rebuild()
+
+        return {
+            "success": True,
+            "name": name,
+            "embeddings_deleted": embeddings_deleted,
+            "documents_deleted": documents_deleted,
+            "orphans_cleaned": orphans_cleaned,
+        }
+
+    def _make_search_result(self, row: Dict[str, Any], score: float, source: str) -> Any:
+        """Convert LanceDB row to SearchResult."""
+        # Lazy initialization for tests that use __new__
+        if not hasattr(self, '_search') or self._search is None:
+            from .search_ops import SearchOps
+            self._search = SearchOps(self)
+        return self._search._make_search_result(row, score, source)
+    
+    # =========================================================================
+    # FTS Operations - Delegated to FTSManager
+    # =========================================================================
+    
+    def bulk_mode(self):
+        """Context manager to defer FTS rebuilds during bulk operations."""
+        return self._fts.bulk_mode()
+
+    def _schedule_fts_rebuild(self) -> None:
+        """Schedule a debounced FTS rebuild."""
+        self._fts.schedule_fts_rebuild()
+
+    def _do_fts_rebuild(self) -> None:
+        """Execute the actual FTS rebuild with rate limiting."""
+        self._fts.do_fts_rebuild()
+    
+    def ensure_fts_index(self, force_rebuild: bool = False) -> None:
+        """Ensure the FTS index exists."""
+        self._fts.ensure_fts_index(force_rebuild=force_rebuild)
+    
+    def rebuild_fts_index(self) -> None:
+        """Rebuild the FTS index."""
+        self._fts.rebuild_fts_index()
+    
+    # =========================================================================
+    # Indexing Operations - Delegated to IndexingOps
+    # =========================================================================
+    
+    def upsert_memory(
+        self,
+        path: str,
+        text: str,
+        collection: str,
+        embed_func,
+        model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+        _skip_delete: bool = False,
+    ) -> str:
+        """Create or update a text memory, replacing old vectors for this path."""
+        return self._indexer.upsert_memory(
+            path=path,
+            text=text,
+            collection=collection,
+            embed_func=embed_func,
+            model=model,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            importance=importance,
+            ttl_seconds=ttl_seconds,
+            tags=tags,
+            _skip_delete=_skip_delete,
+        )
+    
+    def delete_memory(
+        self,
+        path: str,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Deactivate a memory and remove all associated vectors."""
+        return self._indexer.delete_memory(
+            path=path,
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+    
+    def delete_path(
+        self,
+        path: str,
+        collection: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        include_children: bool = False,
+    ) -> Dict[str, Any]:
+        """Delete a logical path and optionally all derived child assets."""
+        return self._indexer.delete_path(
+            path=path,
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            include_children=include_children,
+        )
+    
+    def index_folder(
+        self,
+        folder_path: str,
+        collection: str,
+        recursive: bool,
+        include_globs: Optional[List[str]],
+        exclude_globs: Optional[List[str]],
+        embed_func,
+        model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
+    ) -> Dict[str, Any]:
+        """Index text files from a folder and return summary counts."""
+        return self._indexer.index_folder(
+            folder_path=folder_path,
+            collection=collection,
+            recursive=recursive,
+            include_globs=include_globs,
+            exclude_globs=exclude_globs,
+            embed_func=embed_func,
+            model=model,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            max_file_size_mb=max_file_size_mb,
+        )
+    
+    def index_document(
+        self,
+        path: str,
+        text: str,
+        collection: str,
+        model: str,
+        embed_func,
+        content_type: str = "text"
+    ) -> str:
+        """Full document indexing pipeline for text content."""
+        return self._indexer.index_document(
+            path=path,
+            text=text,
+            collection=collection,
+            model=model,
+            embed_func=embed_func,
+            content_type=content_type,
+        )
+
+    def index_document_file(
+        self,
+        path: str,
+        collection: str,
+        embed_func,
+        embed_image_func=None,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Extract and index a document file into structured text assets."""
+        return self._indexer.index_document_file(
+            path=path,
+            collection=collection,
+            embed_func=embed_func,
+            embed_image_func=embed_image_func,
+            model=model,
+            stored_path=stored_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+    
+    def index_image(
+        self,
+        path: str,
+        collection: str,
+        embed_func,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        title: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        caption_media: bool = True,
+    ) -> str:
+        """Index an image file."""
+        return self._indexer.index_image(
+            path=path,
+            collection=collection,
+            embed_func=embed_func,
+            model=model,
+            stored_path=stored_path,
+            title=title,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            caption_media=caption_media,
+        )
+
+    def index_video(
+        self,
+        path: str,
+        collection: str,
+        embed_text_func,
+        embed_image_func,
+        embed_video_func=None,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        frame_interval_seconds: float = 5.0,
+        max_frames: int = 8,
+        caption_media: bool = True,
+    ) -> Dict[str, Any]:
+        """Index a video into a top-level video embedding plus derived assets."""
+        return self._indexer.index_video(
+            path=path,
+            collection=collection,
+            embed_text_func=embed_text_func,
+            embed_image_func=embed_image_func,
+            embed_video_func=embed_video_func,
+            model=model,
+            stored_path=stored_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            frame_interval_seconds=frame_interval_seconds,
+            max_frames=max_frames,
+            caption_media=caption_media,
+        )
+
+    def ingest(
+        self,
+        collection: str,
+        text: Optional[str],
+        path: Optional[str],
+        file_path: Optional[str],
+        folder_path: Optional[str],
+        recursive: bool,
+        content_types: List[str],
+        include_globs: Optional[List[str]],
+        exclude_globs: Optional[List[str]],
+        embed_text_func,
+        embed_image_func,
+        embed_video_func,
+        model: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        max_file_size_mb: int = DEFAULT_MAX_FILE_SIZE_MB,
+        caption_media: bool = True,
+    ) -> Dict[str, Any]:
+        """Unified multimodal ingest for text/image/file/folder inputs."""
+        return self._indexer.ingest(
+            collection=collection,
+            text=text,
+            path=path,
+            file_path=file_path,
+            folder_path=folder_path,
+            recursive=recursive,
+            content_types=content_types,
+            include_globs=include_globs,
+            exclude_globs=exclude_globs,
+            embed_text_func=embed_text_func,
+            embed_image_func=embed_image_func,
+            embed_video_func=embed_video_func,
+            model=model,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            max_file_size_mb=max_file_size_mb,
+            caption_media=caption_media,
+        )
     
     # =========================================================================
     # Cache Operations
@@ -673,5 +1305,3 @@ class LanceDBBackend(LanceDBFTSMixin, LanceDBSearchMixin, LanceDBIndexingMixin, 
             return self._documents_table.count_rows()
         except Exception:
             return 0
-
-

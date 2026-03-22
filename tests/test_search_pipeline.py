@@ -2,7 +2,7 @@
 test_search_pipeline.py - Unit tests for HybridSearcher pipeline.
 
 All backends and storage are mocked — NO real model inference, NO real LanceDB.
-Tests: RRF fusion, score blending, tiered mode branching, strong-signal detection.
+Tests: RRF fusion, score blending, tiered mode branching.
 """
 
 import os
@@ -49,45 +49,40 @@ def _make_search_result(filepath: str, score: float = 0.9, source: str = "fts",
 class StubBackend(ModelBackend):
     """Minimal ModelBackend stub for unit tests."""
 
-    def __init__(self, mode: str = "full"):
+    def __init__(self, mode: str = "hybrid"):
         self._mode = mode
 
     def embed_text(self, text: str) -> np.ndarray:
         return np.ones(2048, dtype=np.float32) / np.sqrt(2048)
 
-    def embed_texts(self, texts: List[str]) -> np.ndarray:
-        return np.stack([self.embed_text(t) for t in texts])
+    def embed_texts(self, texts: List[str]) -> List[np.ndarray]:
+        return [self.embed_text(t) for t in texts]
 
     def embed_image(self, image_path: str) -> np.ndarray:
         return self.embed_text(image_path)
 
-    def embed_images(self, image_paths: List[str]) -> np.ndarray:
-        return self.embed_texts(image_paths)
+    def embed_images(self, image_paths: List[str]) -> List[np.ndarray]:
+        return [self.embed_image(p) for p in image_paths]
 
     def embed_video(self, video_path: str) -> np.ndarray:
         return self.embed_text(video_path)
 
-    def embed_videos(self, video_paths: List[str]) -> np.ndarray:
-        return self.embed_texts(video_paths)
+    def embed_videos(self, video_paths: List[str]) -> List[np.ndarray]:
+        return [self.embed_video(p) for p in video_paths]
 
-    def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[float]:
+    def caption_image(self, image_path: str) -> str:
+        return f"caption for {os.path.basename(image_path)}"
+
+    def rerank(self, query: str, documents: List[Dict[str, Any]], **kwargs) -> List[float]:
         # Return descending scores
         return [0.9 - i * 0.05 for i in range(len(documents))]
-
-    def expand_query(self, query: str) -> Dict[str, str]:
-        return {
-            "lex": query + " keywords",
-            "vec": query + " semantic",
-            "hyde": "hypothetical document about " + query,
-        }
 
     def warm_up(self) -> None:
         pass
 
     def get_info(self) -> BackendInfo:
         return BackendInfo(name="stub", device="cpu", dtype="float32",
-                          embedder_loaded=True, reranker_loaded=True,
-                          expander_loaded=True)
+                          embedder_loaded=True, reranker_loaded=True)
 
 
 class StubStorage:
@@ -96,15 +91,21 @@ class StubStorage:
     def __init__(self, fts_results=None, vec_results=None):
         self._fts_results = fts_results or []
         self._vec_results = vec_results or []
+        self.last_fts_query = None
+        self.last_fts_content_type = None
+        self.last_vec_content_type = None
 
     def search_fts(self, query: str, limit: int = 20,
                    collection=None, content_type=None,
                    user_id=None, session_id=None, project_id=None, profile=None) -> List[SearchResult]:
+        self.last_fts_query = query
+        self.last_fts_content_type = content_type
         return list(self._fts_results[:limit])
 
     def search_vec(self, vector, limit: int = 20,
                    collection=None, content_type=None,
                    user_id=None, session_id=None, project_id=None, profile=None) -> List[SearchResult]:
+        self.last_vec_content_type = content_type
         return list(self._vec_results[:limit])
 
 
@@ -122,6 +123,26 @@ class TestHybridSearcherInit(unittest.TestCase):
         self.assertEqual(searcher.limit, 5)
         self.assertIs(searcher.backend, backend)
         self.assertIs(searcher.storage, storage)
+
+    def test_rerank_top_k_reads_env_override(self):
+        backend = StubBackend()
+        storage = StubStorage()
+        with patch.dict(os.environ, {"RECALLFORGE_RERANK_TOP_K": "7"}):
+            searcher = HybridSearcher(backend=backend, storage=storage)
+        self.assertEqual(searcher.rerank_top_k, 7)
+
+    def test_media_reranking_defaults_off(self):
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage)
+        self.assertFalse(searcher.enable_media_reranking)
+
+    def test_media_reranking_reads_env_override(self):
+        backend = StubBackend()
+        storage = StubStorage()
+        with patch.dict(os.environ, {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "true"}):
+            searcher = HybridSearcher(backend=backend, storage=storage)
+        self.assertTrue(searcher.enable_media_reranking)
 
 
 class TestBM25Probe(unittest.TestCase):
@@ -171,32 +192,6 @@ class TestVectorSearch(unittest.TestCase):
             searcher.search_video("sample_video.mp4")
 
 
-class TestStrongSignalDetected(unittest.TestCase):
-    def test_no_results_no_signal(self):
-        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage())
-        self.assertFalse(searcher._strong_signal_detected([]))
-
-    def test_single_result_no_signal(self):
-        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage())
-        self.assertFalse(searcher._strong_signal_detected([_make_search_result("a.md", 0.99)]))
-
-    def test_clear_winner_is_strong(self):
-        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage())
-        results = [
-            _make_search_result("a.md", 0.95),
-            _make_search_result("b.md", 0.60),
-        ]
-        self.assertTrue(searcher._strong_signal_detected(results))
-
-    def test_close_scores_not_strong(self):
-        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage())
-        results = [
-            _make_search_result("a.md", 0.70),
-            _make_search_result("b.md", 0.68),
-        ]
-        self.assertFalse(searcher._strong_signal_detected(results))
-
-
 class TestRRFFusion(unittest.TestCase):
     def _make_searcher(self):
         return HybridSearcher(backend=StubBackend(), storage=StubStorage(), rrf_k=60)
@@ -207,7 +202,7 @@ class TestRRFFusion(unittest.TestCase):
         r1 = _make_search_result("shared.md", 0.9, "fts")
         r2 = _make_search_result("shared.md", 0.8, "vec")
         all_results = {"original_fts": [r1], "original_vec": [r2]}
-        fused = searcher._reciprocal_rank_fusion(all_results)
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
         filepaths = [r.filepath for r in fused]
         self.assertEqual(len(filepaths), len(set(filepaths)))
 
@@ -220,20 +215,66 @@ class TestRRFFusion(unittest.TestCase):
             "fts": [r_top, r_low],
             "vec": [r_top, r_low],
         }
-        fused = searcher._reciprocal_rank_fusion(all_results)
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
         self.assertEqual(fused[0].filepath, "top.md")
 
     def test_rrf_empty_lists(self):
         searcher = self._make_searcher()
-        fused = searcher._reciprocal_rank_fusion({})
+        fused, audit_info = searcher._reciprocal_rank_fusion({})
         self.assertEqual(fused, [])
 
     def test_rrf_scores_positive(self):
         searcher = self._make_searcher()
         results = [_make_search_result(f"file{i}.md", 0.9 - i * 0.1) for i in range(5)]
-        fused = searcher._reciprocal_rank_fusion({"list": results})
+        fused, audit_info = searcher._reciprocal_rank_fusion({"list": results})
         for r in fused:
             self.assertGreater(r.score, 0)
+
+    def test_text_target_biases_default_rrf_toward_vector(self):
+        searcher = HybridSearcher(
+            backend=StubBackend(),
+            storage=StubStorage(),
+            rrf_k=60,
+            content_type="text",
+        )
+        all_results = {
+            "original_fts": [_make_search_result("fts.md", 0.9, "fts", "text")],
+            "original_vec": [_make_search_result("vec.md", 0.9, "vec", "text")],
+        }
+
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
+
+        vec_doc = next(r for r in fused if r.filepath == "vec.md")
+        fts_doc = next(r for r in fused if r.filepath == "fts.md")
+        weights = audit_info["vec.md"]["weights"]
+
+        self.assertEqual(weights["original_vec"], 2.5)
+        self.assertEqual(weights["original_fts"], 1.5)
+        self.assertGreater(vec_doc.score, fts_doc.score)
+
+    def test_image_target_biases_default_rrf_toward_bm25(self):
+        searcher = HybridSearcher(
+            backend=StubBackend(),
+            storage=StubStorage(),
+            rrf_k=60,
+            content_type="image",
+        )
+        all_results = {
+            "original_fts": [_make_search_result("fts.jpg", 0.9, "fts", "image")],
+            "original_vec": [_make_search_result("vec.jpg", 0.9, "vec", "image")],
+        }
+
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
+
+        fts_doc = next(r for r in fused if r.filepath == "fts.jpg")
+        vec_doc = next(r for r in fused if r.filepath == "vec.jpg")
+        weights = audit_info["fts.jpg"]["weights"]
+
+        self.assertEqual(weights["original_fts"], 2.5)
+        self.assertEqual(weights["original_vec"], 1.5)
+        self.assertAlmostEqual(fts_doc.score, 2.5 / 61, places=5)
+        self.assertGreater(fts_doc.score, 1.5 / 61)
+        self.assertTrue(audit_info["vec.jpg"]["media_compensation"])
 
 
 class TestSelectBestChunk(unittest.TestCase):
@@ -261,17 +302,49 @@ class TestRerankCandidates(unittest.TestCase):
             _make_search_result("a.md", 0.9),
             _make_search_result("b.md", 0.8),
         ]
-        scores = searcher._rerank_candidates(candidates, "test query")
+        scores, path = searcher._rerank_candidates(candidates, "test query")
         self.assertIn("a.md", scores)
         self.assertIn("b.md", scores)
         for s in scores.values():
             self.assertIsInstance(s, float)
 
+    def test_reranks_only_top_k_candidates(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.91, 0.72])
+        searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=2)
+        candidates = [
+            _make_search_result("a.md", 0.95),
+            _make_search_result("b.md", 0.85),
+            _make_search_result("c.md", 0.75),
+            _make_search_result("d.md", 0.65),
+        ]
+
+        scores, path = searcher._rerank_candidates(candidates, "query")
+
+        backend.rerank.assert_called_once()
+        rerank_docs = backend.rerank.call_args[0][1]
+        self.assertEqual([d["filepath"] for d in rerank_docs], ["a.md", "b.md"])
+        self.assertEqual(scores["a.md"], 0.91)
+        self.assertEqual(scores["b.md"], 0.72)
+        self.assertEqual(scores["c.md"], 0.5)
+        self.assertEqual(scores["d.md"], 0.5)
+
+    def test_rerank_top_k_zero_skips_reranker(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock()
+        searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=0)
+        candidates = [_make_search_result("doc.md", 0.9)]
+
+        scores, path = searcher._rerank_candidates(candidates, "query")
+
+        backend.rerank.assert_not_called()
+        self.assertEqual(scores["doc.md"], 0.5)
+
     def test_embed_mode_returns_default_score(self):
         backend = StubBackend(mode="embed")
         searcher = HybridSearcher(backend=backend, storage=StubStorage())
         candidates = [_make_search_result("doc.md", 0.9)]
-        scores = searcher._rerank_candidates(candidates, "query")
+        scores, path = searcher._rerank_candidates(candidates, "query")
         # embed mode: backend.needs_reranker() == False → default 0.5
         self.assertAlmostEqual(scores.get("doc.md", 0), 0.5)
 
@@ -302,6 +375,48 @@ class TestBlendScores(unittest.TestCase):
         blended = searcher._blend_scores(rrf, rerank_scores)
         self.assertLessEqual(len(blended), 3)
 
+    def test_text_only_rerank_blend_uses_conservative_weights(self):
+        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage(), limit=12)
+        rrf = [_make_search_result(f"doc{i}.md", 12 - i, "vec", "text") for i in range(12)]
+        rerank_scores = {
+            result.filepath: float(index)
+            for index, result in enumerate(reversed(rrf), start=1)
+        }
+
+        blended = searcher._blend_scores(rrf, rerank_scores, reranker_path="text")
+
+        top_rank = next(r for r in blended if r.filepath == "doc0.md")
+        mid_rank = next(r for r in blended if r.filepath == "doc3.md")
+        tail_rank = next(r for r in blended if r.filepath == "doc10.md")
+
+        self.assertAlmostEqual(top_rank.audit.blend_weights["rrf"], 0.90)
+        self.assertAlmostEqual(mid_rank.audit.blend_weights["rrf"], 0.85)
+        self.assertAlmostEqual(tail_rank.audit.blend_weights["rrf"], 0.75)
+
+
+class TestParallelSearchTaskCapture(unittest.TestCase):
+    def test_parallel_search_captures_original_vector(self):
+        """After expander removal (REC-108), _run_parallel_searches only
+        embeds the original query. Verify the vector is captured correctly."""
+        backend = StubBackend(mode="embed")
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=5)
+
+        captured_vectors = []
+
+        def mock_search_vec(vector, limit: int = 20, **kwargs):
+            captured_vectors.append(tuple(vector.tolist() if hasattr(vector, "tolist") else list(vector)))
+            return []
+
+        storage.search_vec = mock_search_vec
+
+        query = "base query"
+        searcher._run_parallel_searches(query)
+
+        expected_vector = tuple(backend.embed_text(query).tolist())
+        self.assertEqual(len(captured_vectors), 1)
+        self.assertEqual(captured_vectors[0], expected_vector)
+
 
 class TestFullSearchPipeline(unittest.TestCase):
     """End-to-end search pipeline with mocked storage."""
@@ -316,7 +431,7 @@ class TestFullSearchPipeline(unittest.TestCase):
             _make_search_result("file3.md", 0.65, "vec"),
         ]
 
-    def _make_searcher(self, mode: str = "full") -> HybridSearcher:
+    def _make_searcher(self, mode: str = "hybrid") -> HybridSearcher:
         backend = StubBackend(mode=mode)
         storage = StubStorage(
             fts_results=self.fts_results,
@@ -347,9 +462,9 @@ class TestFullSearchPipeline(unittest.TestCase):
         results = searcher.search("some query")
         self.assertGreater(len(results), 0)
 
-    def test_search_full_mode(self):
-        """full mode: expansion + reranking, still returns results."""
-        searcher = self._make_searcher("full")
+    def test_search_hybrid_mode(self):
+        """hybrid mode: reranking enabled, returns results."""
+        searcher = self._make_searcher("hybrid")
         results = searcher.search("complex query")
         self.assertGreater(len(results), 0)
 
@@ -364,6 +479,107 @@ class TestFullSearchPipeline(unittest.TestCase):
         results = searcher.search("shared content")
         filepaths = [r.filepath for r in results]
         self.assertEqual(len(filepaths), len(set(filepaths)))
+
+
+class TestImageQueryHybridPipeline(unittest.TestCase):
+    """Image query path should use the same fusion/rerank pipeline as text."""
+
+    def test_search_image_skips_reranker_by_default(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.88, 0.66])
+        vec_results = [
+            _make_search_result("doc1.md", 0.9, "vec"),
+            _make_search_result("doc2.md", 0.8, "vec"),
+        ]
+        storage = StubStorage(fts_results=[], vec_results=vec_results)
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=2)
+
+        results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(len(results), 2)
+        backend.rerank.assert_not_called()
+        self.assertEqual(results[0].source, "original_vec")
+        self.assertEqual(results[0].audit.reranker_scoring_path, "media_disabled")
+
+    def test_search_image_runs_rrf_and_reranker_when_opted_in(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.88, 0.66])
+        vec_results = [
+            _make_search_result("doc1.md", 0.9, "vec"),
+            _make_search_result("doc2.md", 0.8, "vec"),
+        ]
+        storage = StubStorage(fts_results=[], vec_results=vec_results)
+        with patch.dict(os.environ, {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"}):
+            searcher = HybridSearcher(backend=backend, storage=storage, limit=2)
+            results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(len(results), 2)
+        backend.rerank.assert_called_once()
+        self.assertEqual(results[0].source, "original_vec")
+        self.assertTrue(all(isinstance(r, HybridResult) for r in results))
+
+    def test_search_image_embed_mode_skips_reranker(self):
+        backend = StubBackend(mode="embed")
+        backend.rerank = MagicMock()
+        storage = StubStorage(vec_results=[_make_search_result("doc.md", 0.9, "vec")])
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1)
+
+        results = searcher.search_image("/tmp/query.png")
+
+        backend.rerank.assert_not_called()
+        self.assertEqual(len(results), 1)
+
+    def test_search_image_uses_caption_for_bm25_probe(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.88])
+        shared = _make_search_result("doc1.md", 0.9, "vec")
+        storage = StubStorage(
+            fts_results=[_make_search_result("doc1.md", 0.95, "fts")],
+            vec_results=[shared],
+        )
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1)
+
+        results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(storage.last_fts_query, "caption for query.png")
+        self.assertIn(storage.last_fts_content_type, (None, "text"))
+        self.assertEqual(len(results), 1)
+        self.assertIn("original_fts", results[0].source)
+
+    def test_search_video_uses_caption_for_bm25_probe(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.88])
+        storage = StubStorage(
+            fts_results=[_make_search_result("clip.md", 0.95, "fts")],
+            vec_results=[_make_search_result("clip.md", 0.9, "vec")],
+        )
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1)
+        searcher._caption_video_query = MagicMock(return_value="forest timelapse mountains")
+
+        results = searcher.search_video("/tmp/query.mp4")
+
+        self.assertEqual(storage.last_fts_query, "forest timelapse mountains")
+        searcher._caption_video_query.assert_called_once_with("/tmp/query.mp4")
+        self.assertEqual(len(results), 1)
+        self.assertIn("original_fts", results[0].source)
+        backend.rerank.assert_not_called()
+
+    def test_text_query_with_media_candidates_skips_reranker_by_default(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.99])
+        candidate = _make_search_result(
+            "img.png",
+            0.9,
+            "vec",
+            content_type="image",
+        )
+        searcher = HybridSearcher(backend=backend, storage=StubStorage(), limit=1)
+
+        scores, path = searcher._rerank_candidates([candidate], query="diagram")
+
+        backend.rerank.assert_not_called()
+        self.assertEqual(scores, {"img.png": 0.5})
+        self.assertEqual(path, "media_disabled")
 
 
 class TestHybridQueryConvenience(unittest.TestCase):
@@ -425,37 +641,195 @@ class TestN1LookupOptimization(unittest.TestCase):
         # get_content should NOT be called when text_body is available
         self.assertFalse(get_content_called, "get_content() should not be called when text_body is available")
 
-    def test_falls_back_to_get_content_when_text_body_empty(self):
-        """Verify _make_search_result falls back to get_content when text_body is empty."""
-        from recallforge.storage.lancedb_backend import LanceDBBackend
 
-        backend = LanceDBBackend.__new__(LanceDBBackend)
+class TestIntentAwareQuerySteering(unittest.TestCase):
+    """Test intent-aware query steering in RRF fusion."""
 
-        # Create a row WITHOUT text_body (empty string)
-        row = {
-            "collection": "test",
-            "file_path": "doc.md",
-            "content_hash": "abc123",
-            "content_type": "text",
-            "title": "Test Doc",
-            "pos": 0,
-            "text_body": "",  # Empty!
-            "user_id": None,
-            "session_id": None,
-            "project_id": None,
-            "profile": None,
+    def test_exact_lookup_boosts_fts_weight(self):
+        """exact_lookup intent should boost FTS weight and lower vector weight."""
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, intent="exact_lookup")
+
+        # Create results for FTS and vector
+        fts_result = _make_search_result("doc1.md", 0.9, source="fts")
+        vec_result = _make_search_result("doc2.md", 0.85, source="vec")
+
+        all_results = {
+            "original_fts": [fts_result],
+            "original_vec": [vec_result],
         }
 
-        # Mock get_content to return fallback content
-        def mock_get_content(hash_str):
-            return "Full content from content table"
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
 
-        backend.get_content = mock_get_content
+        # With exact_lookup: FTS weight=2.5, vector weight=0.8
+        # FTS score contribution: 2.5 / (60 + 0 + 1) = 2.5/61 ≈ 0.041
+        # Vec score contribution: 0.8 / (60 + 0 + 1) = 0.8/61 ≈ 0.013
+        # FTS doc should have higher combined score
+        fts_doc = next((r for r in fused if r.filepath == "doc1.md"), None)
+        vec_doc = next((r for r in fused if r.filepath == "doc2.md"), None)
 
-        result = backend._make_search_result(row, 0.9, "fts")
+        self.assertIsNotNone(fts_doc)
+        self.assertIsNotNone(vec_doc)
+        self.assertGreater(fts_doc.score, vec_doc.score,
+                           "exact_lookup: FTS result should score higher than vector result")
 
-        # Should fall back to get_content result
-        self.assertEqual(result.body, "Full content from content table")
+    def test_semantic_boosts_vector_weight(self):
+        """semantic intent should boost vector weight and lower FTS weight."""
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, intent="semantic")
+
+        # Create results for FTS and vector
+        fts_result = _make_search_result("doc1.md", 0.9, source="fts")
+        vec_result = _make_search_result("doc2.md", 0.85, source="vec")
+
+        all_results = {
+            "original_fts": [fts_result],
+            "original_vec": [vec_result],
+        }
+
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
+
+        # With semantic: FTS weight=0.8, vector weight=2.5
+        # FTS score contribution: 0.8 / (60 + 0 + 1) = 0.8/61 ≈ 0.013
+        # Vec score contribution: 2.5 / (60 + 0 + 1) = 2.5/61 ≈ 0.041
+        # Vector doc should have higher combined score
+        fts_doc = next((r for r in fused if r.filepath == "doc1.md"), None)
+        vec_doc = next((r for r in fused if r.filepath == "doc2.md"), None)
+
+        self.assertIsNotNone(fts_doc)
+        self.assertIsNotNone(vec_doc)
+        self.assertGreater(vec_doc.score, fts_doc.score,
+                           "semantic: vector result should score higher than FTS result")
+
+    def test_broad_equal_weights(self):
+        """broad intent should use equal weights for all sources."""
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, intent="broad")
+
+        # Create results for FTS and vector at same rank
+        fts_result = _make_search_result("doc1.md", 0.9, source="fts")
+        vec_result = _make_search_result("doc2.md", 0.85, source="vec")
+
+        all_results = {
+            "original_fts": [fts_result],
+            "original_vec": [vec_result],
+        }
+
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
+
+        # With broad: both weights=1.0
+        # Both have same rank (0), so scores should be equal
+        fts_doc = next((r for r in fused if r.filepath == "doc1.md"), None)
+        vec_doc = next((r for r in fused if r.filepath == "doc2.md"), None)
+
+        self.assertIsNotNone(fts_doc)
+        self.assertIsNotNone(vec_doc)
+        # Both have equal RRF contribution: 1.0 / (60 + 0 + 1)
+        self.assertAlmostEqual(fts_doc.score, vec_doc.score, places=5,
+                              msg="broad: FTS and vector results should have equal scores")
+
+    def test_none_intent_uses_default_weights(self):
+        """None intent (default) should use the existing weight behavior."""
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage, intent=None)
+
+        # Create results for FTS and vector
+        fts_result = _make_search_result("doc1.md", 0.9, source="fts")
+        vec_result = _make_search_result("doc2.md", 0.85, source="vec")
+
+        all_results = {
+            "original_fts": [fts_result],
+            "original_vec": [vec_result],
+        }
+
+        fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
+
+        # Default weights: first 2 lists = 2.0, rest = 1.0
+        # With 2 sources, both get weight 2.0
+        fts_doc = next((r for r in fused if r.filepath == "doc1.md"), None)
+        vec_doc = next((r for r in fused if r.filepath == "doc2.md"), None)
+
+        self.assertIsNotNone(fts_doc)
+        self.assertIsNotNone(vec_doc)
+        # Both have weight 2.0, same rank → equal scores
+        self.assertAlmostEqual(fts_doc.score, vec_doc.score, places=5,
+                              msg="None intent: should use default weights")
+
+    def test_intent_weight_applied_to_rrf_calculation(self):
+        """Verify intent weights are correctly applied in RRF score calculation."""
+        from recallforge.search import INTENT_WEIGHTS
+
+        backend = StubBackend()
+        storage = StubStorage()
+
+        # Test each intent
+        for intent_name, weights in INTENT_WEIGHTS.items():
+            searcher = HybridSearcher(backend=backend, storage=storage, intent=intent_name)
+
+            # Create results
+            fts_result = _make_search_result("doc_fts.md", 0.9, source="fts")
+            vec_result = _make_search_result("doc_vec.md", 0.85, source="vec")
+
+            all_results = {
+                "original_fts": [fts_result],
+                "original_vec": [vec_result],
+            }
+
+            fused, audit_info = searcher._reciprocal_rank_fusion(all_results)
+
+            # Verify weights are applied correctly
+            fts_doc = next((r for r in fused if r.filepath == "doc_fts.md"), None)
+            vec_doc = next((r for r in fused if r.filepath == "doc_vec.md"), None)
+
+            self.assertIsNotNone(fts_doc, f"Missing FTS doc for intent={intent_name}")
+            self.assertIsNotNone(vec_doc, f"Missing vector doc for intent={intent_name}")
+
+            # Calculate expected scores
+            k = 60
+            expected_fts = weights["original_fts"] / (k + 0 + 1)
+            expected_vec = weights["original_vec"] / (k + 0 + 1)
+
+            self.assertAlmostEqual(fts_doc.score, expected_fts, places=5,
+                                   msg=f"FTS score mismatch for intent={intent_name}")
+            self.assertAlmostEqual(vec_doc.score, expected_vec, places=5,
+                                   msg=f"Vector score mismatch for intent={intent_name}")
+
+    def test_intent_in_full_search_pipeline(self):
+        """Intent should affect final search results order."""
+        # Setup FTS-heavy results (doc1.md ranks high in FTS, low in vector)
+        fts_results = [
+            _make_search_result("doc1.md", 0.95, source="fts"),  # High FTS rank
+            _make_search_result("doc2.md", 0.60, source="fts"),  # Lower FTS rank
+        ]
+        vec_results = [
+            _make_search_result("doc2.md", 0.95, source="vec"),  # High vector rank
+            _make_search_result("doc1.md", 0.60, source="vec"),  # Lower vector rank
+        ]
+
+        # exact_lookup: should favor doc1 (higher FTS score)
+        backend = StubBackend(mode="embed")  # embed mode to skip reranking
+        storage = StubStorage(fts_results=fts_results, vec_results=vec_results)
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=2, intent="exact_lookup")
+        results = searcher.search("test query")
+
+        # doc1 should rank higher with exact_lookup (boosts FTS)
+        doc1_rank = next(i for i, r in enumerate(results) if r.filepath == "doc1.md")
+        doc2_rank = next(i for i, r in enumerate(results) if r.filepath == "doc2.md")
+        self.assertLess(doc1_rank, doc2_rank,
+                        "exact_lookup: doc1 (FTS-heavy) should rank before doc2 (vector-heavy)")
+
+        # semantic: should favor doc2 (higher vector score)
+        searcher_semantic = HybridSearcher(backend=backend, storage=storage, limit=2, intent="semantic")
+        results_semantic = searcher_semantic.search("test query")
+
+        doc1_rank_sem = next(i for i, r in enumerate(results_semantic) if r.filepath == "doc1.md")
+        doc2_rank_sem = next(i for i, r in enumerate(results_semantic) if r.filepath == "doc2.md")
+        self.assertLess(doc2_rank_sem, doc1_rank_sem,
+                        "semantic: doc2 (vector-heavy) should rank before doc1 (FTS-heavy)")
 
 
 if __name__ == "__main__":

@@ -61,6 +61,16 @@ jobs:
           python -c "import recallforge; print(f'RecallForge {recallforge.__version__}')"
           recallforge --version
 
+      - name: Smoke test HTTP server extra from wheel
+        run: |
+          WHEEL_URI=$(python - <<'PY'
+          from pathlib import Path
+          print(next(Path("dist").glob("*.whl")).resolve().as_uri())
+          PY
+          )
+          pip install "recallforge[server] @ ${WHEEL_URI}"
+          python -c "import starlette, uvicorn; from recallforge.server import run_http_server; print('HTTP server extras OK')"
+
   test-macos:
     runs-on: macos-latest
     steps:
