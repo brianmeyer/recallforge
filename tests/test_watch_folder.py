@@ -175,9 +175,9 @@ def test_watch_folder_document_uses_logical_path_and_child_cleanup(tmp_path):
 
     document_path = watched / "notes.docx"
     document_path.write_bytes(b"placeholder")
-    time.sleep(0.35)
+    time.sleep(1.0)
     document_path.unlink()
-    time.sleep(0.35)
+    time.sleep(1.0)
 
     daemon.stop_watch(watch_id)
 
