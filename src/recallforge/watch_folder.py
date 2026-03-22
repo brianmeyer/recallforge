@@ -176,13 +176,17 @@ class WatchFolderDaemon:
                 continue
         return snap
 
-    def _scanner_loop(self, watch_id: str) -> None:
+    def _scanner_loop(
+        self,
+        watch_id: str,
+        initial_snapshot: Optional[Dict[str, Tuple[int, int, int]]] = None,
+    ) -> None:
         config = WatchConfig.from_dict(self.watches[watch_id]["config"])
         root = Path(config.folder_path).expanduser().resolve()
         queue = self.queues[watch_id]
         evt = self.running[watch_id]
 
-        prev = self._build_snapshot(config)
+        prev = dict(initial_snapshot or self._build_snapshot(config))
         while evt.is_set():
             current = self._build_snapshot(config)
 
@@ -349,8 +353,13 @@ class WatchFolderDaemon:
             self.queues[watch_id] = Queue()
             self.running[watch_id] = threading.Event()
             self.running[watch_id].set()
+            initial_snapshot = self._build_snapshot(config)
 
-            s = threading.Thread(target=self._scanner_loop, args=(watch_id,), daemon=True)
+            s = threading.Thread(
+                target=self._scanner_loop,
+                args=(watch_id, initial_snapshot),
+                daemon=True,
+            )
             w = threading.Thread(target=self._worker_loop, args=(watch_id,), daemon=True)
             s.start()
             w.start()
