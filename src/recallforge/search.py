@@ -100,6 +100,20 @@ def _log_stage_metrics(
     logger.debug("stage_metrics " + " ".join(log_parts))
 
 
+def _canonicalize_memory_result_paths(result: "HybridResult", canonical_root_path: Optional[str]) -> tuple[str, str]:
+    """Return a stable result filepath plus display path for rolled memory hits."""
+    if not canonical_root_path:
+        return result.filepath, result.display_path
+
+    if str(result.filepath or "").startswith("recallforge://"):
+        return (
+            f"recallforge://{result.collection}/{canonical_root_path}",
+            f"{result.collection}/{canonical_root_path}",
+        )
+
+    return canonical_root_path, canonical_root_path
+
+
 # Intent-to-weight mappings for RRF fusion
 # Each intent maps source names to weight multipliers
 INTENT_WEIGHTS: Dict[str, Dict[str, float]] = {
@@ -1264,8 +1278,10 @@ class HybridSearcher:
 
             canonical_path = representative.memory_root_path or top_hit.memory_root_path
             if canonical_path:
-                representative.filepath = canonical_path
-                representative.display_path = canonical_path
+                representative.filepath, representative.display_path = _canonicalize_memory_result_paths(
+                    representative,
+                    canonical_path,
+                )
                 if not root_candidate:
                     representative.title = os.path.basename(canonical_path)
                 representative.memory_root_path = canonical_path
@@ -1279,7 +1295,7 @@ class HybridSearcher:
             representative.memory_supporting_paths = [
                 item.filepath
                 for item in group
-                if item.filepath != representative.filepath
+                if item.filepath not in {representative.filepath, top_hit.filepath}
             ][:5]
             memory_rollup_boost = 1.0
             if len(group) > 1:

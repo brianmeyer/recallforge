@@ -510,6 +510,8 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
             memory_role="root",
             memory_root_path="notes/demo.md",
             memory_hit_count=3,
+            memory_primary_evidence_path="notes/demo.md::section:0001",
+            memory_supporting_paths=["notes/demo.md::image:0001"],
             audit=SearchAudit(
                 filepath="notes/demo.md",
                 content_type="text",
@@ -521,6 +523,8 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
                 blend_weights={"rrf": 0.8, "rerank": 0.2},
                 media_compensation_applied=False,
                 memory_rollup_boost=1.06,
+                memory_primary_evidence_path="notes/demo.md::section:0001",
+                memory_supporting_paths=["notes/demo.md::image:0001"],
                 final_blended_score=0.8123,
             ),
         )
@@ -536,8 +540,18 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(explained["memory_id"], "mem-123")
         self.assertEqual(explained["memory_hit_count"], 3)
         self.assertEqual(explained["memory_root_path"], "notes/demo.md")
+        self.assertEqual(explained["memory_primary_evidence_path"], "notes/demo.md::section:0001")
+        self.assertEqual(explained["memory_supporting_paths"], ["notes/demo.md::image:0001"])
         self.assertEqual(explained["provenance"]["memory_rollup"]["memory_hit_count"], 3)
         self.assertAlmostEqual(explained["provenance"]["memory_rollup"]["boost"], 1.06)
+        self.assertEqual(
+            explained["provenance"]["memory_rollup"]["primary_evidence_path"],
+            "notes/demo.md::section:0001",
+        )
+        self.assertEqual(
+            explained["provenance"]["memory_rollup"]["supporting_paths"],
+            ["notes/demo.md::image:0001"],
+        )
 
     async def test_search_file_path_routes_through_text_query(self):
         backend = _make_backend()

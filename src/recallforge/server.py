@@ -1007,6 +1007,8 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
             "memory_role": getattr(r, "memory_role", "root"),
             "memory_root_path": getattr(r, "memory_root_path", None),
             "memory_hit_count": getattr(r, "memory_hit_count", 1),
+            "memory_primary_evidence_path": getattr(r, "memory_primary_evidence_path", None),
+            "memory_supporting_paths": getattr(r, "memory_supporting_paths", None),
             "tags": getattr(r, "tags", None),
         }
         
@@ -1029,6 +1031,8 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
                 "memory_rollup": {
                     "memory_hit_count": getattr(r, "memory_hit_count", 1),
                     "boost": round(r.audit.memory_rollup_boost, 6),
+                    "primary_evidence_path": r.audit.memory_primary_evidence_path,
+                    "supporting_paths": list(r.audit.memory_supporting_paths),
                 },
             }
         else:

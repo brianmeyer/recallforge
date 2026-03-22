@@ -457,6 +457,54 @@ class TestBlendScores(unittest.TestCase):
         self.assertEqual(len(rolled), 1)
         self.assertEqual(rolled[0].tags, ["diagram", "meeting notes"])
 
+    def test_memory_rollup_preserves_collection_qualified_filepath(self):
+        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage(), limit=12)
+
+        root = _make_search_result("recallforge://alpha/memories/demo.mp4", 0.2, "vec", "video")
+        child = _make_search_result(
+            "recallforge://alpha/memories/demo.mp4::transcript:0001",
+            0.9,
+            "fts",
+            "text",
+        )
+        sibling = _make_search_result(
+            "recallforge://alpha/memories/demo.mp4::frame:0001",
+            0.6,
+            "vec",
+            "image",
+        )
+        for item in (root, child, sibling):
+            item.collection = "alpha"
+            item.memory_id = "memory-evidence"
+            item.memory_root_path = "memories/demo.mp4"
+        root.memory_role = "root"
+        child.memory_role = "child"
+        sibling.memory_role = "child"
+        root.body = "Canonical demo video summary."
+
+        blended = searcher._blend_scores(
+            [child, sibling, root],
+            {
+                child.filepath: 0.9,
+                sibling.filepath: 0.6,
+                root.filepath: 0.2,
+            },
+        )
+
+        self.assertEqual(len(blended), 1)
+        result = blended[0]
+        self.assertEqual(result.filepath, "recallforge://alpha/memories/demo.mp4")
+        self.assertEqual(result.display_path, "alpha/memories/demo.mp4")
+        self.assertEqual(result.memory_root_path, "memories/demo.mp4")
+        self.assertEqual(
+            result.memory_primary_evidence_path,
+            "recallforge://alpha/memories/demo.mp4::transcript:0001",
+        )
+        self.assertEqual(
+            result.memory_supporting_paths,
+            ["recallforge://alpha/memories/demo.mp4::frame:0001"],
+        )
+
 
 class TestParallelSearchTaskCapture(unittest.TestCase):
     def test_parallel_search_captures_original_vector(self):
