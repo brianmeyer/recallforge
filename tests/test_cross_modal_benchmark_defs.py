@@ -219,6 +219,7 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
         payload = module._build_output_payload(
             categories,
             {"Vector-only": {"text_to_text": stage_result}},
+            [("Vector-only", "vector")],
             indexed_items=74,
             run_status="partial",
             interrupted=True,
