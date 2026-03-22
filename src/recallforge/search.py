@@ -15,12 +15,13 @@ Uses true concurrency with ThreadPoolExecutor for parallel searches.
 """
 
 import concurrent.futures
+import copy
 import json
 import logging
 import os
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from typing import List, Dict, Any, Optional, Union
 
@@ -132,6 +133,8 @@ class SearchAudit:
     blend_weights: Dict[str, float] = field(default_factory=dict)  # rrf_weight, rerank_weight
     media_compensation_applied: bool = False  # Whether media boost was applied in RRF
     memory_rollup_boost: float = 1.0  # Multiplier applied when sibling assets are rolled up
+    memory_primary_evidence_path: Optional[str] = None
+    memory_supporting_paths: List[str] = field(default_factory=list)
     final_blended_score: float = 0.0
 
 
@@ -157,6 +160,8 @@ class HybridResult:
     memory_role: str = "root"
     memory_root_path: Optional[str] = None
     memory_hit_count: int = 1
+    memory_primary_evidence_path: Optional[str] = None
+    memory_supporting_paths: Optional[List[str]] = None
     tags: Optional[List[str]] = None
     audit: Optional[SearchAudit] = None  # Per-result audit trail
 
@@ -1239,15 +1244,55 @@ class HybridSearcher:
         rolled: List[HybridResult] = []
         for key in order:
             group = sorted(grouped[key], key=lambda item: item.score, reverse=True)
-            representative = group[0]
+            top_hit = group[0]
+            root_candidate = next(
+                (item for item in group if item.memory_role == "root"),
+                None,
+            )
+            representative = replace(root_candidate or top_hit)
+            representative.score = top_hit.score
+            representative.rrf_rank = top_hit.rrf_rank
+            representative.rerank_score = top_hit.rerank_score
+            representative.source = top_hit.source
+            representative.audit = copy.deepcopy(top_hit.audit) if top_hit.audit else None
+            representative.context = representative.context or top_hit.context
+            representative.body = representative.body or top_hit.body
+            representative.hash = representative.hash or top_hit.hash
+            representative.docid = representative.docid or top_hit.docid
+            representative.modified_at = representative.modified_at or top_hit.modified_at
+            representative.body_length = representative.body_length or top_hit.body_length
+
+            canonical_path = representative.memory_root_path or top_hit.memory_root_path
+            if canonical_path:
+                representative.filepath = canonical_path
+                representative.display_path = canonical_path
+                if not root_candidate:
+                    representative.title = os.path.basename(canonical_path)
+                representative.memory_root_path = canonical_path
+            else:
+                representative.memory_root_path = representative.filepath
+
+            representative.memory_role = "root"
             representative.memory_hit_count = len(group)
             representative.tags = _merge_tags(group)
+            representative.memory_primary_evidence_path = top_hit.filepath
+            representative.memory_supporting_paths = [
+                item.filepath
+                for item in group
+                if item.filepath != representative.filepath
+            ][:5]
             memory_rollup_boost = 1.0
             if len(group) > 1:
                 memory_rollup_boost += min(0.15, 0.03 * (len(group) - 1))
                 representative.score *= memory_rollup_boost
             if representative.audit:
+                representative.audit.filepath = representative.filepath
+                representative.audit.content_type = representative.content_type
                 representative.audit.memory_rollup_boost = memory_rollup_boost
+                representative.audit.memory_primary_evidence_path = top_hit.filepath
+                representative.audit.memory_supporting_paths = list(
+                    representative.memory_supporting_paths or []
+                )
                 representative.audit.final_blended_score = representative.score
             rolled.append(representative)
 
@@ -1570,7 +1615,7 @@ def search_batch(
             return [(r, r.score) for r in results]
 
     # Run all queries in parallel
-    all_results: Dict[int, List[tuple]] = {}
+    all_results: List[List[tuple]] = [[] for _ in batch_queries]
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {
             executor.submit(run_single_query, q): i
@@ -1587,7 +1632,7 @@ def search_batch(
     # Merge results using RRF with best-score-wins
     merged: Dict[str, Dict[str, Any]] = {}
 
-    for idx, results in all_results.items():
+    for idx, results in enumerate(all_results):
         weight = batch_queries[idx].weight
         for rank, (result, score) in enumerate(results):
             filepath = result.filepath
