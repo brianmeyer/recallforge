@@ -906,6 +906,10 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
             "final_score": round(r.score, 4),
             "content_type": r.content_type if hasattr(r, 'content_type') else "text",
             "source": r.source,
+            "memory_id": getattr(r, "memory_id", None),
+            "memory_role": getattr(r, "memory_role", "root"),
+            "memory_root_path": getattr(r, "memory_root_path", None),
+            "memory_hit_count": getattr(r, "memory_hit_count", 1),
         }
         
         if r.audit:
@@ -923,6 +927,10 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
                 "blend": {
                     "weights": r.audit.blend_weights,  # {"rrf": 0.75, "rerank": 0.25}
                     "final_blended_score": round(r.audit.final_blended_score, 6),
+                },
+                "memory_rollup": {
+                    "memory_hit_count": getattr(r, "memory_hit_count", 1),
+                    "boost": round(r.audit.memory_rollup_boost, 6),
                 },
             }
         else:
