@@ -618,6 +618,42 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
         )
         self.assertEqual(storage.search_vec.call_count, 3)
 
+    def test_search_image_skips_failed_expansion_variant_and_keeps_search_alive(self):
+        backend = StubBackend(
+            mode="hybrid",
+            generated_text_response="query screenshot notes\napplication error screenshot",
+        )
+        backend.rerank = MagicMock(return_value=[0.88])
+        storage = StubStorage(
+            fts_results=[_make_search_result("doc1.md", 0.95, "fts")],
+            vec_results=[_make_search_result("doc1.md", 0.9, "vec")],
+        )
+        storage.search_fts = MagicMock(side_effect=storage.search_fts)
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1, expand=True)
+
+        def _variant_search(query: str):
+            if query == "query screenshot notes":
+                raise RuntimeError("embedding backend failed")
+            return {"original_vec": [_make_search_result("doc1.md", 0.9, "vec")]}
+
+        searcher._run_parallel_searches = MagicMock(side_effect=_variant_search)
+
+        with self.assertLogs("recallforge.search", level="WARNING") as captured:
+            results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(len(results), 1)
+        queried_fts = [args[0] for args, _ in storage.search_fts.call_args_list]
+        self.assertEqual(
+            queried_fts,
+            [
+                "caption for query.png",
+                "application error screenshot",
+            ],
+        )
+        self.assertTrue(
+            any("Skipping failed query expansion branch" in message for message in captured.output)
+        )
+
     def test_search_video_uses_caption_for_bm25_probe(self):
         backend = StubBackend(mode="hybrid")
         backend.rerank = MagicMock(return_value=[0.88])

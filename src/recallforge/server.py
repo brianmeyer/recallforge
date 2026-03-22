@@ -57,6 +57,10 @@ _MAX_TOOL_CONCURRENCY = max(
     1,
     int(os.environ.get("RECALLFORGE_MCP_MAX_CONCURRENCY", "2")),
 )
+_MAX_FILE_QUERY_READ_BYTES = max(
+    1,
+    int(os.environ.get("RECALLFORGE_MAX_FILE_QUERY_READ_BYTES", "65536")),
+)
 
 _T = TypeVar("_T")
 
@@ -128,9 +132,19 @@ def _resolve_file_query_input(
         )
 
     try:
-        raw_bytes = resolved.read_bytes()
+        file_size = resolved.stat().st_size
+        with resolved.open("rb") as handle:
+            raw_bytes = handle.read(_MAX_FILE_QUERY_READ_BYTES)
     except Exception as exc:
         return None, None, None, f"Failed to read file query {resolved.name}: {exc}"
+
+    if file_size > _MAX_FILE_QUERY_READ_BYTES:
+        logger.info(
+            "Capped file query read path=%s file_size=%d read_limit=%d",
+            resolved_str,
+            file_size,
+            _MAX_FILE_QUERY_READ_BYTES,
+        )
 
     if b"\x00" in raw_bytes[:2048]:
         return None, None, None, f"Unsupported binary file query: {resolved.name}"

@@ -5,6 +5,7 @@ All backends/storage are mocked — no real inference, no real DB.
 """
 
 import asyncio
+import io
 import json
 import os
 import sys
@@ -25,6 +26,7 @@ from recallforge.server import (
     _handle_list_memories,
     _handle_memory_get,
     _handle_search,
+    _resolve_file_query_input,
     _handle_set_config,
     create_server,
 )
@@ -571,6 +573,36 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["file_path"], file_path)
             mock_searcher.search.assert_called_once()
             self.assertIn("memory query from file path", mock_searcher.search.call_args[0][0])
+        finally:
+            os.unlink(file_path)
+
+    async def test_file_query_reads_are_capped_before_decode(self):
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as tmp:
+            tmp.write(b"alpha beta gamma delta epsilon zeta eta theta")
+            file_path = tmp.name
+
+        class _TrackingBinaryReader(io.BytesIO):
+            def __init__(self, payload: bytes):
+                super().__init__(payload)
+                self.read_sizes = []
+
+            def read(self, size: int = -1) -> bytes:
+                self.read_sizes.append(size)
+                return super().read(size)
+
+        reader = _TrackingBinaryReader(b"alpha beta gamma delta epsilon zeta eta theta")
+
+        try:
+            with unittest.mock.patch("pathlib.Path.open", return_value=reader), unittest.mock.patch(
+                "recallforge.server._MAX_FILE_QUERY_READ_BYTES", 16
+            ):
+                query_text, image_path, video_path, error = _resolve_file_query_input(file_path)
+
+            self.assertEqual(reader.read_sizes, [16])
+            self.assertIsNone(image_path)
+            self.assertIsNone(video_path)
+            self.assertIsNone(error)
+            self.assertEqual(query_text, "alpha beta gamma")
         finally:
             os.unlink(file_path)
 
