@@ -16,9 +16,11 @@ from recallforge.server import (
     _handle_index_image,
     _handle_ingest,
     _handle_list_collections,
+    _handle_list_memories,
     _handle_list_namespaces,
     _handle_memory_add,
     _handle_memory_delete,
+    _handle_memory_get,
     _handle_memory_update,
     _handle_rebuild_fts,
     _handle_search,
@@ -102,6 +104,12 @@ class _DummyStorage:
 
     def list_namespaces(self, **_kwargs):
         return [{"user_id": None, "session_id": None, "project_id": None, "profile": None}]
+
+    def list_memories(self, **_kwargs):
+        return [{"memory_id": "mem-1", "path": "mem/1", "title": "mem", "collection": "default"}]
+
+    def get_memory(self, memory_id, **_kwargs):
+        return {"memory_id": memory_id, "path": "mem/1", "title": "mem", "children": [], "snippets": []}
 
 
 class _FakeSearchResult:
@@ -216,6 +224,14 @@ class TestMCPJsonCompliance(unittest.IsolatedAsyncioTestCase):
                     (
                         lambda: _handle_batch({"operations": [{"tool": "status", "arguments": {}}]}, self.backend, self.storage, self.mutable_config),
                         lambda: _handle_batch({"operations": "not-a-list"}, self.backend, self.storage, self.mutable_config),
+                    ),
+                    (
+                        lambda: _handle_list_memories({}, self.storage),
+                        lambda: _handle_memory_get({}, self.storage),
+                    ),
+                    (
+                        lambda: _handle_memory_get({"memory_id": "mem-1"}, self.storage),
+                        lambda: _handle_memory_get({"path": "missing"}, self.storage),
                     ),
                 ]
 

@@ -36,6 +36,9 @@ class SearchResult:
     session_id: Optional[str] = None
     project_id: Optional[str] = None
     profile: Optional[str] = None
+    memory_id: Optional[str] = None
+    memory_role: str = "root"
+    memory_root_path: Optional[str] = None
 
 
 @dataclass
@@ -55,6 +58,9 @@ class Document:
     session_id: Optional[str] = None
     project_id: Optional[str] = None
     profile: Optional[str] = None
+    memory_id: Optional[str] = None
+    memory_role: str = "root"
+    memory_root_path: Optional[str] = None
 
 
 class StorageBackend(ABC):
@@ -102,7 +108,10 @@ class StorageBackend(ABC):
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
-        profile: Optional[str] = None
+        profile: Optional[str] = None,
+        memory_id: Optional[str] = None,
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
     ) -> str:
         """
         Insert or update a document.
@@ -156,7 +165,10 @@ class StorageBackend(ABC):
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
-        profile: Optional[str] = None
+        profile: Optional[str] = None,
+        memory_id: Optional[str] = None,
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
     ) -> None:
         """Insert an embedding for a document chunk."""
         pass

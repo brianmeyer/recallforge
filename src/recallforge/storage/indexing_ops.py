@@ -17,9 +17,9 @@ from .lancedb_shared import (
     DEFAULT_INDEX_DIR,
     _safe_filter,
     _validate_identifier,
-    hash_content,
     hash_file_bytes,
     extract_title,
+    hash_content,
     trace_log,
 )
 
@@ -173,7 +173,8 @@ class IndexingOps:
         ttl_seconds: Optional[int] = None,
         tags: Optional[List[str]] = None,
         _skip_delete: bool = False,
-
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
     ) -> str:
         """Create or update a text memory, replacing old vectors for this path.
 
@@ -229,7 +230,12 @@ class IndexingOps:
         self._backend.insert_content(content_hash, text, "text")
         self._backend.insert_document(
             collection, normalized_path, title, content_hash, "text",
-            user_id=user_id, session_id=session_id, project_id=project_id, profile=profile
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            memory_role=memory_role,
+            memory_root_path=memory_root_path,
         )
 
         chunks = chunk_document(text)
@@ -250,6 +256,8 @@ class IndexingOps:
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
+                memory_role=memory_role,
+                memory_root_path=memory_root_path,
                 importance=importance,
                 ttl_seconds=ttl_seconds,
                 tags=tags,
@@ -930,6 +938,8 @@ class IndexingOps:
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
         caption_media: bool = True,
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
     ) -> str:
         """
         Index an image file.
@@ -992,6 +1002,8 @@ class IndexingOps:
             session_id=session_id,
             project_id=project_id,
             profile=profile,
+            memory_role=memory_role,
+            memory_root_path=memory_root_path,
         )
 
         vector = embed_func(actual_path)
@@ -1011,6 +1023,8 @@ class IndexingOps:
             session_id=session_id,
             project_id=project_id,
             profile=profile,
+            memory_role=memory_role,
+            memory_root_path=memory_root_path,
         )
 
         # Schedule debounced FTS rebuild
@@ -1096,23 +1110,26 @@ class IndexingOps:
             modified_at = int(time.time() * 1000)
             created_at = modified_at
 
+        self._backend.insert_content(content_hash, actual_path, content_type="video")
+        self._backend.insert_document(
+            collection=collection,
+            file_path=logical_path,
+            title=resolved_title,
+            content_hash=content_hash,
+            content_type="video",
+            created_at=created_at,
+            modified_at=modified_at,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            memory_role="root",
+            memory_root_path=logical_path,
+        )
+
         indexed_video_embeddings = 0
         try:
             vector = video_embed(actual_path)
-            self._backend.insert_content(content_hash, actual_path, content_type="video")
-            self._backend.insert_document(
-                collection=collection,
-                file_path=logical_path,
-                title=resolved_title,
-                content_hash=content_hash,
-                content_type="video",
-                created_at=created_at,
-                modified_at=modified_at,
-                user_id=user_id,
-                session_id=session_id,
-                project_id=project_id,
-                profile=profile,
-            )
             self._backend.insert_embedding(
                 content_hash=content_hash,
                 seq=0,
@@ -1128,6 +1145,8 @@ class IndexingOps:
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
+                memory_role="root",
+                memory_root_path=logical_path,
             )
             indexed_video_embeddings = 1
         except Exception as e:
@@ -1153,6 +1172,8 @@ class IndexingOps:
                 project_id=project_id,
                 profile=profile,
                 caption_media=caption_media,
+                memory_role="child",
+                memory_root_path=logical_path,
             )
             indexed_frames += 1
 
@@ -1167,6 +1188,8 @@ class IndexingOps:
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
+                memory_role="child",
+                memory_root_path=logical_path,
             )
             indexed_transcripts += 1
 
@@ -1213,6 +1236,36 @@ class IndexingOps:
         artifacts = extract_document_artifacts(actual_path, logical_path)
         indexed_sections = 0
         indexed_images = 0
+        document_title = os.path.splitext(os.path.basename(logical_path))[0]
+
+        try:
+            document_hash = hash_file_bytes(actual_path)
+        except Exception:
+            document_hash = hash_content(f"document:{logical_path}")
+
+        try:
+            modified_at = int(os.path.getmtime(actual_path) * 1000)
+            created_at = int(os.path.getctime(actual_path) * 1000)
+        except OSError:
+            modified_at = int(time.time() * 1000)
+            created_at = modified_at
+
+        self._backend.insert_content(document_hash, actual_path, content_type=artifacts.document_type)
+        self._backend.insert_document(
+            collection=collection,
+            file_path=logical_path,
+            title=document_title,
+            content_hash=document_hash,
+            content_type=artifacts.document_type,
+            created_at=created_at,
+            modified_at=modified_at,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            memory_role="root",
+            memory_root_path=logical_path,
+        )
 
         # Track temp dirs from PDF vision fallback for cleanup
         _temp_dirs_to_clean: set = set()
@@ -1220,7 +1273,6 @@ class IndexingOps:
         for section in artifacts.sections:
             if section.content_type == "image" and section.image_path:
                 # Track the parent temp dir for cleanup after embedding
-                import os
                 _temp_dirs_to_clean.add(os.path.dirname(section.image_path))
 
                 # Use image embedding for image sections
@@ -1243,6 +1295,8 @@ class IndexingOps:
                     session_id=session_id,
                     project_id=project_id,
                     profile=profile,
+                    memory_role="child",
+                    memory_root_path=logical_path,
                 )
                 # Override content entry to reference source PDF, not temp image.
                 # Temp images are cleaned up after this loop; the embedding vector
@@ -1264,6 +1318,8 @@ class IndexingOps:
                     project_id=project_id,
                     profile=profile,
                     _skip_delete=True,
+                    memory_role="child",
+                    memory_root_path=logical_path,
                 )
                 indexed_sections += 1
 

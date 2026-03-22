@@ -20,6 +20,8 @@ from mcp.types import TextContent, ListToolsRequest
 from recallforge.server import (
     _dispatch_tool,
     _handle_get_config,
+    _handle_list_memories,
+    _handle_memory_get,
     _handle_set_config,
     create_server,
 )
@@ -66,6 +68,25 @@ def _make_storage(store_path="/tmp/test-store"):
     s._store_path = store_path
     s.count_embeddings.return_value = 0
     s.count_documents.return_value = 0
+    s.list_memories.return_value = [
+        {
+            "memory_id": "mem-123",
+            "collection": "default",
+            "path": "notes/demo.md",
+            "title": "demo",
+            "content_type": "text",
+            "updated_at": 123,
+        }
+    ]
+    s.get_memory.return_value = {
+        "memory_id": "mem-123",
+        "collection": "default",
+        "path": "notes/demo.md",
+        "title": "demo",
+        "content_type": "text",
+        "children": [],
+        "snippets": [],
+    }
     return s
 
 
@@ -409,6 +430,11 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         names = await self._get_tool_names()
         self.assertIn("explain_results", names)
 
+    async def test_memory_tools_registered(self):
+        names = await self._get_tool_names()
+        self.assertIn("memory_get", names)
+        self.assertIn("list_memories", names)
+
     async def test_all_original_tools_still_present(self):
         names = await self._get_tool_names()
         expected = {
@@ -422,6 +448,21 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         }
         missing = expected - set(names)
         self.assertFalse(missing, f"Missing tools: {missing}")
+
+
+class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
+
+    async def test_list_memories_returns_json(self):
+        result = await _handle_list_memories({}, _make_storage())
+        data = json.loads(result[0].text)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["memories"][0]["memory_id"], "mem-123")
+
+    async def test_memory_get_by_id_returns_json(self):
+        result = await _handle_memory_get({"memory_id": "mem-123"}, _make_storage())
+        data = json.loads(result[0].text)
+        self.assertEqual(data["memory_id"], "mem-123")
 
     async def test_get_config_schema(self):
         backend = _make_backend()

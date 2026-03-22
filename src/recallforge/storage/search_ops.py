@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from .base import SearchResult
-from .lancedb_shared import _safe_filter, get_docid, logger, trace_log
+from .lancedb_shared import _safe_filter, get_docid, logger, resolve_memory_identity, trace_log
 
 if TYPE_CHECKING:
     from .lancedb_backend import LanceDBBackend
@@ -54,7 +54,8 @@ class SearchOps:
                 .where(filter_clause)
                 .select(["collection", "file_path", "content_hash", "content_type", "title",
                          "text_body", "embedded_at", "modified_at", "user_id", "session_id",
-                         "project_id", "profile", "expires_at"])
+                         "project_id", "profile", "memory_id", "memory_role",
+                         "memory_root_path", "expires_at"])
                 .limit(row_limit)
             )
             rows = builder.to_pandas()
@@ -257,6 +258,21 @@ class SearchOps:
         file_path = row.get("file_path", "")
         content_hash = row.get("content_hash", "")
         content_type = row.get("content_type", "text")
+        user_id = row.get("user_id")
+        session_id = row.get("session_id")
+        project_id = row.get("project_id")
+        profile = row.get("profile")
+        memory_id, memory_role, memory_root_path = resolve_memory_identity(
+            collection=collection,
+            file_path=file_path,
+            memory_id=row.get("memory_id"),
+            memory_role=row.get("memory_role"),
+            memory_root_path=row.get("memory_root_path"),
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
 
         # P0 OPTIMIZATION: Prefer text_body (already in row) over get_content() lookup
         body = row.get("text_body") or ""
@@ -279,10 +295,13 @@ class SearchOps:
             content_type=content_type,
             chunk_pos=row.get("pos", 0) or 0,
             body=body,
-            user_id=row.get("user_id"),
-            session_id=row.get("session_id"),
-            project_id=row.get("project_id"),
-            profile=row.get("profile"),
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            memory_id=memory_id,
+            memory_role=memory_role,
+            memory_root_path=memory_root_path,
         )
 
     def _get_ttl_filter(self) -> str:
