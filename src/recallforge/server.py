@@ -19,6 +19,7 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 from urllib.parse import unquote
 from typing import Optional, Callable, TypeVar
 
@@ -27,7 +28,9 @@ from mcp.server.stdio import stdio_server
 from mcp.types import EmbeddedResource, ImageContent, Resource, ResourceTemplate, TextContent, Tool
 
 from . import __version__, get_backend, get_storage, warmup_backend
+from .documents import extract_document_artifacts, is_document_file
 from .search import HybridSearcher
+from .video import is_video_file
 
 
 # Configure logging
@@ -35,6 +38,7 @@ logger = logging.getLogger("recallforge.server")
 
 # Enable trace mode via environment variable
 TRACE_ENABLED = os.environ.get("RECALLFORGE_TRACE", "0") == "1"
+_IMAGE_QUERY_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic"}
 
 
 def trace_log(operation: str, **kwargs) -> None:
@@ -76,18 +80,83 @@ async def _run_blocking(func: Callable[..., _T], *args, **kwargs) -> _T:
         return await asyncio.to_thread(func, *args, **kwargs)
 
 
-def _resolve_query_inputs(arguments: dict) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """Validate mutually exclusive text/image/video query inputs."""
+def _normalize_query_text(text: str, max_chars: int = 4000) -> str:
+    """Collapse whitespace and bound file-derived text queries."""
+    compact = " ".join((text or "").split()).strip()
+    if len(compact) <= max_chars:
+        return compact
+    truncated = compact[: max_chars - 3].rsplit(" ", 1)[0].strip()
+    return (truncated or compact[: max_chars - 3]).rstrip() + "..."
+
+
+def _resolve_file_query_input(
+    file_path: str,
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Convert a generic file query into text, image, or video query input."""
+    resolved = Path(file_path).expanduser().resolve()
+    if not resolved.exists() or not resolved.is_file():
+        return None, None, None, f"File query not found: {file_path}"
+
+    resolved_str = str(resolved)
+    suffix = resolved.suffix.lower()
+    if suffix in _IMAGE_QUERY_EXTENSIONS:
+        return None, resolved_str, None, None
+    if is_video_file(resolved):
+        return None, None, resolved_str, None
+    if is_document_file(resolved):
+        try:
+            artifacts = extract_document_artifacts(resolved, resolved_str)
+        except Exception as exc:
+            return None, None, None, f"Failed to extract document query from {resolved.name}: {exc}"
+
+        merged = _normalize_query_text(
+            "\n\n".join(
+                section.text.strip()
+                for section in artifacts.sections
+                if isinstance(section.text, str)
+                and section.text.strip()
+                and section.content_type == "text"
+            )
+        )
+        if merged:
+            return merged, None, None, None
+        return (
+            None,
+            None,
+            None,
+            f"No extractable document text found in {resolved.name}. OCR/image-only document queries are not supported yet.",
+        )
+
+    try:
+        raw_bytes = resolved.read_bytes()
+    except Exception as exc:
+        return None, None, None, f"Failed to read file query {resolved.name}: {exc}"
+
+    if b"\x00" in raw_bytes[:2048]:
+        return None, None, None, f"Unsupported binary file query: {resolved.name}"
+
+    text = _normalize_query_text(raw_bytes.decode("utf-8", errors="replace"))
+    if not text:
+        return None, None, None, f"File query {resolved.name} did not contain searchable text"
+    return text, None, None, None
+
+
+def _resolve_query_inputs(
+    arguments: dict,
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Validate mutually exclusive text/image/video/file query inputs."""
     query = arguments.get("query")
     image_path = arguments.get("image_path")
     video_path = arguments.get("video_path")
+    file_path = arguments.get("file_path")
     query_text = query.strip() if isinstance(query, str) else ""
     image_text = image_path.strip() if isinstance(image_path, str) else ""
     video_text = video_path.strip() if isinstance(video_path, str) else ""
+    file_text = file_path.strip() if isinstance(file_path, str) else ""
 
-    if sum((bool(query_text), bool(image_text), bool(video_text))) != 1:
-        return None, None, None, "Provide exactly one of: query, image_path, or video_path"
-    return (query_text or None), (image_text or None), (video_text or None), None
+    if sum((bool(query_text), bool(image_text), bool(video_text), bool(file_text))) != 1:
+        return None, None, None, None, "Provide exactly one of: query, image_path, video_path, or file_path"
+    return (query_text or None), (image_text or None), (video_text or None), (file_text or None), None
 
 
 def _error_response(code: str, message: str, details: dict = None) -> list:
@@ -234,6 +303,7 @@ async def create_server(
                         "query": {"type": "string", "description": "Search query"},
                         "image_path": {"type": "string", "description": "Optional image query path (mutually exclusive with query)"},
                         "video_path": {"type": "string", "description": "Optional video query path (mutually exclusive with query/image_path)"},
+                        "file_path": {"type": "string", "description": "Optional generic file query path (mutually exclusive with query/image_path/video_path). Text files are read directly; image/video/document files auto-route through the matching query path."},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
                         "collection": {"type": "string", "description": "Optional collection filter"},
                         "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
@@ -273,6 +343,7 @@ async def create_server(
                         "query": {"type": "string", "description": "Search query"},
                         "image_path": {"type": "string", "description": "Optional image query path (mutually exclusive with query)"},
                         "video_path": {"type": "string", "description": "Optional video query path (mutually exclusive with query/image_path)"},
+                        "file_path": {"type": "string", "description": "Optional generic file query path (mutually exclusive with query/image_path/video_path)"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
                         "collection": {"type": "string", "description": "Optional collection filter"},
                         "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
@@ -555,6 +626,7 @@ async def create_server(
                         "query": {"type": "string", "description": "Search query"},
                         "image_path": {"type": "string", "description": "Optional image query path (mutually exclusive with query)"},
                         "video_path": {"type": "string", "description": "Optional video query path (mutually exclusive with query/image_path)"},
+                        "file_path": {"type": "string", "description": "Optional generic file query path (mutually exclusive with query/image_path/video_path)"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
                         "collection": {"type": "string", "description": "Optional collection filter"},
                         "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
@@ -780,7 +852,7 @@ async def _handle_batch(
 
 async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]:
     """Handle hybrid search."""
-    query, image_path, video_path, input_error = _resolve_query_inputs(arguments)
+    query, image_path, video_path, file_path, input_error = _resolve_query_inputs(arguments)
     limit = arguments.get("limit", 10)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
@@ -792,11 +864,16 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     rerank_top_k = arguments.get("rerank_top_k", 20)
     expand = arguments.get("expand", False)
 
-    trace_log("search_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k, expand=expand)
-
     if input_error:
         return _error_response("INVALID_INPUT", input_error)
+
+    if file_path:
+        query, image_path, video_path, file_error = await _run_blocking(_resolve_file_query_input, file_path)
+        if file_error:
+            return _error_response("INVALID_INPUT", file_error, {"file_path": file_path})
+
+    trace_log("search_start", query=(query or image_path or video_path or file_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k, expand=expand)
 
     searcher = HybridSearcher(
         backend=backend,
@@ -820,12 +897,13 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
     else:
         results = await _run_blocking(searcher.search, query)
 
-    trace_log("search_done", query=(query or image_path or video_path or "")[:50], count=len(results))
+    trace_log("search_done", query=(query or image_path or video_path or file_path or "")[:50], count=len(results))
 
     output = {
         "query": query,
         "image_path": image_path,
         "video_path": video_path,
+        "file_path": file_path,
         "mode": backend.get_mode(),
         "count": len(results),
         "results": [
@@ -855,7 +933,7 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
 
 async def _handle_explain_results(arguments: dict, backend, storage) -> list[TextContent]:
     """Handle explain_results - returns detailed scoring provenance for each result."""
-    query, image_path, video_path, input_error = _resolve_query_inputs(arguments)
+    query, image_path, video_path, file_path, input_error = _resolve_query_inputs(arguments)
     limit = arguments.get("limit", 10)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
@@ -867,11 +945,16 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
     rerank_top_k = arguments.get("rerank_top_k", 20)
     expand = arguments.get("expand", False)
 
-    trace_log("explain_results_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k, expand=expand)
-
     if input_error:
         return _error_response("INVALID_INPUT", input_error)
+
+    if file_path:
+        query, image_path, video_path, file_error = await _run_blocking(_resolve_file_query_input, file_path)
+        if file_error:
+            return _error_response("INVALID_INPUT", file_error, {"file_path": file_path})
+
+    trace_log("explain_results_start", query=(query or image_path or video_path or file_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile, intent=intent, rerank_top_k=rerank_top_k, expand=expand)
 
     searcher = HybridSearcher(
         backend=backend,
@@ -895,7 +978,7 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
     else:
         results = await _run_blocking(searcher.search, query)
 
-    trace_log("explain_results_done", query=(query or image_path or video_path or "")[:50], count=len(results))
+    trace_log("explain_results_done", query=(query or image_path or video_path or file_path or "")[:50], count=len(results))
 
     # Build detailed explanation for each result
     explained_results = []
@@ -948,6 +1031,7 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
         "query": query,
         "image_path": image_path,
         "video_path": video_path,
+        "file_path": file_path,
         "mode": backend.get_mode(),
         "count": len(results),
         "results": explained_results,
@@ -1010,7 +1094,7 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
 
 async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextContent]:
     """Handle vector search."""
-    query, image_path, video_path, input_error = _resolve_query_inputs(arguments)
+    query, image_path, video_path, file_path, input_error = _resolve_query_inputs(arguments)
     limit = arguments.get("limit", 20)
     collection = arguments.get("collection")
     content_type = arguments.get("content_type")
@@ -1019,11 +1103,16 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
     project_id = arguments.get("project_id")
     profile = arguments.get("profile")
 
-    trace_log("search_vec_start", query=(query or image_path or video_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
-              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
-
     if input_error:
         return _error_response("INVALID_INPUT", input_error)
+
+    if file_path:
+        query, image_path, video_path, file_error = await _run_blocking(_resolve_file_query_input, file_path)
+        if file_error:
+            return _error_response("INVALID_INPUT", file_error, {"file_path": file_path})
+
+    trace_log("search_vec_start", query=(query or image_path or video_path or file_path or "")[:50], limit=limit, collection=collection, content_type=content_type,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
     if image_path:
         vector = await _run_blocking(backend.embed_image, image_path)
@@ -1047,12 +1136,13 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
         profile=profile,
     )
 
-    trace_log("search_vec_done", query=(query or image_path or video_path or "")[:50], count=len(results))
+    trace_log("search_vec_done", query=(query or image_path or video_path or file_path or "")[:50], count=len(results))
 
     output = {
         "query": query,
         "image_path": image_path,
         "video_path": video_path,
+        "file_path": file_path,
         "count": len(results),
         "results": [
             {
