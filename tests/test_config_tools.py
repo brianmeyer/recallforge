@@ -19,6 +19,7 @@ from mcp.types import TextContent, ListToolsRequest
 
 from recallforge.server import (
     _dispatch_tool,
+    _handle_explain_results,
     _handle_get_config,
     _handle_list_memories,
     _handle_memory_get,
@@ -26,6 +27,7 @@ from recallforge.server import (
     create_server,
 )
 from recallforge import __version__
+from recallforge.search import HybridResult, SearchAudit
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +78,7 @@ def _make_storage(store_path="/tmp/test-store"):
             "title": "demo",
             "content_type": "text",
             "updated_at": 123,
+            "summary": "Demo summary",
         }
     ]
     s.get_memory.return_value = {
@@ -84,6 +87,7 @@ def _make_storage(store_path="/tmp/test-store"):
         "path": "notes/demo.md",
         "title": "demo",
         "content_type": "text",
+        "summary": "Demo summary",
         "children": [],
         "snippets": [],
     }
@@ -458,11 +462,13 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(data["success"])
         self.assertEqual(data["count"], 1)
         self.assertEqual(data["memories"][0]["memory_id"], "mem-123")
+        self.assertEqual(data["memories"][0]["summary"], "Demo summary")
 
     async def test_memory_get_by_id_returns_json(self):
         result = await _handle_memory_get({"memory_id": "mem-123"}, _make_storage())
         data = json.loads(result[0].text)
         self.assertEqual(data["memory_id"], "mem-123")
+        self.assertEqual(data["summary"], "Demo summary")
 
     async def test_memory_get_by_path_uses_storage_path_lookup(self):
         storage = _make_storage()
@@ -475,6 +481,58 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args, ())
         self.assertEqual(kwargs["path"], "notes/demo.md")
         self.assertEqual(kwargs["collection"], None)
+
+    async def test_explain_results_surfaces_memory_rollup_provenance(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        result_item = HybridResult(
+            filepath="notes/demo.md",
+            display_path="notes/demo.md",
+            title="demo",
+            context=None,
+            hash="hash-demo",
+            docid="doc123",
+            collection="default",
+            modified_at="2026-03-22",
+            body_length=42,
+            body="Demo body",
+            score=0.8123,
+            rrf_rank=1,
+            rerank_score=0.73,
+            source="original_vec",
+            content_type="text",
+            memory_id="mem-123",
+            memory_role="root",
+            memory_root_path="notes/demo.md",
+            memory_hit_count=3,
+            audit=SearchAudit(
+                filepath="notes/demo.md",
+                content_type="text",
+                rrf_sources={"original_vec": 1},
+                rrf_score=0.111111,
+                reranker_raw_score=0.73,
+                reranker_normalized_score=0.73,
+                reranker_scoring_path="text",
+                blend_weights={"rrf": 0.8, "rerank": 0.2},
+                media_compensation_applied=False,
+                memory_rollup_boost=1.06,
+                final_blended_score=0.8123,
+            ),
+        )
+
+        with unittest.mock.patch("recallforge.server.HybridSearcher") as mock_searcher_cls:
+            mock_searcher = mock_searcher_cls.return_value
+            mock_searcher.search.return_value = [result_item]
+
+            result = await _handle_explain_results({"query": "demo"}, backend, storage)
+
+        data = json.loads(result[0].text)
+        explained = data["results"][0]
+        self.assertEqual(explained["memory_id"], "mem-123")
+        self.assertEqual(explained["memory_hit_count"], 3)
+        self.assertEqual(explained["memory_root_path"], "notes/demo.md")
+        self.assertEqual(explained["provenance"]["memory_rollup"]["memory_hit_count"], 3)
+        self.assertAlmostEqual(explained["provenance"]["memory_rollup"]["boost"], 1.06)
 
     async def test_get_config_schema(self):
         backend = _make_backend()

@@ -742,6 +742,29 @@ class TestMemoryLookupCompatibility(unittest.TestCase):
         self.assertEqual(by_path["path"], path)
         self.assertEqual(by_path["root_document"]["path"], path)
 
+    def test_memory_lookup_surfaces_derived_summary(self):
+        path = "notes/summary-memory.md"
+        text = (
+            "RecallForge stores memory summaries so agents can inspect memories quickly. "
+            "This regression checks that canonical memory reads expose a concise summary."
+        )
+        self.backend.upsert_memory(
+            path=path,
+            text=text,
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        memories = self.backend.list_memories(collection="test", limit=10)
+        self.assertEqual(len(memories), 1)
+        self.assertTrue(memories[0]["summary"].startswith("RecallForge stores memory summaries"))
+
+        memory = self.backend.get_memory(path=path, collection="test")
+        self.assertIsNotNone(memory)
+        self.assertTrue(memory["summary"].startswith("RecallForge stores memory summaries"))
+        self.assertEqual(memory["path"], path)
+
 
 class TestFTSMissFallbackBehavior(unittest.TestCase):
     """Tests for P0: FTS miss fallback behavior - no BM25 fallback on empty results."""

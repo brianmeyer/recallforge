@@ -1077,6 +1077,107 @@ class LanceDBBackend(StorageBackend):
             f"OR file_path LIKE '{escaped_path}::%')"
         )
 
+    def _memory_root_key(self, row: Dict[str, Any]) -> Optional[str]:
+        """Return the canonical root path for a memory or derived asset row."""
+        root_path = row.get("memory_root_path")
+        if isinstance(root_path, str) and root_path:
+            return root_path
+
+        file_path = row.get("file_path")
+        if isinstance(file_path, str) and file_path:
+            return file_path.split("::", 1)[0]
+
+        return None
+
+    def _fetch_memory_summary_rows(
+        self,
+        root_paths: List[str],
+        *,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Fetch snippet rows used to derive memory summaries for one or more roots."""
+        unique_root_paths = [path for path in dict.fromkeys(root_paths) if path]
+        if not unique_root_paths:
+            return {}
+
+        embed_filters = self._memory_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            active_only=False,
+        )
+        embed_filters.append(
+            "(" + " OR ".join(self._memory_path_clause(path) for path in unique_root_paths) + ")"
+        )
+
+        try:
+            rows = list(
+                self._embeddings_table.search()
+                .where(" AND ".join(embed_filters))
+                .select(["file_path", "memory_root_path", "text_body", "pos", "seq", "memory_role"])
+                .limit(max(100, min(5000, len(unique_root_paths) * 40)))
+                .to_list()
+            )
+        except Exception:
+            return {}
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            key = self._memory_root_key(row)
+            if not key:
+                continue
+            grouped.setdefault(key, []).append(row)
+        return grouped
+
+    def _derive_memory_summary(
+        self,
+        root_row: Dict[str, Any],
+        snippet_rows: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Build a concise human-readable summary from existing stored text."""
+        if not snippet_rows:
+            return None
+
+        ordered_rows = sorted(
+            snippet_rows,
+            key=lambda row: (
+                0 if (row.get("memory_role") or "child") == "root" else 1,
+                row.get("pos", 0) or 0,
+                row.get("seq", 0) or 0,
+                row.get("file_path", ""),
+            ),
+        )
+
+        excerpts: List[str] = []
+        seen: set[str] = set()
+        for row in ordered_rows:
+            text_body = re.sub(r"\s+", " ", (row.get("text_body") or "").strip())
+            if not text_body:
+                continue
+            normalized = text_body.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            excerpts.append(text_body)
+            if len(excerpts) >= 2 or sum(len(part) for part in excerpts) >= 280:
+                break
+
+        if not excerpts:
+            return None
+
+        summary = " ".join(excerpts).strip()
+        if len(summary) <= 320:
+            return summary
+
+        truncated = summary[:317].rsplit(" ", 1)[0].strip()
+        return (truncated or summary[:317]).rstrip() + "..."
+
     def _resolve_memory_root_row(
         self,
         *,
@@ -1191,9 +1292,20 @@ class LanceDBBackend(StorageBackend):
             .to_list()
         )
         rows.sort(key=lambda row: row.get("updated_at", 0), reverse=True)
+        root_paths = [self._memory_root_key(row) for row in rows]
+        summary_rows_by_root = self._fetch_memory_summary_rows(
+            [path for path in root_paths if path],
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
         output: List[Dict[str, Any]] = []
         for row in rows:
-            root_path = row.get("memory_root_path") or row.get("file_path")
+            root_path = self._memory_root_key(row)
+            if not root_path:
+                continue
             output.append(
                 {
                     "memory_id": row.get("memory_id")
@@ -1214,6 +1326,10 @@ class LanceDBBackend(StorageBackend):
                     "session_id": row.get("session_id"),
                     "project_id": row.get("project_id"),
                     "profile": row.get("profile"),
+                    "summary": self._derive_memory_summary(
+                        row,
+                        summary_rows_by_root.get(root_path, []),
+                    ),
                 }
             )
         return output
@@ -1333,6 +1449,8 @@ class LanceDBBackend(StorageBackend):
                 }
             )
 
+        summary = self._derive_memory_summary(root_row, snippet_rows)
+
         return {
             "memory_id": resolved_memory_id,
             "collection": root_row.get("collection"),
@@ -1344,6 +1462,7 @@ class LanceDBBackend(StorageBackend):
             "session_id": root_row.get("session_id"),
             "project_id": root_row.get("project_id"),
             "profile": root_row.get("profile"),
+            "summary": summary,
             "root_document": {
                 "path": root_row.get("file_path"),
                 "content_hash": root_row.get("content_hash"),
