@@ -1422,6 +1422,27 @@ class IndexingOps:
                 content_hash = hash_content(f"pdf_page_image:{actual_path}:page:{section.index}")
                 self._backend.insert_content(content_hash, actual_path, content_type="pdf_page_image")
                 indexed_images += 1
+
+                # Preserve OCR text for scanned/image-only pages as a sibling
+                # text child so BM25 and file-as-query can use it without
+                # dropping the visual page representation.
+                ocr_text = (section.text or "").strip()
+                if ocr_text:
+                    self.upsert_memory(
+                        path=f"{section.logical_path}::ocr",
+                        text=ocr_text,
+                        collection=collection,
+                        embed_func=embed_func,
+                        model=model,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                        _skip_delete=True,
+                        memory_role="child",
+                        memory_root_path=logical_path,
+                    )
+                    indexed_sections += 1
             else:
                 # Use text embedding for text sections
                 self.upsert_memory(

@@ -31,6 +31,7 @@ from recallforge.server import (
     create_server,
 )
 from recallforge import __version__
+from recallforge.documents import DocumentArtifacts, DocumentSection
 from recallforge.search import HybridResult, SearchAudit
 
 
@@ -605,6 +606,38 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(video_path)
             self.assertIsNone(error)
             self.assertEqual(query_text, "alpha beta gamma")
+        finally:
+            os.unlink(file_path)
+
+    async def test_document_file_query_uses_ocr_text_from_image_only_pages(self):
+        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+            tmp.write(b"%PDF-1.4 mock")
+            file_path = tmp.name
+
+        try:
+            artifacts = DocumentArtifacts(
+                sections=[
+                    DocumentSection(
+                        logical_path=f"{file_path}::page:0001",
+                        title="scan page 1",
+                        text="Scanned invoice total due",
+                        section_type="page",
+                        index=1,
+                        content_type="image",
+                        image_path="/tmp/page_0001.png",
+                    )
+                ],
+                document_type="pdf",
+                extractor="unit-test-ocr",
+            )
+
+            with unittest.mock.patch("recallforge.server.extract_document_artifacts", return_value=artifacts):
+                query_text, image_path, video_path, error = _resolve_file_query_input(file_path)
+
+            self.assertEqual(query_text, "Scanned invoice total due")
+            self.assertIsNone(image_path)
+            self.assertIsNone(video_path)
+            self.assertIsNone(error)
         finally:
             os.unlink(file_path)
 

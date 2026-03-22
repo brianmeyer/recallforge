@@ -119,7 +119,6 @@ def _resolve_file_query_input(
                 for section in artifacts.sections
                 if isinstance(section.text, str)
                 and section.text.strip()
-                and section.content_type == "text"
             )
         )
         if merged:
@@ -128,7 +127,7 @@ def _resolve_file_query_input(
             None,
             None,
             None,
-            f"No extractable document text found in {resolved.name}. OCR/image-only document queries are not supported yet.",
+            f"No extractable document text found in {resolved.name}. Install OCR-capable PDF support for scanned/image-only documents.",
         )
 
     try:
