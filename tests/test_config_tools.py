@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock
 
@@ -23,6 +24,7 @@ from recallforge.server import (
     _handle_get_config,
     _handle_list_memories,
     _handle_memory_get,
+    _handle_search,
     _handle_set_config,
     create_server,
 )
@@ -534,6 +536,44 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(explained["provenance"]["memory_rollup"]["memory_hit_count"], 3)
         self.assertAlmostEqual(explained["provenance"]["memory_rollup"]["boost"], 1.06)
 
+    async def test_search_file_path_routes_through_text_query(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        result_item = unittest.mock.MagicMock()
+        result_item.filepath = "notes/demo.md"
+        result_item.title = "demo"
+        result_item.score = 0.8
+        result_item.rerank_score = 0.7
+        result_item.rrf_rank = 1
+        result_item.source = "original_vec"
+        result_item.body = "Demo body"
+        result_item.user_id = None
+        result_item.session_id = None
+        result_item.project_id = None
+        result_item.profile = None
+        result_item.memory_id = None
+        result_item.memory_role = "root"
+        result_item.memory_root_path = None
+        result_item.memory_hit_count = 1
+
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tmp:
+            tmp.write("memory query from file path")
+            file_path = tmp.name
+
+        try:
+            with unittest.mock.patch("recallforge.server.HybridSearcher") as mock_searcher_cls:
+                mock_searcher = mock_searcher_cls.return_value
+                mock_searcher.search.return_value = [result_item]
+
+                result = await _handle_search({"file_path": file_path}, backend, storage)
+
+            data = json.loads(result[0].text)
+            self.assertEqual(data["file_path"], file_path)
+            mock_searcher.search.assert_called_once()
+            self.assertIn("memory query from file path", mock_searcher.search.call_args[0][0])
+        finally:
+            os.unlink(file_path)
+
     async def test_get_config_schema(self):
         backend = _make_backend()
         storage = _make_storage()
@@ -573,7 +613,17 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("query", schema["properties"])
         self.assertIn("image_path", schema["properties"])
         self.assertIn("video_path", schema["properties"])
+        self.assertIn("file_path", schema["properties"])
         self.assertIn("rerank_top_k", schema["properties"])
+
+    async def test_search_schema_accepts_file_path(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        server = await create_server(backend=backend, storage=storage)
+        handler = server.request_handlers[ListToolsRequest]
+        result = await handler(ListToolsRequest(method="tools/list", params=None))
+        tool = next(t for t in result.root.tools if t.name == "search")
+        self.assertIn("file_path", tool.inputSchema["properties"])
 
     async def test_get_config_via_server_call(self):
         """Integration: get_config round-trip through create_server closure."""
