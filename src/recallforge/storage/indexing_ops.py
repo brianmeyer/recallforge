@@ -132,7 +132,7 @@ class IndexingOps:
         if not text:
             return []
 
-        fenced_match = re.match(r"^```(?:[A-Za-z0-9_+-]+)?\s*\n?(.*?)\n?```$", text, flags=re.DOTALL)
+        fenced_match = re.search(r"```(?:[A-Za-z0-9_+-]+)?\s*(.*?)\s*```", text, flags=re.DOTALL)
         if fenced_match:
             text = fenced_match.group(1).strip()
 

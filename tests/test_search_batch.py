@@ -6,6 +6,7 @@ Tests: batch query normalization, parallel execution, RRF merge, deduplication.
 
 import os
 import sys
+import time
 import unittest
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
@@ -567,12 +568,11 @@ class TestSearchBatchDeduplication(unittest.TestCase):
             ],
         ]
 
-        call_idx = [0]
-
         def mock_search(self, query):
-            idx = call_idx[0]
-            call_idx[0] += 1
-            return results_list[idx]
+            if query == "query one":
+                time.sleep(0.05)
+                return results_list[0]
+            return results_list[1]
 
         with patch.object(HybridSearcher, '__init__', lambda self, **kwargs: None):
             with patch.object(HybridSearcher, 'search', mock_search):
