@@ -132,6 +132,10 @@ class IndexingOps:
         if not text:
             return []
 
+        fenced_match = re.match(r"^```(?:[A-Za-z0-9_+-]+)?\s*\n?(.*?)\n?```$", text, flags=re.DOTALL)
+        if fenced_match:
+            text = fenced_match.group(1).strip()
+
         candidates: List[str] = []
         if text.startswith("[") and text.endswith("]"):
             try:

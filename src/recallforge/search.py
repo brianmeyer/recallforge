@@ -1530,6 +1530,18 @@ def search_batch(
     if not batch_queries:
         return []
 
+    def _merge_tags(items: List[Any]) -> Optional[List[str]]:
+        merged: List[str] = []
+        seen: set[str] = set()
+        for item in items:
+            for tag in getattr(item, "tags", None) or []:
+                cleaned = str(tag or "").strip().lower()
+                if not cleaned or cleaned in seen:
+                    continue
+                seen.add(cleaned)
+                merged.append(cleaned)
+        return merged or None
+
     def run_single_query(q: BatchQuery) -> List[tuple]:
         """Run a single query and return (result, score) tuples."""
         mode = q.mode or "hybrid"
@@ -1582,11 +1594,14 @@ def search_batch(
             if filepath not in merged:
                 merged[filepath] = {
                     'result': result,
+                    'results': [result],
                     'rrf_score': 0.0,
                     'query_indices': set(),
                     'query_scores': {},
                     'best_score': 0.0,
                 }
+            else:
+                merged[filepath]['results'].append(result)
 
             # RRF contribution: rank-based, not insertion-order-based
             merged[filepath]['rrf_score'] += weight / (rrf_k + rank + 1)
@@ -1612,7 +1627,7 @@ def search_batch(
             score=data['rrf_score'],
             source=','.join(str(i) for i in sorted(data['query_indices'])),
             query_scores=data['query_scores'],
-            tags=getattr(result, "tags", None),
+            tags=_merge_tags(data['results']),
         ))
 
     final_results.sort(key=lambda x: x.score, reverse=True)

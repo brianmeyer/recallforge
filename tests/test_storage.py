@@ -1340,6 +1340,28 @@ class TestIngestCaptioning(unittest.TestCase):
             ["neural network", "diagram", "hidden layers"],
         )
 
+    def test_generated_media_tags_strip_fenced_json(self):
+        embedder = CaptioningEmbedder()
+
+        def fenced_json(_prompt: str, max_tokens: int = 60) -> str:
+            return '```json\n["diagram", "hidden layers", "neural network"]\n```'
+
+        embedder.generate_text = fenced_json
+
+        self.backend.index_image(
+            path=self.image_path,
+            collection="test",
+            embed_func=embedder,
+            caption_media=True,
+        )
+
+        rows = self.backend._embeddings_table.search().where("content_type = 'image'").to_list()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(
+            json.loads(rows[0].get("tags") or "[]"),
+            ["diagram", "hidden layers", "neural network"],
+        )
+
     def test_index_video_keeps_parent_memory_and_links_children(self):
         embedder = CaptioningEmbedder()
         logical_path = str(Path(self.video_path).expanduser().resolve())

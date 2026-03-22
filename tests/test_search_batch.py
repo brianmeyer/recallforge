@@ -525,6 +525,67 @@ class TestSearchBatchDeduplication(unittest.TestCase):
                 self.assertIn(0, results[0].query_scores)
                 self.assertIn(1, results[0].query_scores)
 
+    def test_same_document_merges_tags_deterministically(self):
+        """Duplicate hits should merge tag sets in stable first-seen order."""
+        backend = StubBackend()
+        storage = StubStorage()
+
+        results_list = [
+            [
+                type('HybridResult', (), {
+                    'filepath': 'shared.md',
+                    'display_path': 'shared.md',
+                    'title': 'shared.md',
+                    'context': None,
+                    'hash': 'h1',
+                    'docid': 'd1',
+                    'collection': 'test',
+                    'modified_at': '2026-01-01',
+                    'body_length': 100,
+                    'body': 'shared content',
+                    'score': 0.8,
+                    'source': 'hybrid',
+                    'tags': ['alpha', 'shared'],
+                }),
+            ],
+            [
+                type('HybridResult', (), {
+                    'filepath': 'shared.md',
+                    'display_path': 'shared.md',
+                    'title': 'shared.md',
+                    'context': None,
+                    'hash': 'h1',
+                    'docid': 'd1',
+                    'collection': 'test',
+                    'modified_at': '2026-01-01',
+                    'body_length': 100,
+                    'body': 'shared content',
+                    'score': 0.9,
+                    'source': 'hybrid',
+                    'tags': ['shared', 'beta'],
+                }),
+            ],
+        ]
+
+        call_idx = [0]
+
+        def mock_search(self, query):
+            idx = call_idx[0]
+            call_idx[0] += 1
+            return results_list[idx]
+
+        with patch.object(HybridSearcher, '__init__', lambda self, **kwargs: None):
+            with patch.object(HybridSearcher, 'search', mock_search):
+                results = search_batch(
+                    ["query one", "query two"],
+                    backend=backend,
+                    storage=storage,
+                    limit=10,
+                )
+
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0].tags, ["alpha", "shared", "beta"])
+
 
 if __name__ == "__main__":
     unittest.main()
