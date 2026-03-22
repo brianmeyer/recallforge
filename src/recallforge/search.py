@@ -633,10 +633,18 @@ class HybridSearcher:
             return
 
         for i, variant in enumerate(query_variants[1:], start=1):
-            variant_results = self._run_parallel_searches(variant)
-            for key, results in variant_results.items():
-                all_results[f"{key}_exp{i}"] = results
-            all_results[f"original_fts_exp{i}"] = self._bm25_probe(variant)
+            try:
+                variant_results = self._run_parallel_searches(variant)
+                for key, results in variant_results.items():
+                    all_results[f"{key}_exp{i}"] = results
+                all_results[f"original_fts_exp{i}"] = self._bm25_probe(variant)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping failed query expansion branch variant_index=%d variant=%r error=%s",
+                    i,
+                    variant[:120],
+                    exc,
+                )
 
     def search_image(self, image_path: str) -> List[HybridResult]:
         """Run image-query search through hybrid pipeline (RRF + optional rerank)."""
