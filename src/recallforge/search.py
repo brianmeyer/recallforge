@@ -200,46 +200,109 @@ def _is_visual_query(query: str) -> bool:
 
 
 def _generate_text_variants(query: str, _backend: ModelBackend) -> List[str]:
-    """Generate 1-2 semantic variants of a text query using the VL model.
+    """Generate 1-2 semantic variants of a text query.
 
-    Uses the backend's text embedding model to generate variations that
-    capture different phrasings or aspects of the original query.
+    Prefer the backend's lightweight text generator when available, and fall
+    back to the legacy heuristic expansion rules when generation is missing or
+    returns unusable output.
     """
-    variants = []
-    query_lower = query.lower().strip()
+    def _normalize_variant(text: str) -> str:
+        cleaned = re.sub(r"\s+", " ", str(text or "").strip())
+        cleaned = cleaned.strip("\"'` ")
+        cleaned = re.sub(r"^\s*(?:[-*•]\s*|\d+[\.\)]\s*)", "", cleaned)
+        return cleaned.strip()
 
-    # Simple rule-based expansion for common patterns
-    # These are semantic equivalents that might match different document phrasings
-    expansions = {
-        "how to": ["guide for", "steps to", "tutorial on"],
-        "what is": ["definition of", "explaining", "introduction to"],
-        "best way to": ["optimal method for", "recommended approach to"],
-        "difference between": ["comparison of", "vs", "versus"],
-        "example of": ["sample", "instance of", "demonstration of"],
-        "how do": ["how does", "how can", "ways to"],
-    }
-
-    for pattern, alternatives in expansions.items():
-        if pattern in query_lower:
-            for alt in alternatives[:1]:  # Add just one variant per pattern
-                variant = query_lower.replace(pattern, alt, 1)
-                if variant != query_lower:
-                    variants.append(variant)
-                    break
-            if variants:
+    def _dedupe_variants(items: List[str]) -> List[str]:
+        seen: set[str] = set()
+        deduped: List[str] = []
+        original = query.strip().lower()
+        for item in items:
+            cleaned = _normalize_variant(item)
+            if not cleaned:
+                continue
+            lowered = cleaned.lower()
+            if lowered == original or lowered in seen:
+                continue
+            seen.add(lowered)
+            deduped.append(cleaned)
+            if len(deduped) >= 2:
                 break
+        return deduped
 
-    # If no pattern matched, try simple rephrasing
-    if not variants:
-        # Remove question words and rephrase as statement
-        if query_lower.startswith("what ") or query_lower.startswith("how "):
-            # Convert "what is X" -> "X is" or "information about X"
+    def _heuristic_variants() -> List[str]:
+        variants = []
+        query_lower = query.lower().strip()
+
+        expansions = {
+            "how to": ["guide for", "steps to", "tutorial on"],
+            "what is": ["definition of", "explaining", "introduction to"],
+            "best way to": ["optimal method for", "recommended approach to"],
+            "difference between": ["comparison of", "vs", "versus"],
+            "example of": ["sample", "instance of", "demonstration of"],
+            "how do": ["how does", "how can", "ways to"],
+        }
+
+        for pattern, alternatives in expansions.items():
+            if pattern in query_lower:
+                for alt in alternatives[:1]:
+                    variant = query_lower.replace(pattern, alt, 1)
+                    if variant != query_lower:
+                        variants.append(variant)
+                        break
+                if variants:
+                    break
+
+        if not variants and (query_lower.startswith("what ") or query_lower.startswith("how ")):
             words = query_lower.split()
             if len(words) > 2:
                 variants.append(" ".join(words[2:]))
                 variants.append(f"information about {' '.join(words[2:])}")
 
-    return variants[:2]  # Return at most 2 variants
+        return _dedupe_variants(variants)
+
+    generate_text = getattr(_backend, "generate_text", None)
+    if callable(generate_text):
+        prompt = (
+            "Rewrite the following search query into up to 2 short alternative "
+            "search queries for retrieval.\n"
+            "Rules:\n"
+            "- Preserve the original intent\n"
+            "- Use different wording that may match other documents\n"
+            "- Keep each variant concise\n"
+            "- Return only the alternative queries, one per line\n\n"
+            f"Query: {query.strip()}"
+        )
+        try:
+            raw = generate_text(prompt, max_tokens=80) or ""
+        except Exception as exc:
+            logger.debug("query_expansion_generate_text failed: %s", exc)
+            raw = ""
+
+        generated: List[str] = []
+        if raw.strip():
+            stripped = raw.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                try:
+                    payload = json.loads(stripped)
+                    if isinstance(payload, list):
+                        generated.extend(str(item) for item in payload)
+                except json.JSONDecodeError:
+                    pass
+
+            if not generated:
+                for line in (line.strip() for line in raw.splitlines() if line.strip()):
+                    lowered = line.lower()
+                    if lowered.startswith("here are"):
+                        continue
+                    if lowered.startswith("query:") or lowered.startswith("queries:"):
+                        line = line.split(":", 1)[1]
+                    generated.append(line)
+
+            parsed = _dedupe_variants(generated)
+            if parsed:
+                return parsed
+
+    return _heuristic_variants()
 
 
 def _generate_visual_description(query: str) -> str:
@@ -556,6 +619,25 @@ class HybridSearcher:
         )
         return query_text, self._bm25_probe(query_text)
 
+    def _add_text_expansion_branches(
+        self,
+        all_results: Dict[str, List[SearchResult]],
+        query_text: str,
+    ) -> None:
+        """Add BM25/vector branches for generated text expansions."""
+        if not self.expand or not query_text.strip():
+            return
+
+        query_variants = expand_query(query_text, self.backend, expand=True)
+        if len(query_variants) <= 1:
+            return
+
+        for i, variant in enumerate(query_variants[1:], start=1):
+            variant_results = self._run_parallel_searches(variant)
+            for key, results in variant_results.items():
+                all_results[f"{key}_exp{i}"] = results
+            all_results[f"original_fts_exp{i}"] = self._bm25_probe(variant)
+
     def search_image(self, image_path: str) -> List[HybridResult]:
         """Run image-query search through hybrid pipeline (RRF + optional rerank)."""
         # Image query always contributes vector candidates.
@@ -576,6 +658,7 @@ class HybridSearcher:
         query_text, bm25_results = self._query_media_probe(image_path=image_path)
         if bm25_results:
             all_results["original_fts"] = bm25_results
+        self._add_text_expansion_branches(all_results, query_text)
 
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_scores, reranker_path = self._rerank_candidates(
@@ -612,6 +695,7 @@ class HybridSearcher:
         query_text, bm25_results = self._query_media_probe(video_path=video_path)
         if bm25_results:
             all_results["original_fts"] = bm25_results
+        self._add_text_expansion_branches(all_results, query_text)
 
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_scores, reranker_path = self._rerank_candidates(

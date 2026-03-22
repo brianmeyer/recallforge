@@ -123,6 +123,10 @@ class ModelBackend(ABC):
         """Generate a short caption for an image (optional backend capability)."""
         raise NotImplementedError("caption_image is not supported by this backend")
 
+    def generate_text(self, prompt: str, max_tokens: int = 60) -> str:
+        """Generate lightweight helper text such as query expansions (optional)."""
+        raise NotImplementedError("generate_text is not supported by this backend")
+
     @abstractmethod
     def rerank(
         self,

@@ -49,8 +49,9 @@ def _make_search_result(filepath: str, score: float = 0.9, source: str = "fts",
 class StubBackend(ModelBackend):
     """Minimal ModelBackend stub for unit tests."""
 
-    def __init__(self, mode: str = "hybrid"):
+    def __init__(self, mode: str = "hybrid", generated_text_response: Optional[str] = None):
         self._mode = mode
+        self._generated_text_response = generated_text_response
 
     def embed_text(self, text: str) -> np.ndarray:
         return np.ones(2048, dtype=np.float32) / np.sqrt(2048)
@@ -72,6 +73,11 @@ class StubBackend(ModelBackend):
 
     def caption_image(self, image_path: str) -> str:
         return f"caption for {os.path.basename(image_path)}"
+
+    def generate_text(self, prompt: str, max_tokens: int = 60) -> str:
+        if self._generated_text_response is None:
+            raise NotImplementedError("generate_text unavailable in stub")
+        return self._generated_text_response
 
     def rerank(self, query: str, documents: List[Dict[str, Any]], **kwargs) -> List[float]:
         # Return descending scores
@@ -584,6 +590,34 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("original_fts", results[0].source)
 
+    def test_search_image_expands_caption_probe_when_enabled(self):
+        backend = StubBackend(
+            mode="hybrid",
+            generated_text_response="query screenshot notes\napplication error screenshot",
+        )
+        backend.rerank = MagicMock(return_value=[0.88])
+        storage = StubStorage(
+            fts_results=[_make_search_result("doc1.md", 0.95, "fts")],
+            vec_results=[_make_search_result("doc1.md", 0.9, "vec")],
+        )
+        storage.search_fts = MagicMock(side_effect=storage.search_fts)
+        storage.search_vec = MagicMock(side_effect=storage.search_vec)
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1, expand=True)
+
+        results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(len(results), 1)
+        queried_fts = [args[0] for args, _ in storage.search_fts.call_args_list]
+        self.assertEqual(
+            queried_fts,
+            [
+                "caption for query.png",
+                "query screenshot notes",
+                "application error screenshot",
+            ],
+        )
+        self.assertEqual(storage.search_vec.call_count, 3)
+
     def test_search_video_uses_caption_for_bm25_probe(self):
         backend = StubBackend(mode="hybrid")
         backend.rerank = MagicMock(return_value=[0.88])
@@ -601,6 +635,35 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("original_fts", results[0].source)
         backend.rerank.assert_not_called()
+
+    def test_search_video_expands_caption_probe_when_enabled(self):
+        backend = StubBackend(
+            mode="hybrid",
+            generated_text_response='["mountain forest timelapse", "alpine nature video"]',
+        )
+        backend.rerank = MagicMock(return_value=[0.88])
+        storage = StubStorage(
+            fts_results=[_make_search_result("clip.md", 0.95, "fts")],
+            vec_results=[_make_search_result("clip.md", 0.9, "vec")],
+        )
+        storage.search_fts = MagicMock(side_effect=storage.search_fts)
+        storage.search_vec = MagicMock(side_effect=storage.search_vec)
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1, expand=True)
+        searcher._caption_video_query = MagicMock(return_value="forest timelapse mountains")
+
+        results = searcher.search_video("/tmp/query.mp4")
+
+        self.assertEqual(len(results), 1)
+        queried_fts = [args[0] for args, _ in storage.search_fts.call_args_list]
+        self.assertEqual(
+            queried_fts,
+            [
+                "forest timelapse mountains",
+                "mountain forest timelapse",
+                "alpine nature video",
+            ],
+        )
+        self.assertEqual(storage.search_vec.call_count, 3)
 
     def test_text_query_with_media_candidates_skips_reranker_by_default(self):
         backend = StubBackend(mode="hybrid")
