@@ -18,12 +18,15 @@ LINEAR: REC-128
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
 import platform
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -31,6 +34,8 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -39,6 +44,9 @@ import pytest
 # Ensure src is on path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
+from mcp.client.stdio import stdio_client
 from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest, TextContent
 
 from recallforge import __version__, get_backend, get_storage
@@ -56,6 +64,7 @@ from recallforge.server import (
 # Test fixtures and constants
 # ---------------------------------------------------------------------------
 
+REPO_ROOT = Path(__file__).parent.parent.parent
 CORPUS_DIR = Path(__file__).parent / "corpus"
 TEXT_DIR = CORPUS_DIR / "text"
 IMAGES_DIR = CORPUS_DIR / "images"
@@ -75,6 +84,96 @@ def _vec_from_seed(seed: str, dim: int = 2048) -> List[float]:
         values[idx] += 1.0
     norm = sum(v * v for v in values) ** 0.5 or 1.0
     return [v / norm for v in values]
+
+
+def _live_uat_env(store_path: Path) -> Dict[str, str]:
+    """Environment for live subprocess-based MCP validation."""
+    env = os.environ.copy()
+    env["RECALLFORGE_STORE_PATH"] = str(store_path)
+    env.setdefault("RECALLFORGE_BACKEND", "auto")
+    env.setdefault("RECALLFORGE_MODE", "embed")
+    env.setdefault("RECALLFORGE_MLX_QUANTIZE", "4bit")
+
+    src_path = str(REPO_ROOT / "src")
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        src_path
+        if not existing_pythonpath
+        else src_path + os.pathsep + existing_pythonpath
+    )
+    return env
+
+
+def _find_free_port() -> int:
+    """Reserve an ephemeral localhost port for an HTTP test."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _tool_result_to_json(result) -> Dict[str, Any]:
+    """Parse an MCP tool result payload into a JSON dict."""
+    assert result.content, "Expected MCP tool result content"
+    first = result.content[0]
+    assert isinstance(first, TextContent), f"Unexpected MCP content block: {type(first).__name__}"
+    return json.loads(first.text)
+
+
+def _tail_text(path: Path, max_chars: int = 4000) -> str:
+    """Return the tail of a log file for failure messages."""
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return text[-max_chars:]
+
+
+def _wait_for_http_health(url: str, log_path: Path, timeout: float = 180.0) -> Dict[str, Any]:
+    """Wait for the HTTP health endpoint to report healthy status."""
+    deadline = time.time() + timeout
+    last_status = None
+    last_body = ""
+
+    while time.time() < deadline:
+        try:
+            with urllib_request.urlopen(url, timeout=5.0) as response:
+                body = response.read().decode("utf-8")
+                payload = json.loads(body)
+                if response.status == 200:
+                    return payload
+                last_status = response.status
+                last_body = body
+        except urllib_error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            last_status = exc.code
+            last_body = body
+        except Exception as exc:
+            last_body = str(exc)
+
+        time.sleep(1.0)
+
+    raise AssertionError(
+        f"HTTP health endpoint did not become ready within {timeout:.0f}s "
+        f"(last_status={last_status}, last_body={last_body!r}). "
+        f"Server log tail:\n{_tail_text(log_path)}"
+    )
+
+
+def _stop_process(proc: subprocess.Popen, log_path: Optional[Path] = None) -> None:
+    """Terminate a subprocess cleanly and surface logs on failure."""
+    if proc.poll() is not None:
+        return
+
+    proc.send_signal(signal.SIGINT)
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+        if log_path is not None:
+            raise AssertionError(
+                "Subprocess did not shut down cleanly.\n"
+                f"Server log tail:\n{_tail_text(log_path)}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2010,6 +2109,165 @@ class TestIntegrationRealBackend:
         if content is None:
             raise RuntimeError(f"Unable to extract tool response content for '{name}'")
         return content
+
+
+@pytest.mark.integration
+class TestIntegrationExternalMCPClient:
+    """Live MCP client round-trips against a real subprocess server."""
+
+    TEST_TEXT = (
+        "Retrieval augmented generation uses external knowledge during answer synthesis."
+    )
+
+    def _require_live_mode(self) -> None:
+        if os.environ.get("UAT_MCP_LIVE", "0") != "1":
+            pytest.skip("External MCP client test requires UAT_MCP_LIVE=1 and model weights")
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_real_backend_external_client_stdio_roundtrip(self, tmp_path):
+        """A real stdio MCP client should ingest, search, and read config via subprocess server."""
+        self._require_live_mode()
+
+        store_path = tmp_path / "store-stdio"
+        collection = "uat_external_stdio"
+        query_path = "integration/external-client-stdio.md"
+
+        server_params = StdioServerParameters(
+            command=sys.executable,
+            args=[
+                "-m",
+                "recallforge",
+                "serve",
+                "--mode",
+                "embed",
+                "--store-path",
+                str(store_path),
+            ],
+            env=_live_uat_env(store_path),
+            cwd=REPO_ROOT,
+        )
+
+        async with stdio_client(server_params) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+
+                tools = await session.list_tools()
+                tool_names = {tool.name for tool in tools.tools}
+                assert {"search", "ingest", "get_config", "status"} <= tool_names
+
+                ingest = _tool_result_to_json(
+                    await session.call_tool(
+                        "ingest",
+                        arguments={
+                            "text": self.TEST_TEXT,
+                            "path": query_path,
+                            "collection": collection,
+                        },
+                    )
+                )
+                assert ingest.get("success") or ingest.get("indexed_text", 0) >= 1
+
+                search = _tool_result_to_json(
+                    await session.call_tool(
+                        "search",
+                        arguments={
+                            "query": "external knowledge during answer synthesis",
+                            "limit": 5,
+                            "collection": collection,
+                            "content_type": "text",
+                        },
+                    )
+                )
+                result_paths = [item.get("filepath", "") for item in search.get("results", [])]
+                assert search.get("count", 0) >= 1
+                assert any(path.endswith(query_path) for path in result_paths)
+
+                config = _tool_result_to_json(await session.call_tool("get_config", arguments={}))
+                assert config.get("mode") == "embed"
+                assert config.get("data_dir") == str(store_path.resolve())
+
+                status = _tool_result_to_json(await session.call_tool("status", arguments={}))
+                assert status.get("version") == __version__
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_real_backend_external_client_sse_roundtrip(self, tmp_path):
+        """A real HTTP/SSE MCP client should connect to the subprocess server and call tools."""
+        self._require_live_mode()
+
+        store_path = tmp_path / "store-sse"
+        collection = "uat_external_sse"
+        query_path = "integration/external-client-sse.md"
+        port = _find_free_port()
+        log_path = tmp_path / "recallforge-http.log"
+        log_handle = log_path.open("w", encoding="utf-8")
+
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "recallforge",
+                "serve",
+                "--http",
+                "--mode",
+                "embed",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--store-path",
+                str(store_path),
+            ],
+            cwd=REPO_ROOT,
+            env=_live_uat_env(store_path),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        try:
+            health = _wait_for_http_health(f"http://127.0.0.1:{port}/health", log_path)
+            assert health.get("status") == "ok"
+            assert health.get("models_loaded") is True
+
+            async with sse_client(f"http://127.0.0.1:{port}/sse") as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+
+                    tools = await session.list_tools()
+                    tool_names = {tool.name for tool in tools.tools}
+                    assert {"search", "ingest", "get_config"} <= tool_names
+
+                    ingest = _tool_result_to_json(
+                        await session.call_tool(
+                            "ingest",
+                            arguments={
+                                "text": self.TEST_TEXT,
+                                "path": query_path,
+                                "collection": collection,
+                            },
+                        )
+                    )
+                    assert ingest.get("success") or ingest.get("indexed_text", 0) >= 1
+
+                    search = _tool_result_to_json(
+                        await session.call_tool(
+                            "search",
+                            arguments={
+                                "query": "external knowledge during answer synthesis",
+                                "limit": 5,
+                                "collection": collection,
+                                "content_type": "text",
+                            },
+                        )
+                    )
+                    result_paths = [item.get("filepath", "") for item in search.get("results", [])]
+                    assert search.get("count", 0) >= 1
+                    assert any(path.endswith(query_path) for path in result_paths)
+        finally:
+            _stop_process(proc, log_path=log_path)
+            log_handle.close()
 
 
 # ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ If you have real models available on the machine, run:
 
 ```bash
 UAT_MCP_LIVE=1 .venv/bin/python -m pytest -q tests/uat/test_uat_comprehensive.py -m integration -k real_backend -rs
+UAT_MCP_LIVE=1 .venv/bin/python -m pytest -q tests/uat/test_uat_comprehensive.py -m integration -k external_client -rs
 ```
 
 Then run the expanded benchmark:

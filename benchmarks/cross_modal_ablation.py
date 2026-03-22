@@ -1621,6 +1621,45 @@ STAGES = [
 ]
 
 
+def _group_queries(
+    category_filters: Optional[List[str]] = None,
+    max_queries_per_category: Optional[int] = None,
+) -> Dict[str, List["GroundTruth"]]:
+    """Group benchmark queries with optional category and per-category limits."""
+    requested = set(category_filters or [])
+    categories: Dict[str, List[GroundTruth]] = {}
+
+    for gt in ALL_GROUND_TRUTH:
+        if requested and gt.category not in requested:
+            continue
+        bucket = categories.setdefault(gt.category, [])
+        if max_queries_per_category is None or len(bucket) < max_queries_per_category:
+            bucket.append(gt)
+
+    if requested:
+        missing = sorted(requested - set(categories.keys()))
+        if missing:
+            raise ValueError(f"Unknown categories requested: {', '.join(missing)}")
+
+    return categories
+
+
+def _select_stages(stage_filters: Optional[List[str]] = None) -> List[Tuple[str, str]]:
+    """Return the selected benchmark stages by mode or display name."""
+    if not stage_filters:
+        return STAGES
+
+    requested = set(stage_filters)
+    selected = [
+        (stage_name, stage_mode)
+        for stage_name, stage_mode in STAGES
+        if stage_mode in requested or stage_name in requested
+    ]
+    if not selected:
+        raise ValueError(f"Unknown stages requested: {', '.join(sorted(requested))}")
+    return selected
+
+
 def _resolve_output_path(output_path: Optional[str]) -> str:
     """Return the benchmark output path, falling back to the default results file."""
     return output_path or str(
@@ -1631,6 +1670,7 @@ def _resolve_output_path(output_path: Optional[str]) -> str:
 def _build_output_payload(
     categories: Dict[str, List[GroundTruth]],
     all_results: Dict[str, Dict[str, StageResult]],
+    stages: List[Tuple[str, str]],
     *,
     indexed_items: int,
     run_status: str,
@@ -1662,7 +1702,7 @@ def _build_output_payload(
             "images": len(list((CORPUS_DIR / "images").glob("*.png"))),
             "videos": len(list((CORPUS_DIR / "videos").glob("*.mp4"))),
             "total_corpus_docs": len(CORPUS_DOCS),
-            "total_queries": len(ALL_GROUND_TRUTH),
+            "total_queries": sum(len(v) for v in categories.values()),
             "queries_by_category": {k: len(v) for k, v in categories.items()},
         },
         "categories": {},
@@ -1681,7 +1721,7 @@ def _build_output_payload(
             }
         }
 
-    for stage_name, _ in STAGES:
+    for stage_name, _ in stages:
         output["stages"][stage_name] = {}
         for cat_name, sr in all_results.get(stage_name, {}).items():
             output["stages"][stage_name][cat_name] = {
@@ -1914,13 +1954,19 @@ def run_benchmark(
     storage,
     collection: str = "benchmark",
     output_path: Optional[str] = None,
+    category_filters: Optional[List[str]] = None,
+    stage_filters: Optional[List[str]] = None,
+    max_queries_per_category: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run the full cross-modal ablation benchmark."""
 
-    # Group queries by category
-    categories = {}
-    for gt in ALL_GROUND_TRUTH:
-        categories.setdefault(gt.category, []).append(gt)
+    categories = _group_queries(
+        category_filters=category_filters,
+        max_queries_per_category=max_queries_per_category,
+    )
+    if not categories:
+        raise ValueError("No benchmark queries selected")
+    stages = _select_stages(stage_filters)
     save_path = _resolve_output_path(output_path)
     indexed = 0
     completed_stages: List[str] = []
@@ -1937,6 +1983,7 @@ def run_benchmark(
         output = _build_output_payload(
             categories,
             all_results,
+            stages,
             indexed_items=indexed,
             run_status=run_status,
             interrupted=interrupted,
@@ -1952,7 +1999,8 @@ def run_benchmark(
         return output
 
     print(f"\nQuery categories: {', '.join(f'{k}({len(v)})' for k, v in categories.items())}")
-    print(f"Total queries: {len(ALL_GROUND_TRUTH)}")
+    print(f"Stages: {', '.join(stage_name for stage_name, _ in stages)}")
+    print(f"Total queries: {sum(len(v) for v in categories.values())}")
     print(f"Corpus documents: {len(CORPUS_DOCS)}")
 
     all_results: Dict[str, Dict[str, StageResult]] = {}
@@ -1965,7 +2013,7 @@ def run_benchmark(
         save_checkpoint(run_status="partial")
 
         # Run all stages × categories
-        for stage_name, stage_mode in STAGES:
+        for stage_name, stage_mode in stages:
             current_stage_name = stage_name
             current_category_name = None
             all_results[stage_name] = {}
@@ -2096,7 +2144,7 @@ def run_benchmark(
               f"{'NDCG@10':>8} {'MRR':>6} {'p50':>8} {'p95':>8}")
         print("-" * 120)
 
-        for stage_name, _ in STAGES:
+        for stage_name, _ in stages:
             sr = all_results[stage_name][cat_name]
             if sr.total_queries == 0:
                 continue
@@ -2117,7 +2165,7 @@ def run_benchmark(
     print("-" * 100)
 
     for cat_name in categories:
-        for stage_name, _ in STAGES:
+        for stage_name, _ in stages:
             sr = all_results[stage_name][cat_name]
             if sr.total_queries == 0:
                 continue
@@ -2138,8 +2186,8 @@ def run_benchmark(
     print("-" * 90)
 
     for cat_name in categories:
-        vec = all_results["Vector-only"].get(cat_name)
-        rerank = all_results["Vector + BM25 + Reranker"].get(cat_name)
+        vec = all_results.get("Vector-only", {}).get(cat_name)
+        rerank = all_results.get("Vector + BM25 + Reranker", {}).get(cat_name)
         if vec and rerank and vec.total_queries > 0:
             delta_r1 = rerank.recall_at_1 - vec.recall_at_1
             delta_ndcg = rerank.ndcg_at_10 - vec.ndcg_at_10
@@ -2182,6 +2230,25 @@ def main():
         "--dry-run", action="store_true",
         help="Validate query structure without running benchmark",
     )
+    parser.add_argument(
+        "--category",
+        action="append",
+        default=None,
+        help="Benchmark category to run (repeatable)",
+    )
+    parser.add_argument(
+        "--stage-mode",
+        action="append",
+        choices=["embed", "bm25", "rrf", "hybrid"],
+        default=None,
+        help="Benchmark stage mode to run (repeatable)",
+    )
+    parser.add_argument(
+        "--max-queries-per-category",
+        type=int,
+        default=None,
+        help="Cap how many queries to run from each selected category",
+    )
     args = parser.parse_args()
 
     if args.dry_run:
@@ -2189,13 +2256,13 @@ def main():
         print(f"\n{'=' * 60}")
         print("DRY RUN - Query Structure Validation")
         print(f"{'=' * 60}")
-        print(f"Total queries: {len(QUERIES)}")
+        categories = _group_queries(
+            category_filters=args.category,
+            max_queries_per_category=args.max_queries_per_category,
+        )
+        print(f"Total queries: {sum(len(v) for v in categories.values())}")
         print(f"Corpus documents: {len(CORPUS_DOCS)}")
-        
-        categories = {}
-        for gt in ALL_GROUND_TRUTH:
-            categories.setdefault(gt.category, []).append(gt)
-        
+
         print(f"\nQueries by category:")
         for cat, queries in categories.items():
             easy = sum(1 for q in queries if q.difficulty == "easy")
@@ -2206,10 +2273,11 @@ def main():
         
         # Validate all relevant_paths exist in corpus
         missing = []
-        for gt in ALL_GROUND_TRUTH:
-            for path in gt.relevant_paths:
-                if path not in CORPUS_DOCS:
-                    missing.append((gt.query[:50], path))
+        for queries in categories.values():
+            for gt in queries:
+                for path in gt.relevant_paths:
+                    if path not in CORPUS_DOCS:
+                        missing.append((gt.query[:50], path))
         
         if missing:
             print(f"\nWARNING: {len(missing)} paths not in CORPUS_DOCS:")
@@ -2244,7 +2312,14 @@ def main():
         print(f"Quantization: {info.quantization}")
         print(f"Store: {store_path}")
 
-        run_benchmark(backend, storage, output_path=args.output)
+        run_benchmark(
+            backend,
+            storage,
+            output_path=args.output,
+            category_filters=args.category,
+            stage_filters=args.stage_mode,
+            max_queries_per_category=args.max_queries_per_category,
+        )
 
     finally:
         if cleanup and os.path.exists(store_path):

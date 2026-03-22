@@ -31,6 +31,14 @@ from .storage.base import StorageBackend, SearchResult
 logger = logging.getLogger(__name__)
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Parse boolean environment flags with a safe default."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _log_stage_metrics(
     stage: str,
     results: List[Any],
@@ -363,10 +371,34 @@ class HybridSearcher:
         env_overfetch = int(os.environ.get("RECALLFORGE_OVERFETCH_FACTOR", overfetch_factor))
         env_max_candidates = int(os.environ.get("RECALLFORGE_MAX_CANDIDATES", max_candidates))
         env_rerank_top_k = int(os.environ.get("RECALLFORGE_RERANK_TOP_K", rerank_top_k))
+        env_media_query_rerank_top_k = int(
+            os.environ.get(
+                "RECALLFORGE_MEDIA_QUERY_RERANK_TOP_K",
+                min(env_rerank_top_k, 5),
+            )
+        )
+        env_media_result_rerank_top_k = int(
+            os.environ.get(
+                "RECALLFORGE_MEDIA_RESULT_RERANK_TOP_K",
+                min(env_rerank_top_k, 10),
+            )
+        )
+        self.enable_media_reranking = _env_flag(
+            "RECALLFORGE_ENABLE_MEDIA_RERANKING",
+            False,
+        )
         self.overfetch_factor = max(2, env_overfetch)
         self.max_candidates = max(self.limit, env_max_candidates)
         self.candidate_limit = min(self.max_candidates, self.limit * self.overfetch_factor)
         self.rerank_top_k = max(0, env_rerank_top_k)
+        self.media_query_rerank_top_k = max(
+            0,
+            min(self.rerank_top_k, env_media_query_rerank_top_k),
+        )
+        self.media_result_rerank_top_k = max(
+            0,
+            min(self.rerank_top_k, env_media_result_rerank_top_k),
+        )
         self.cache: EmbeddingCache = cache if cache is not None else EmbeddingCache()
         self.intent = intent
         self.expand = expand
@@ -493,12 +525,12 @@ class HybridSearcher:
             logger.warning("video query caption failed (is ffmpeg installed?): %s", exc)
         return ""
 
-    def _bm25_results_for_query_media(
+    def _query_media_probe(
         self,
         *,
         image_path: Optional[str] = None,
         video_path: Optional[str] = None,
-    ) -> List[SearchResult]:
+    ) -> tuple[str, List[SearchResult]]:
         """Generate a text probe from query media and run BM25 when possible."""
         query_text = ""
         if image_path:
@@ -507,14 +539,14 @@ class HybridSearcher:
             query_text = self._caption_video_query(video_path)
 
         if not query_text:
-            return []
+            return "", []
 
         logger.debug(
             "media_bm25_probe type=%s caption=%s",
             "image" if image_path else "video",
             query_text[:100],
         )
-        return self._bm25_probe(query_text)
+        return query_text, self._bm25_probe(query_text)
 
     def search_image(self, image_path: str) -> List[HybridResult]:
         """Run image-query search through hybrid pipeline (RRF + optional rerank)."""
@@ -533,13 +565,13 @@ class HybridSearcher:
             )
         }
 
-        bm25_results = self._bm25_results_for_query_media(image_path=image_path)
+        query_text, bm25_results = self._query_media_probe(image_path=image_path)
         if bm25_results:
             all_results["original_fts"] = bm25_results
 
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_scores, reranker_path = self._rerank_candidates(
-            candidates, query="", query_image_path=image_path
+            candidates, query=query_text, query_image_path=image_path
         )
         return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 
@@ -569,13 +601,13 @@ class HybridSearcher:
             )
         }
 
-        bm25_results = self._bm25_results_for_query_media(video_path=video_path)
+        query_text, bm25_results = self._query_media_probe(video_path=video_path)
         if bm25_results:
             all_results["original_fts"] = bm25_results
 
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_scores, reranker_path = self._rerank_candidates(
-            candidates, query="", query_video_path=video_path
+            candidates, query=query_text, query_video_path=video_path
         )
         return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 
@@ -837,52 +869,42 @@ class HybridSearcher:
             logger.debug("reranker_path path=skipped reason=no_reranker_needed")
             return {c.filepath: 0.5 for c in candidates}, "text"
 
-        rerank_limit = min(len(candidates), self.rerank_top_k)
+        candidates_by_rrf = sorted(candidates, key=lambda c: c.score, reverse=True)
+        rerank_limit = min(len(candidates_by_rrf), self.rerank_top_k)
         if rerank_limit <= 0:
             return {c.filepath: 0.5 for c in candidates}, "skipped"
 
-        candidates_by_rrf = sorted(candidates, key=lambda c: c.score, reverse=True)
+        preview_candidates = candidates_by_rrf[:rerank_limit]
+        has_query_media = bool(query_image_path or query_video_path)
+        has_media_candidates = any(
+            getattr(candidate, "content_type", "text") in ("image", "video")
+            for candidate in preview_candidates
+        )
+        if (has_query_media or has_media_candidates) and not self.enable_media_reranking:
+            logger.debug(
+                "reranker_path path=media_disabled reason=media_reranker_disabled "
+                "query_media=%s media_candidates=%s",
+                has_query_media,
+                has_media_candidates,
+            )
+            _log_stage_metrics(
+                "reranker",
+                candidates,
+                start_time=t0,
+                extra={"path": "media_disabled"},
+            )
+            return {c.filepath: 0.5 for c in candidates}, "media_disabled"
+
+        if has_query_media:
+            rerank_limit = min(rerank_limit, self.media_query_rerank_top_k)
+        elif has_media_candidates:
+            rerank_limit = min(rerank_limit, self.media_result_rerank_top_k)
+        if rerank_limit <= 0:
+            return {c.filepath: 0.5 for c in candidates}, "skipped"
+
         rerank_candidates = candidates_by_rrf[:rerank_limit]
         chunks = [self._select_best_chunk(c) for c in rerank_candidates]
-
-        # Resolve effective query text when media is the query.
-        # If the backend supports query-side VL reranking it will use the media
-        # directly; otherwise we fall back to a caption of the query media so that
-        # the text cross-encoder still has something meaningful to work with.
-        effective_query = query
-        if (query_image_path or query_video_path) and not effective_query:
-            # Try backend caption as text fallback first; rerank() may override this
-            # if it natively supports query-side VL.
-            try:
-                if query_image_path:
-                    effective_query = self.backend.caption_image(query_image_path)
-                    logger.debug(
-                        "reranker_query_caption type=image caption=%s",
-                        (effective_query or "")[:80],
-                    )
-                elif query_video_path:
-                    # Extract a representative frame and caption it
-                    effective_query = ""
-                    try:
-                        import tempfile, subprocess, os
-                        with tempfile.TemporaryDirectory() as tmpdir:
-                            frame_path = os.path.join(tmpdir, "frame.jpg")
-                            subprocess.run(
-                                ["ffmpeg", "-y", "-i", query_video_path, "-vf",
-                                 "select=eq(n\\,0)", "-vframes", "1", frame_path],
-                                capture_output=True, timeout=10,
-                            )
-                            if os.path.exists(frame_path) and hasattr(self.backend, "caption_image"):
-                                effective_query = self.backend.caption_image(frame_path)
-                    except Exception as e:
-                        logger.warning("video caption fallback failed (is ffmpeg installed?): %s", e)
-                    logger.debug(
-                        "reranker_query_caption type=video caption=%s",
-                        (effective_query or "")[:80],
-                    )
-            except (NotImplementedError, Exception) as _cap_err:
-                logger.debug("reranker_query_caption failed: %s", _cap_err)
-                effective_query = ""
+        effective_query = query or ""
 
         # Determine expected reranker scoring path for telemetry
         has_doc_image = any(c.get('image_path') for c in chunks)
@@ -905,7 +927,12 @@ class HybridSearcher:
                 query_image_path=query_image_path,
                 query_video_path=query_video_path,
             )
-            logger.debug("reranker_path path=%s candidate_count=%d", path, len(rerank_candidates))
+            logger.debug(
+                "reranker_path path=%s candidate_count=%d base_candidate_count=%d",
+                path,
+                len(rerank_candidates),
+                len(candidates_by_rrf),
+            )
             rerank_scores = {c.filepath: 0.5 for c in candidates}
             rerank_scores.update({c.filepath: s for c, s in zip(rerank_candidates, scores)})
             _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": path})

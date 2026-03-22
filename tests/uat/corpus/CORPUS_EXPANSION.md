@@ -4,13 +4,15 @@ This document describes the expanded RecallForge benchmark corpus and what addit
 
 ## Summary
 
-- **Text documents**: 47 files (15 original + 32 new)
+- **Text documents**: 54 files (15 original + 39 new)
 - **Images**: 10 files (existing)
-- **Videos**: 5 files with transcripts (existing)
-- **Total corpus documents**: 74 registered in CORPUS_DOCS
-- **Total benchmark queries**: 128 queries across all modalities
+- **Videos**: 5 `.mp4` files plus 5 transcript JSON placeholders
+- **Documents**: 8 generated `.docx` / `.pptx` / `.pdf` files
+- **Total corpus documents**: 82 registered in `CORPUS_DOCS`
+- **Total indexed benchmark items**: 77 searchable items (the transcript JSON placeholders are empty and not indexed)
+- **Total benchmark queries**: 154 queries across all modalities
 
-## New Text Documents Added (32 files)
+## New Text Documents Added (39 files)
 
 ### Technology (5 files)
 - `tech_quantum_computing.md` - Quantum computing fundamentals
@@ -138,9 +140,17 @@ To further expand the corpus for more comprehensive cross-modal testing, the fol
 | text_to_text | 60 | 26 | 24 | 10 | 5 |
 | text_to_image | 18 | 8 | 8 | 2 | 0 |
 | image_to_text | 15 | 6 | 6 | 3 | 0 |
+| image_to_image | 3 | 1 | 2 | 0 | 1 |
+| image_to_video | 2 | 0 | 0 | 2 | 0 |
+| image_to_document | 2 | 0 | 0 | 2 | 0 |
+| video_to_text | 3 | 0 | 2 | 1 | 0 |
+| video_to_image | 2 | 0 | 1 | 1 | 0 |
+| video_to_video | 1 | 1 | 0 | 0 | 1 |
+| video_to_document | 1 | 0 | 0 | 1 | 0 |
 | mixed_modal | 20 | 8 | 8 | 4 | 0 |
-| text_to_document | 15 | 6 | 6 | 3 | 0 |
-| **Total** | **128** | **54** | **52** | **22** | **5** |
+| text_to_video | 15 | 6 | 6 | 3 | 0 |
+| text_to_document | 12 | 6 | 5 | 1 | 0 |
+| **Total** | **154** | **62** | **62** | **30** | **7** |
 
 ## New Metrics Added
 

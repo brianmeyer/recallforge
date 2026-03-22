@@ -131,6 +131,19 @@ class TestHybridSearcherInit(unittest.TestCase):
             searcher = HybridSearcher(backend=backend, storage=storage)
         self.assertEqual(searcher.rerank_top_k, 7)
 
+    def test_media_reranking_defaults_off(self):
+        backend = StubBackend()
+        storage = StubStorage()
+        searcher = HybridSearcher(backend=backend, storage=storage)
+        self.assertFalse(searcher.enable_media_reranking)
+
+    def test_media_reranking_reads_env_override(self):
+        backend = StubBackend()
+        storage = StubStorage()
+        with patch.dict(os.environ, {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "true"}):
+            searcher = HybridSearcher(backend=backend, storage=storage)
+        self.assertTrue(searcher.enable_media_reranking)
+
 
 class TestBM25Probe(unittest.TestCase):
     def test_bm25_probe_delegates_to_storage(self):
@@ -471,7 +484,7 @@ class TestFullSearchPipeline(unittest.TestCase):
 class TestImageQueryHybridPipeline(unittest.TestCase):
     """Image query path should use the same fusion/rerank pipeline as text."""
 
-    def test_search_image_runs_rrf_and_reranker(self):
+    def test_search_image_skips_reranker_by_default(self):
         backend = StubBackend(mode="hybrid")
         backend.rerank = MagicMock(return_value=[0.88, 0.66])
         vec_results = [
@@ -482,6 +495,23 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
         searcher = HybridSearcher(backend=backend, storage=storage, limit=2)
 
         results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(len(results), 2)
+        backend.rerank.assert_not_called()
+        self.assertEqual(results[0].source, "original_vec")
+        self.assertEqual(results[0].audit.reranker_scoring_path, "media_disabled")
+
+    def test_search_image_runs_rrf_and_reranker_when_opted_in(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.88, 0.66])
+        vec_results = [
+            _make_search_result("doc1.md", 0.9, "vec"),
+            _make_search_result("doc2.md", 0.8, "vec"),
+        ]
+        storage = StubStorage(fts_results=[], vec_results=vec_results)
+        with patch.dict(os.environ, {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"}):
+            searcher = HybridSearcher(backend=backend, storage=storage, limit=2)
+            results = searcher.search_image("/tmp/query.png")
 
         self.assertEqual(len(results), 2)
         backend.rerank.assert_called_once()
@@ -532,6 +562,24 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
         searcher._caption_video_query.assert_called_once_with("/tmp/query.mp4")
         self.assertEqual(len(results), 1)
         self.assertIn("original_fts", results[0].source)
+        backend.rerank.assert_not_called()
+
+    def test_text_query_with_media_candidates_skips_reranker_by_default(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.99])
+        candidate = _make_search_result(
+            "img.png",
+            0.9,
+            "vec",
+            content_type="image",
+        )
+        searcher = HybridSearcher(backend=backend, storage=StubStorage(), limit=1)
+
+        scores, path = searcher._rerank_candidates([candidate], query="diagram")
+
+        backend.rerank.assert_not_called()
+        self.assertEqual(scores, {"img.png": 0.5})
+        self.assertEqual(path, "media_disabled")
 
 
 class TestHybridQueryConvenience(unittest.TestCase):

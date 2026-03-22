@@ -229,6 +229,11 @@ class TestRerankerReceivesNonEmptyContent(unittest.TestCase):
     """Test that reranker receives non-empty content for media candidates."""
 
     def setUp(self):
+        self.env_patch = patch.dict(
+            os.environ,
+            {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"},
+        )
+        self.env_patch.start()
         self.backend = StubBackend(mode="hybrid")
         self.storage = StubStorage()
         self.searcher = HybridSearcher(
@@ -236,6 +241,9 @@ class TestRerankerReceivesNonEmptyContent(unittest.TestCase):
             storage=self.storage,
             rerank_top_k=10,
         )
+
+    def tearDown(self):
+        self.env_patch.stop()
 
     def test_reranker_receives_image_path_not_empty_text(self):
         """Reranker must receive image_path for image candidates, not empty string."""
@@ -324,6 +332,11 @@ class TestMixedModalityHandling(unittest.TestCase):
     """Test mixed-modality result sets (text + image + video)."""
 
     def setUp(self):
+        self.env_patch = patch.dict(
+            os.environ,
+            {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"},
+        )
+        self.env_patch.start()
         self.backend = StubBackend(mode="hybrid")
         self.storage = StubStorage()
         self.searcher = HybridSearcher(
@@ -331,6 +344,9 @@ class TestMixedModalityHandling(unittest.TestCase):
             storage=self.storage,
             rerank_top_k=10,
         )
+
+    def tearDown(self):
+        self.env_patch.stop()
 
     def test_mixed_modality_candidates_all_have_appropriate_paths(self):
         """Mixed text/image/video candidates should each have appropriate content."""
@@ -642,6 +658,11 @@ class TestCrossModalRegressionScenarios(unittest.TestCase):
     """Regression tests for specific cross-modal bugs."""
 
     def setUp(self):
+        self.env_patch = patch.dict(
+            os.environ,
+            {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"},
+        )
+        self.env_patch.start()
         self.backend = StubBackend(mode="hybrid")
         self.storage = StubStorage()
         self.searcher = HybridSearcher(
@@ -650,6 +671,9 @@ class TestCrossModalRegressionScenarios(unittest.TestCase):
             limit=10,
             rerank_top_k=10,
         )
+
+    def tearDown(self):
+        self.env_patch.stop()
 
     def test_rec111_empty_text_for_images_bug(self):
         """
