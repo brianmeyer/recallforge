@@ -18,7 +18,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .documents import is_document_file
 from .video import is_video_file
@@ -158,15 +158,19 @@ class WatchFolderDaemon:
             or self._is_document_file(path)
         )
 
-    def _build_snapshot(self, config: WatchConfig) -> Dict[str, float]:
+    def _build_snapshot(self, config: WatchConfig) -> Dict[str, Tuple[int, int, int]]:
         root = Path(config.folder_path).expanduser().resolve()
-        snap: Dict[str, float] = {}
+        snap: Dict[str, Tuple[int, int, int]] = {}
         for p in self._candidate_files(root, config.recursive):
             if not self._should_process(p, config):
                 continue
             try:
                 rel = p.resolve().relative_to(root).as_posix()
-                snap[rel] = p.stat().st_mtime
+                stat = p.stat()
+                # Some CI filesystems do not reliably advance mtime between fast
+                # successive writes, so include size in the snapshot to catch
+                # quick content changes during watch-folder polling.
+                snap[rel] = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
             except Exception:
                 logger.warning("Failed to get stats for %s", p)
                 continue
@@ -183,10 +187,10 @@ class WatchFolderDaemon:
             current = self._build_snapshot(config)
 
             # created/modified
-            for rel, mtime in current.items():
+            for rel, state in current.items():
                 if rel not in prev:
                     queue.put({"path": str(root / rel), "type": "created", "timestamp": time.time()})
-                elif mtime > prev[rel]:
+                elif state != prev[rel]:
                     queue.put({"path": str(root / rel), "type": "modified", "timestamp": time.time()})
 
             # deleted

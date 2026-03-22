@@ -52,6 +52,13 @@ class IndexingOps:
             return candidate
         return None
 
+    def _select_generation_backend(self, *embed_funcs):
+        """Pick the first backend/function that exposes generate_text()."""
+        for embed_func in embed_funcs:
+            if self._resolve_captioner(embed_func, "generate_text"):
+                return embed_func
+        return None
+
     def _describe_image(self, embed_func, image_path: str, enabled: bool) -> str:
         if not enabled:
             return ""
@@ -1034,6 +1041,7 @@ class IndexingOps:
         caption_media: bool = True,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        inherited_tags: Optional[List[str]] = None,
     ) -> str:
         """
         Index an image file.
@@ -1105,7 +1113,7 @@ class IndexingOps:
         image_tags = (
             self._generate_media_tags(embed_func, image_caption, "image")
             if caption_media and memory_role == "root"
-            else []
+            else list(inherited_tags or [])
         )
         self._backend.insert_embedding(
             content_hash=content_hash,
@@ -1201,8 +1209,9 @@ class IndexingOps:
         )
         parts = [part for part in (video_caption, transcript_summary) if part]
         video_body = "\n\n".join(parts)[:4000]
+        video_tag_backend = self._select_generation_backend(embed_video_func, embed_image_func)
         video_tags = (
-            self._generate_media_tags(embed_video_func or embed_image_func, video_body, "video")
+            self._generate_media_tags(video_tag_backend, video_body, "video")
             if caption_media
             else []
         )
@@ -1280,6 +1289,7 @@ class IndexingOps:
                 caption_media=caption_media,
                 memory_role="child",
                 memory_root_path=logical_path,
+                inherited_tags=video_tags or None,
             )
             indexed_frames += 1
 
@@ -1296,6 +1306,7 @@ class IndexingOps:
                 profile=profile,
                 memory_role="child",
                 memory_root_path=logical_path,
+                tags=video_tags or None,
             )
             indexed_transcripts += 1
 

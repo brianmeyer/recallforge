@@ -1343,6 +1343,7 @@ class TestIngestCaptioning(unittest.TestCase):
     def test_index_video_keeps_parent_memory_and_links_children(self):
         embedder = CaptioningEmbedder()
         logical_path = str(Path(self.video_path).expanduser().resolve())
+        expected_tags = ["technical explainer", "architecture diagram", "presentation"]
         fake_artifacts = SimpleNamespace(
             frames=[
                 SimpleNamespace(
@@ -1389,6 +1390,17 @@ class TestIngestCaptioning(unittest.TestCase):
             self.assertEqual(row.get("memory_id"), root_doc.memory_id)
             self.assertEqual(row.get("memory_role"), "child")
             self.assertEqual(row.get("memory_root_path"), logical_path)
+
+        child_embedding_rows = self.backend._embeddings_table.search().where(
+            f"collection = 'test' AND file_path LIKE '{logical_path}::%'"
+        ).to_list()
+        self.assertGreaterEqual(len(child_embedding_rows), 2)
+        for row in child_embedding_rows:
+            self.assertEqual(json.loads(row.get("tags") or "[]"), expected_tags)
+
+        memory = self.backend.get_memory(path=logical_path, collection="test")
+        self.assertIsNotNone(memory)
+        self.assertEqual(memory["tags"], expected_tags)
 
     def test_index_document_file_creates_root_memory_and_links_sections(self):
         document_path = os.path.join(self.temp_dir, "report.pdf")
