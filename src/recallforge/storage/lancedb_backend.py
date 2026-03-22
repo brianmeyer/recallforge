@@ -7,6 +7,7 @@ Provides vector search and full-text search (Tantivy).
 
 import fnmatch
 import hashlib
+import json
 import logging
 import math
 import os
@@ -1120,7 +1121,7 @@ class LanceDBBackend(StorageBackend):
             rows = list(
                 self._embeddings_table.search()
                 .where(" AND ".join(embed_filters))
-                .select(["file_path", "memory_root_path", "text_body", "pos", "seq", "memory_role"])
+                .select(["file_path", "memory_root_path", "text_body", "pos", "seq", "memory_role", "tags"])
                 .limit(max(100, min(5000, len(unique_root_paths) * 40)))
                 .to_list()
             )
@@ -1134,6 +1135,53 @@ class LanceDBBackend(StorageBackend):
                 continue
             grouped.setdefault(key, []).append(row)
         return grouped
+
+    def _derive_memory_tags(
+        self,
+        snippet_rows: List[Dict[str, Any]],
+    ) -> Optional[List[str]]:
+        """Build a compact deduplicated tag set from stored embedding metadata."""
+        if not snippet_rows:
+            return None
+
+        ordered_rows = sorted(
+            snippet_rows,
+            key=lambda row: (
+                0 if (row.get("memory_role") or "child") == "root" else 1,
+                row.get("pos", 0) or 0,
+                row.get("seq", 0) or 0,
+                row.get("file_path", ""),
+            ),
+        )
+
+        tags: List[str] = []
+        seen: set[str] = set()
+        for row in ordered_rows:
+            raw_tags = row.get("tags")
+            parsed: List[str] = []
+            if isinstance(raw_tags, list):
+                parsed = [str(tag).strip().lower() for tag in raw_tags if str(tag).strip()]
+            elif isinstance(raw_tags, str) and raw_tags.strip():
+                try:
+                    payload = json.loads(raw_tags)
+                    if isinstance(payload, list):
+                        parsed = [str(tag).strip().lower() for tag in payload if str(tag).strip()]
+                except json.JSONDecodeError:
+                    parsed = [
+                        part.strip().lower()
+                        for part in raw_tags.split(",")
+                        if part.strip()
+                    ]
+
+            for tag in parsed:
+                if tag in seen:
+                    continue
+                seen.add(tag)
+                tags.append(tag)
+                if len(tags) >= 8:
+                    return tags
+
+        return tags or None
 
     def _derive_memory_summary(
         self,
@@ -1330,6 +1378,9 @@ class LanceDBBackend(StorageBackend):
                         row,
                         summary_rows_by_root.get(root_path, []),
                     ),
+                    "tags": self._derive_memory_tags(
+                        summary_rows_by_root.get(root_path, []),
+                    ),
                 }
             )
         return output
@@ -1412,7 +1463,7 @@ class LanceDBBackend(StorageBackend):
             snippet_rows = list(
                 self._embeddings_table.search()
                 .where(" AND ".join(embed_filters))
-                .select(["file_path", "content_type", "text_body", "pos", "seq", "memory_role"])
+                .select(["file_path", "content_type", "text_body", "pos", "seq", "memory_role", "tags"])
                 .limit(20)
                 .to_list()
             )
@@ -1463,6 +1514,7 @@ class LanceDBBackend(StorageBackend):
             "project_id": root_row.get("project_id"),
             "profile": root_row.get("profile"),
             "summary": summary,
+            "tags": self._derive_memory_tags(snippet_rows),
             "root_document": {
                 "path": root_row.get("file_path"),
                 "content_hash": root_row.get("content_hash"),

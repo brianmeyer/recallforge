@@ -937,6 +937,7 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
                 "memory_role": getattr(r, "memory_role", "root"),
                 "memory_root_path": getattr(r, "memory_root_path", None),
                 "memory_hit_count": getattr(r, "memory_hit_count", 1),
+                "tags": getattr(r, "tags", None),
             }
             for r in results
         ],
@@ -1007,6 +1008,7 @@ async def _handle_explain_results(arguments: dict, backend, storage) -> list[Tex
             "memory_role": getattr(r, "memory_role", "root"),
             "memory_root_path": getattr(r, "memory_root_path", None),
             "memory_hit_count": getattr(r, "memory_hit_count", 1),
+            "tags": getattr(r, "tags", None),
         }
         
         if r.audit:
@@ -1098,6 +1100,7 @@ async def _handle_search_fts(arguments: dict, storage) -> list[TextContent]:
                 "session_id": r.session_id,
                 "project_id": r.project_id,
                 "profile": r.profile,
+                "tags": getattr(r, "tags", None),
             }
             for r in results
         ],
@@ -1168,6 +1171,7 @@ async def _handle_search_vec(arguments: dict, backend, storage) -> list[TextCont
                 "session_id": r.session_id,
                 "project_id": r.project_id,
                 "profile": r.profile,
+                "tags": getattr(r, "tags", None),
             }
             for r in results
         ],
@@ -1253,6 +1257,7 @@ async def _handle_search_batch(arguments: dict, backend, storage) -> list[TextCo
                 "session_id": getattr(r, "session_id", None),
                 "project_id": getattr(r, "project_id", None),
                 "profile": getattr(r, "profile", None),
+                "tags": getattr(r, "tags", None),
             }
             for r in results
         ],

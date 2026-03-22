@@ -7,6 +7,7 @@ Uses a deterministic mock embed_func — NO real model inference.
 """
 
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -1212,6 +1213,14 @@ class CaptioningEmbedder:
         frame_count = len(frame_paths or [])
         return f"Technical explainer video with {frame_count} keyframes showing diagrams."
 
+    def generate_text(self, prompt: str, max_tokens: int = 60) -> str:
+        prompt_lower = prompt.lower()
+        if "image memory" in prompt_lower:
+            return '["neural network", "diagram", "hidden layers"]'
+        if "video memory" in prompt_lower:
+            return '["technical explainer", "architecture diagram", "presentation"]'
+        return "[]"
+
 
 class FailingCaptioningEmbedder(CaptioningEmbedder):
     def caption_image(self, path: str) -> str:
@@ -1255,6 +1264,10 @@ class TestIngestCaptioning(unittest.TestCase):
         rows = self.backend._embeddings_table.search().where("content_type = 'image'").to_list()
         self.assertEqual(len(rows), 1)
         self.assertIn("Neural network diagram", rows[0].get("text_body") or "")
+        self.assertEqual(
+            json.loads(rows[0].get("tags") or "[]"),
+            ["neural network", "diagram", "hidden layers"],
+        )
 
     def test_index_image_caption_failure_keeps_embedding(self):
         embedder = FailingCaptioningEmbedder()
@@ -1299,6 +1312,33 @@ class TestIngestCaptioning(unittest.TestCase):
         video_rows = self.backend._embeddings_table.search().where("content_type = 'video'").to_list()
         self.assertEqual(len(video_rows), 1)
         self.assertIn("Technical explainer video", video_rows[0].get("text_body") or "")
+        self.assertEqual(
+            json.loads(video_rows[0].get("tags") or "[]"),
+            ["technical explainer", "architecture diagram", "presentation"],
+        )
+
+    def test_memory_lookup_surfaces_media_tags(self):
+        embedder = CaptioningEmbedder()
+        self.backend.index_image(
+            path=self.image_path,
+            collection="test",
+            embed_func=embedder,
+            caption_media=True,
+        )
+
+        memories = self.backend.list_memories(collection="test", limit=10)
+        self.assertEqual(len(memories), 1)
+        self.assertEqual(
+            memories[0]["tags"],
+            ["neural network", "diagram", "hidden layers"],
+        )
+
+        memory = self.backend.get_memory(path=str(Path(self.image_path).expanduser().resolve()), collection="test")
+        self.assertIsNotNone(memory)
+        self.assertEqual(
+            memory["tags"],
+            ["neural network", "diagram", "hidden layers"],
+        )
 
     def test_index_video_keeps_parent_memory_and_links_children(self):
         embedder = CaptioningEmbedder()

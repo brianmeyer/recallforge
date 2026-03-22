@@ -1,5 +1,6 @@
 """Search operations service for LanceDB storage backend."""
 
+import json
 import math
 import re
 import time
@@ -55,7 +56,7 @@ class SearchOps:
                 .select(["collection", "file_path", "content_hash", "content_type", "title",
                          "text_body", "embedded_at", "modified_at", "user_id", "session_id",
                          "project_id", "profile", "memory_id", "memory_role",
-                         "memory_root_path", "expires_at"])
+                         "memory_root_path", "tags", "expires_at"])
                 .limit(row_limit)
             )
             rows = builder.to_pandas()
@@ -280,6 +281,24 @@ class SearchOps:
             # Fallback only when text_body is empty - lazy load for final output
             body = self._backend.get_content(content_hash) or ""
 
+        raw_tags = row.get("tags")
+        decoded_tags: Optional[List[str]] = None
+        if isinstance(raw_tags, list):
+            decoded_tags = [str(tag).strip().lower() for tag in raw_tags if str(tag).strip()]
+        elif isinstance(raw_tags, str) and raw_tags.strip():
+            try:
+                payload = json.loads(raw_tags)
+                if isinstance(payload, list):
+                    decoded_tags = [str(tag).strip().lower() for tag in payload if str(tag).strip()]
+            except json.JSONDecodeError:
+                decoded_tags = [
+                    part.strip().lower()
+                    for part in raw_tags.split(",")
+                    if part.strip()
+                ]
+        if decoded_tags == []:
+            decoded_tags = None
+
         return SearchResult(
             filepath=f"recallforge://{collection}/{file_path}",
             display_path=f"{collection}/{file_path}",
@@ -302,6 +321,7 @@ class SearchOps:
             memory_id=memory_id,
             memory_role=memory_role,
             memory_root_path=memory_root_path,
+            tags=decoded_tags,
         )
 
     def _get_ttl_filter(self) -> str:

@@ -27,7 +27,7 @@ from recallforge.backends.base import ModelBackend, BackendInfo
 # ---------------------------------------------------------------------------
 
 def _make_search_result(filepath: str, score: float = 0.9, source: str = "fts",
-                         content_type: str = "text") -> SearchResult:
+                         content_type: str = "text", tags: Optional[List[str]] = None) -> SearchResult:
     return SearchResult(
         filepath=filepath,
         display_path=filepath,
@@ -43,6 +43,7 @@ def _make_search_result(filepath: str, score: float = 0.9, source: str = "fts",
         content_type=content_type,
         chunk_pos=0,
         body=f"Content of {filepath}",
+        tags=tags,
     )
 
 
@@ -436,6 +437,25 @@ class TestBlendScores(unittest.TestCase):
         self.assertIsNotNone(result.audit)
         self.assertAlmostEqual(result.audit.memory_rollup_boost, 1.0)
         self.assertAlmostEqual(result.score, result.audit.final_blended_score)
+
+    def test_memory_rollup_merges_tags_from_sibling_assets(self):
+        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage(), limit=12)
+
+        root = _make_search_result("memory_root.png", 0.9, "vec", "image", tags=["diagram"])
+        child = _make_search_result(
+            "memory_child.txt",
+            0.8,
+            "fts",
+            "text",
+            tags=["meeting notes", "diagram"],
+        )
+        root.memory_id = "memory-tags"
+        child.memory_id = "memory-tags"
+
+        rolled = searcher._roll_up_memory_hits(searcher._vector_results_to_hybrid([root, child]))
+
+        self.assertEqual(len(rolled), 1)
+        self.assertEqual(rolled[0].tags, ["diagram", "meeting notes"])
 
 
 class TestParallelSearchTaskCapture(unittest.TestCase):

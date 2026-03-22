@@ -39,6 +39,7 @@ class SearchResult:
     memory_id: Optional[str] = None
     memory_role: str = "root"
     memory_root_path: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 
 @dataclass

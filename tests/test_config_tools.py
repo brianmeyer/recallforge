@@ -557,6 +557,7 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         result_item.memory_role = "root"
         result_item.memory_root_path = None
         result_item.memory_hit_count = 1
+        result_item.tags = ["memory query", "markdown"]
 
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tmp:
             tmp.write("memory query from file path")
@@ -571,6 +572,7 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
 
             data = json.loads(result[0].text)
             self.assertEqual(data["file_path"], file_path)
+            self.assertEqual(data["results"][0]["tags"], ["memory query", "markdown"])
             mock_searcher.search.assert_called_once()
             self.assertIn("memory query from file path", mock_searcher.search.call_args[0][0])
         finally:
