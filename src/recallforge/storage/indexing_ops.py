@@ -2,8 +2,10 @@
 
 import fnmatch
 import hashlib
+import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -50,6 +52,13 @@ class IndexingOps:
             return candidate
         return None
 
+    def _select_generation_backend(self, *embed_funcs):
+        """Pick the first backend/function that exposes generate_text()."""
+        for embed_func in embed_funcs:
+            if self._resolve_captioner(embed_func, "generate_text"):
+                return embed_func
+        return None
+
     def _describe_image(self, embed_func, image_path: str, enabled: bool) -> str:
         if not enabled:
             return ""
@@ -89,6 +98,98 @@ class IndexingOps:
             return " ".join(parts).strip()
 
         return ""
+
+    def _normalize_media_tags(self, raw_tags: List[str], *, max_tags: int = 8) -> List[str]:
+        """Normalize generated tag strings into a compact canonical tag list."""
+        normalized: List[str] = []
+        seen: set[str] = set()
+        stop_tags = {"image", "images", "video", "videos", "photo", "picture", "frame", "scene", "clip"}
+
+        for raw in raw_tags:
+            tag = re.sub(r"\s+", " ", str(raw or "").strip().lower())
+            tag = tag.strip("\"'` ")
+            tag = re.sub(r"^\s*(?:[-*•]\s*|\d+[\.\)]\s*)", "", tag)
+            tag = re.sub(r"^[#\s]+", "", tag)
+            tag = tag.replace("_", " ").strip()
+            tag = re.sub(r"[;:,.]+$", "", tag).strip()
+            if not tag or tag in stop_tags:
+                continue
+            if len(tag) > 48:
+                truncated = tag[:48].rsplit(" ", 1)[0].strip()
+                tag = truncated or tag[:48].strip()
+            if not tag or tag in seen:
+                continue
+            seen.add(tag)
+            normalized.append(tag)
+            if len(normalized) >= max_tags:
+                break
+
+        return normalized
+
+    def _parse_generated_media_tags(self, raw: str) -> List[str]:
+        """Parse tag generation output from JSON, newline, or comma-separated text."""
+        text = str(raw or "").strip()
+        if not text:
+            return []
+
+        candidates: List[str] = []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                payload = json.loads(text)
+                if isinstance(payload, list):
+                    candidates.extend(str(item) for item in payload)
+            except json.JSONDecodeError:
+                pass
+        elif text.startswith("{") and text.endswith("}"):
+            try:
+                payload = json.loads(text)
+                if isinstance(payload, dict) and isinstance(payload.get("tags"), list):
+                    candidates.extend(str(item) for item in payload["tags"])
+            except json.JSONDecodeError:
+                pass
+
+        if not candidates:
+            for line in (line.strip() for line in text.splitlines() if line.strip()):
+                lowered = line.lower()
+                if lowered.startswith("tags:"):
+                    line = line.split(":", 1)[1]
+                if "," in line:
+                    candidates.extend(part.strip() for part in line.split(",") if part.strip())
+                else:
+                    candidates.append(line)
+
+        return self._normalize_media_tags(candidates)
+
+    def _generate_media_tags(self, embed_func, source_text: str, media_kind: str) -> List[str]:
+        """Generate a normalized tag set using the lightweight text generator."""
+        source = re.sub(r"\s+", " ", str(source_text or "").strip())
+        if not source:
+            return []
+
+        generator = self._resolve_captioner(embed_func, "generate_text")
+        if not generator:
+            return []
+
+        prompt = (
+            f"Generate 3 to 8 retrieval-friendly tags for this {media_kind} memory.\n"
+            "Rules:\n"
+            "- Return only a JSON array of strings\n"
+            "- Use lowercase short noun phrases\n"
+            "- Avoid duplicates\n"
+            "- Avoid speculation or uncertain details\n"
+            "- No full sentences\n\n"
+            f"Description:\n{source[:1200]}"
+        )
+        try:
+            raw = generator(prompt, max_tokens=96) or ""
+        except Exception as exc:
+            logger.warning("index_%s: tag generation failed: %s", media_kind, exc)
+            return []
+
+        tags = self._parse_generated_media_tags(raw)
+        if not tags:
+            logger.debug("index_%s: tag generation returned no usable tags", media_kind)
+        return tags
 
     def index_document(
         self,
@@ -940,6 +1041,7 @@ class IndexingOps:
         caption_media: bool = True,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        inherited_tags: Optional[List[str]] = None,
     ) -> str:
         """
         Index an image file.
@@ -1008,6 +1110,11 @@ class IndexingOps:
 
         vector = embed_func(actual_path)
         image_caption = self._describe_image(embed_func, actual_path, enabled=caption_media)
+        image_tags = (
+            self._generate_media_tags(embed_func, image_caption, "image")
+            if caption_media and memory_role == "root"
+            else list(inherited_tags or [])
+        )
         self._backend.insert_embedding(
             content_hash=content_hash,
             seq=0,
@@ -1025,6 +1132,7 @@ class IndexingOps:
             profile=profile,
             memory_role=memory_role,
             memory_root_path=memory_root_path,
+            tags=image_tags or None,
         )
 
         # Schedule debounced FTS rebuild
@@ -1101,6 +1209,12 @@ class IndexingOps:
         )
         parts = [part for part in (video_caption, transcript_summary) if part]
         video_body = "\n\n".join(parts)[:4000]
+        video_tag_backend = self._select_generation_backend(embed_video_func, embed_image_func)
+        video_tags = (
+            self._generate_media_tags(video_tag_backend, video_body, "video")
+            if caption_media
+            else []
+        )
 
         try:
             modified_at = int(os.path.getmtime(actual_path) * 1000)
@@ -1147,6 +1261,7 @@ class IndexingOps:
                 profile=profile,
                 memory_role="root",
                 memory_root_path=logical_path,
+                tags=video_tags or None,
             )
             indexed_video_embeddings = 1
         except Exception as e:
@@ -1174,6 +1289,7 @@ class IndexingOps:
                 caption_media=caption_media,
                 memory_role="child",
                 memory_root_path=logical_path,
+                inherited_tags=video_tags or None,
             )
             indexed_frames += 1
 
@@ -1190,6 +1306,7 @@ class IndexingOps:
                 profile=profile,
                 memory_role="child",
                 memory_root_path=logical_path,
+                tags=video_tags or None,
             )
             indexed_transcripts += 1
 

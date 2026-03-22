@@ -157,6 +157,7 @@ class HybridResult:
     memory_role: str = "root"
     memory_root_path: Optional[str] = None
     memory_hit_count: int = 1
+    tags: Optional[List[str]] = None
     audit: Optional[SearchAudit] = None  # Per-result audit trail
 
 
@@ -494,6 +495,7 @@ class HybridSearcher:
                 memory_id=getattr(result, "memory_id", None),
                 memory_role=getattr(result, "memory_role", "root"),
                 memory_root_path=getattr(result, "memory_root_path", None),
+                tags=getattr(result, "tags", None),
             ))
         return hybrid_results
 
@@ -1178,6 +1180,7 @@ class HybridSearcher:
                 memory_id=getattr(result, "memory_id", None),
                 memory_role=getattr(result, "memory_role", "root"),
                 memory_root_path=getattr(result, "memory_root_path", None),
+                tags=getattr(result, "tags", None),
                 audit=audit,
             ))
 
@@ -1210,6 +1213,20 @@ class HybridSearcher:
         if not results:
             return []
 
+        def _merge_tags(items: List[HybridResult]) -> Optional[List[str]]:
+            merged: List[str] = []
+            seen: set[str] = set()
+            for item in items:
+                for tag in getattr(item, "tags", None) or []:
+                    cleaned = str(tag or "").strip().lower()
+                    if not cleaned or cleaned in seen:
+                        continue
+                    seen.add(cleaned)
+                    merged.append(cleaned)
+                    if len(merged) >= 8:
+                        return merged
+            return merged or None
+
         grouped: Dict[str, List[HybridResult]] = {}
         order: List[str] = []
         for result in results:
@@ -1224,6 +1241,7 @@ class HybridSearcher:
             group = sorted(grouped[key], key=lambda item: item.score, reverse=True)
             representative = group[0]
             representative.memory_hit_count = len(group)
+            representative.tags = _merge_tags(group)
             memory_rollup_boost = 1.0
             if len(group) > 1:
                 memory_rollup_boost += min(0.15, 0.03 * (len(group) - 1))
@@ -1461,6 +1479,7 @@ class BatchSearchResult:
     score: float  # Best score across queries
     source: str  # Comma-separated list of query indices that found this result
     query_scores: Dict[int, float]  # Map of query_index -> score
+    tags: Optional[List[str]] = None
 
 
 def search_batch(
@@ -1593,6 +1612,7 @@ def search_batch(
             score=data['rrf_score'],
             source=','.join(str(i) for i in sorted(data['query_indices'])),
             query_scores=data['query_scores'],
+            tags=getattr(result, "tags", None),
         ))
 
     final_results.sort(key=lambda x: x.score, reverse=True)
