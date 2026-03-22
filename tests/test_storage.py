@@ -12,6 +12,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional
 from unittest.mock import patch
@@ -334,6 +335,27 @@ class TestInlineMemoryOperations(unittest.TestCase):
         )
 
         self.assertTrue(any(isinstance(call, list) for call in embedder.calls))
+
+    def test_upsert_memory_populates_memory_identity(self):
+        self.backend.upsert_memory(
+            path="notes/identity.md",
+            text="Memory identity test content " + ("z" * 600),
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        doc = self.backend.find_document("test", "notes/identity.md")
+        self.assertIsNotNone(doc)
+        self.assertIsNotNone(doc.memory_id)
+        self.assertEqual(doc.memory_role, "root")
+        self.assertEqual(doc.memory_root_path, "notes/identity.md")
+
+        results = self.backend.search_fts("identity", limit=5, collection="test")
+        self.assertGreaterEqual(len(results), 1)
+        self.assertEqual(results[0].memory_id, doc.memory_id)
+        self.assertEqual(results[0].memory_role, "root")
+        self.assertEqual(results[0].memory_root_path, "notes/identity.md")
 
     def test_upsert_memory_skip_delete_still_prevents_stale_duplicates(self):
         self.backend.upsert_memory(
@@ -1208,6 +1230,97 @@ class TestIngestCaptioning(unittest.TestCase):
         video_rows = self.backend._embeddings_table.search().where("content_type = 'video'").to_list()
         self.assertEqual(len(video_rows), 1)
         self.assertIn("Technical explainer video", video_rows[0].get("text_body") or "")
+
+    def test_index_video_keeps_parent_memory_and_links_children(self):
+        embedder = CaptioningEmbedder()
+        logical_path = str(Path(self.video_path).expanduser().resolve())
+        fake_artifacts = SimpleNamespace(
+            frames=[
+                SimpleNamespace(
+                    image_path=self.frame_path,
+                    logical_path=f"{logical_path}::frame:0001@0.00s",
+                    title="frame 1",
+                    timestamp_seconds=0.0,
+                )
+            ],
+            transcripts=[
+                SimpleNamespace(
+                    logical_path=f"{logical_path}::transcript:0001",
+                    text="The presenter explains the architecture diagram.",
+                )
+            ],
+            duration_seconds=4.2,
+            transcript_path=None,
+            ffmpeg_available=True,
+        )
+
+        def failing_video_embed(_path: str):
+            raise RuntimeError("video embed failed")
+
+        with patch("recallforge.storage.indexing_ops.extract_video_artifacts", return_value=fake_artifacts):
+            self.backend.index_video(
+                path=self.video_path,
+                collection="test",
+                embed_text_func=mock_embed,
+                embed_image_func=embedder,
+                embed_video_func=failing_video_embed,
+                caption_media=True,
+            )
+
+        root_doc = self.backend.find_document("test", logical_path)
+        self.assertIsNotNone(root_doc)
+        self.assertEqual(root_doc.memory_role, "root")
+        self.assertEqual(root_doc.memory_root_path, logical_path)
+
+        child_rows = self.backend._documents_table.search().where(
+            f"collection = 'test' AND file_path LIKE '{logical_path}::%'"
+        ).to_list()
+        self.assertGreaterEqual(len(child_rows), 2)
+        for row in child_rows:
+            self.assertEqual(row.get("memory_id"), root_doc.memory_id)
+            self.assertEqual(row.get("memory_role"), "child")
+            self.assertEqual(row.get("memory_root_path"), logical_path)
+
+    def test_index_document_file_creates_root_memory_and_links_sections(self):
+        document_path = os.path.join(self.temp_dir, "report.pdf")
+        logical_path = str(Path(document_path).expanduser().resolve())
+        with open(document_path, "wb") as f:
+            f.write(b"%PDF-1.4 mock")
+
+        fake_artifacts = SimpleNamespace(
+            document_type="pdf",
+            extractor="unit-test",
+            sections=[
+                SimpleNamespace(
+                    logical_path=f"{logical_path}::section:0001",
+                    title="report section 1",
+                    text="Budget and launch notes for the memory product.",
+                    section_type="section",
+                    index=1,
+                    content_type="text",
+                    image_path=None,
+                )
+            ],
+        )
+
+        with patch("recallforge.storage.indexing_ops.extract_document_artifacts", return_value=fake_artifacts):
+            self.backend.index_document_file(
+                path=document_path,
+                collection="test",
+                embed_func=mock_embed,
+                model="mock-embedder",
+            )
+
+        root_doc = self.backend.find_document("test", logical_path)
+        self.assertIsNotNone(root_doc)
+        self.assertEqual(root_doc.memory_role, "root")
+        self.assertEqual(root_doc.memory_root_path, logical_path)
+
+        child_doc = self.backend.find_document("test", f"{logical_path}::section:0001")
+        self.assertIsNotNone(child_doc)
+        self.assertEqual(child_doc.memory_id, root_doc.memory_id)
+        self.assertEqual(child_doc.memory_role, "child")
+        self.assertEqual(child_doc.memory_root_path, logical_path)
 
     def test_ingest_caption_media_disabled_skips_image_caption(self):
         embedder = CaptioningEmbedder()

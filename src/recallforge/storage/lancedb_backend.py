@@ -43,12 +43,14 @@ from .lancedb_shared import (
     _SQL_METACHARACTERS,
     _safe_filter,
     _validate_identifier,
+    build_memory_id,
     escape_sql,
     extract_title,
     get_docid,
     hash_content,
     hash_file_bytes,
     logger,
+    resolve_memory_identity,
     trace_log,
 )
 from .fts_manager import FTSManager
@@ -302,6 +304,9 @@ class LanceDBBackend(StorageBackend):
             pa.field("session_id", pa.string(), nullable=True),
             pa.field("project_id", pa.string(), nullable=True),
             pa.field("profile", pa.string(), nullable=True),
+            pa.field("memory_id", pa.string(), nullable=True),
+            pa.field("memory_role", pa.string(), nullable=True),
+            pa.field("memory_root_path", pa.string(), nullable=True),
             # Metadata fields for Phase 2
             pa.field("importance", pa.float32(), nullable=True),
             pa.field("ttl_seconds", pa.int32(), nullable=True),
@@ -326,6 +331,9 @@ class LanceDBBackend(StorageBackend):
             pa.field("session_id", pa.string(), nullable=True),
             pa.field("project_id", pa.string(), nullable=True),
             pa.field("profile", pa.string(), nullable=True),
+            pa.field("memory_id", pa.string(), nullable=True),
+            pa.field("memory_role", pa.string(), nullable=True),
+            pa.field("memory_root_path", pa.string(), nullable=True),
         ])
     
     def _build_content_schema(self) -> pa.Schema:
@@ -375,6 +383,9 @@ class LanceDBBackend(StorageBackend):
             self._create_scalar_index_safe(
                 self._documents_table, "content_hash", "content_hash_scalar", "documents"
             )
+            self._create_scalar_index_safe(
+                self._documents_table, "memory_id", "memory_id_scalar", "documents"
+            )
         except Exception as e:
             logger.warning(f"_ensure_indices: failed to create document indices: {e}")
 
@@ -384,6 +395,13 @@ class LanceDBBackend(StorageBackend):
             )
         except Exception as e:
             logger.warning(f"_ensure_indices: failed to create content index: {e}")
+
+        try:
+            self._create_scalar_index_safe(
+                self._embeddings_table, "memory_id", "memory_id_scalar", "embeddings"
+            )
+        except Exception as e:
+            logger.warning(f"_ensure_indices: failed to create embedding memory index: {e}")
 
         try:
             self._create_scalar_index_safe(
@@ -459,12 +477,26 @@ class LanceDBBackend(StorageBackend):
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
-        profile: Optional[str] = None
+        profile: Optional[str] = None,
+        memory_id: Optional[str] = None,
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
     ) -> str:
         """Insert or update a document."""
         now = int(time.time() * 1000)
         created_ts = created_at or now
         modified_ts = modified_at or now
+        normalized_memory_id, normalized_memory_role, normalized_memory_root_path = resolve_memory_identity(
+            collection=collection,
+            file_path=file_path,
+            memory_id=memory_id,
+            memory_role=memory_role,
+            memory_root_path=memory_root_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
 
         # Build namespace filter for finding existing
         ns_filter = f"{_safe_filter('collection', collection)} AND {_safe_filter('file_path', file_path)}"
@@ -521,6 +553,9 @@ class LanceDBBackend(StorageBackend):
             "session_id": session_id,
             "project_id": project_id,
             "profile": profile,
+            "memory_id": normalized_memory_id,
+            "memory_role": normalized_memory_role,
+            "memory_root_path": normalized_memory_root_path,
         }
 
         if self._bulk_mode:
@@ -544,6 +579,17 @@ class LanceDBBackend(StorageBackend):
                 return None
             
             r = rows[0]
+            memory_id, memory_role, memory_root_path = resolve_memory_identity(
+                collection=r["collection"],
+                file_path=r["file_path"],
+                memory_id=r.get("memory_id"),
+                memory_role=r.get("memory_role"),
+                memory_root_path=r.get("memory_root_path"),
+                user_id=r.get("user_id"),
+                session_id=r.get("session_id"),
+                project_id=r.get("project_id"),
+                profile=r.get("profile"),
+            )
             return Document(
                 id=r["id"],
                 collection=r["collection"],
@@ -554,6 +600,13 @@ class LanceDBBackend(StorageBackend):
                 active=bool(r["active"]),
                 created_at=r["created_at"],
                 updated_at=r["updated_at"],
+                user_id=r.get("user_id"),
+                session_id=r.get("session_id"),
+                project_id=r.get("project_id"),
+                profile=r.get("profile"),
+                memory_id=memory_id,
+                memory_role=memory_role,
+                memory_root_path=memory_root_path,
             )
         except Exception as e:
             logger.warning(f"find_document: failed to find {collection}/{file_path}: {e}")
@@ -633,6 +686,9 @@ class LanceDBBackend(StorageBackend):
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        memory_id: Optional[str] = None,
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
         importance: Optional[float] = None,
         ttl_seconds: Optional[int] = None,
         tags: Optional[List[str]] = None,
@@ -640,6 +696,17 @@ class LanceDBBackend(StorageBackend):
         """Insert an embedding with optional metadata."""
         hash_seq = f"{content_hash}_{seq}"
         now = int(time.time() * 1000)
+        normalized_memory_id, normalized_memory_role, normalized_memory_root_path = resolve_memory_identity(
+            collection=collection,
+            file_path=file_path,
+            memory_id=memory_id,
+            memory_role=memory_role,
+            memory_root_path=memory_root_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
 
         # Calculate expiration timestamp if TTL is set
         expires_at = None
@@ -684,6 +751,9 @@ class LanceDBBackend(StorageBackend):
             "session_id": session_id,
             "project_id": project_id,
             "profile": profile,
+            "memory_id": normalized_memory_id,
+            "memory_role": normalized_memory_role,
+            "memory_root_path": normalized_memory_root_path,
             "importance": importance,
             "ttl_seconds": ttl_seconds,
             "tags": tags_json,
@@ -969,6 +1039,181 @@ class LanceDBBackend(StorageBackend):
             from .search_ops import SearchOps
             self._search = SearchOps(self)
         return self._search._make_search_result(row, score, source)
+
+    def list_memories(
+        self,
+        *,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """List canonical root memories from the documents table."""
+        filters = ["active = 1", "(memory_role IS NULL OR memory_role = 'root')"]
+        if collection:
+            filters.append(_safe_filter("collection", collection))
+        if user_id is not None:
+            filters.append(_safe_filter("user_id", user_id))
+        if session_id is not None:
+            filters.append(_safe_filter("session_id", session_id))
+        if project_id is not None:
+            filters.append(_safe_filter("project_id", project_id))
+        if profile is not None:
+            filters.append(_safe_filter("profile", profile))
+
+        rows = list(
+            self._documents_table.search()
+            .where(" AND ".join(filters))
+            .limit(max(1, limit))
+            .to_list()
+        )
+        rows.sort(key=lambda row: row.get("updated_at", 0), reverse=True)
+        output: List[Dict[str, Any]] = []
+        for row in rows:
+            root_path = row.get("memory_root_path") or row.get("file_path")
+            output.append(
+                {
+                    "memory_id": row.get("memory_id")
+                    or build_memory_id(
+                        row.get("collection", ""),
+                        root_path,
+                        user_id=row.get("user_id"),
+                        session_id=row.get("session_id"),
+                        project_id=row.get("project_id"),
+                        profile=row.get("profile"),
+                    ),
+                    "collection": row.get("collection"),
+                    "path": root_path,
+                    "title": row.get("title") or root_path,
+                    "content_type": row.get("content_type", "text"),
+                    "updated_at": row.get("updated_at"),
+                    "user_id": row.get("user_id"),
+                    "session_id": row.get("session_id"),
+                    "project_id": row.get("project_id"),
+                    "profile": row.get("profile"),
+                }
+            )
+        return output
+
+    def get_memory(
+        self,
+        memory_id: str,
+        *,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a canonical memory plus child assets and snippets."""
+        filters = ["active = 1", _safe_filter("memory_id", memory_id)]
+        if collection:
+            filters.append(_safe_filter("collection", collection))
+        if user_id is not None:
+            filters.append(_safe_filter("user_id", user_id))
+        if session_id is not None:
+            filters.append(_safe_filter("session_id", session_id))
+        if project_id is not None:
+            filters.append(_safe_filter("project_id", project_id))
+        if profile is not None:
+            filters.append(_safe_filter("profile", profile))
+
+        document_rows = list(
+            self._documents_table.search()
+            .where(" AND ".join(filters))
+            .limit(10_000)
+            .to_list()
+        )
+        if not document_rows:
+            return None
+
+        document_rows.sort(
+            key=lambda row: (
+                0 if (row.get("memory_role") or "root") == "root" else 1,
+                row.get("file_path", ""),
+            )
+        )
+        root_row = next(
+            (row for row in document_rows if (row.get("memory_role") or "root") == "root"),
+            document_rows[0],
+        )
+        root_path = root_row.get("memory_root_path") or root_row.get("file_path")
+
+        embed_filters = [_safe_filter("memory_id", memory_id)]
+        if collection:
+            embed_filters.append(_safe_filter("collection", collection))
+        if user_id is not None:
+            embed_filters.append(_safe_filter("user_id", user_id))
+        if session_id is not None:
+            embed_filters.append(_safe_filter("session_id", session_id))
+        if project_id is not None:
+            embed_filters.append(_safe_filter("project_id", project_id))
+        if profile is not None:
+            embed_filters.append(_safe_filter("profile", profile))
+
+        try:
+            snippet_rows = list(
+                self._embeddings_table.search()
+                .where(" AND ".join(embed_filters))
+                .select(["file_path", "content_type", "text_body", "pos", "seq", "memory_role"])
+                .limit(20)
+                .to_list()
+            )
+        except Exception:
+            snippet_rows = []
+
+        children = []
+        for row in document_rows:
+            row_role = row.get("memory_role") or "root"
+            if row_role == "root" and row.get("file_path") == root_path:
+                continue
+            children.append(
+                {
+                    "path": row.get("file_path"),
+                    "title": row.get("title") or row.get("file_path"),
+                    "content_type": row.get("content_type", "text"),
+                    "memory_role": row_role,
+                }
+            )
+
+        snippets = []
+        for row in snippet_rows:
+            text_body = (row.get("text_body") or "").strip()
+            if not text_body:
+                continue
+            snippets.append(
+                {
+                    "path": row.get("file_path"),
+                    "content_type": row.get("content_type", "text"),
+                    "memory_role": row.get("memory_role") or "child",
+                    "text": text_body[:500],
+                    "pos": row.get("pos", 0) or 0,
+                    "seq": row.get("seq", 0) or 0,
+                }
+            )
+
+        return {
+            "memory_id": memory_id,
+            "collection": root_row.get("collection"),
+            "title": root_row.get("title") or root_path,
+            "path": root_path,
+            "content_type": root_row.get("content_type", "text"),
+            "updated_at": root_row.get("updated_at"),
+            "user_id": root_row.get("user_id"),
+            "session_id": root_row.get("session_id"),
+            "project_id": root_row.get("project_id"),
+            "profile": root_row.get("profile"),
+            "root_document": {
+                "path": root_row.get("file_path"),
+                "content_hash": root_row.get("content_hash"),
+                "content_type": root_row.get("content_type", "text"),
+                "title": root_row.get("title") or root_path,
+            },
+            "children": children,
+            "snippets": snippets,
+        }
     
     # =========================================================================
     # FTS Operations - Delegated to FTSManager
@@ -1013,6 +1258,8 @@ class LanceDBBackend(StorageBackend):
         ttl_seconds: Optional[int] = None,
         tags: Optional[List[str]] = None,
         _skip_delete: bool = False,
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
     ) -> str:
         """Create or update a text memory, replacing old vectors for this path."""
         return self._indexer.upsert_memory(
@@ -1029,6 +1276,8 @@ class LanceDBBackend(StorageBackend):
             ttl_seconds=ttl_seconds,
             tags=tags,
             _skip_delete=_skip_delete,
+            memory_role=memory_role,
+            memory_root_path=memory_root_path,
         )
     
     def delete_memory(
@@ -1161,6 +1410,8 @@ class LanceDBBackend(StorageBackend):
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
         caption_media: bool = True,
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
     ) -> str:
         """Index an image file."""
         return self._indexer.index_image(
@@ -1175,6 +1426,8 @@ class LanceDBBackend(StorageBackend):
             project_id=project_id,
             profile=profile,
             caption_media=caption_media,
+            memory_role=memory_role,
+            memory_root_path=memory_root_path,
         )
 
     def index_video(

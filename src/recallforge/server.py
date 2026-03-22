@@ -3,9 +3,10 @@ server.py - MCP Server for RecallForge.
 
 MCP protocol server with stdio or HTTP/SSE transport.
 Tools: search, search_fts, search_vec, explain_results, search_batch, ingest,
-index_document, index_image, memory_add, memory_update, memory_delete, status,
-rebuild_fts, list_collections, list_namespaces, rename_collection,
-delete_collection, batch, get_config, set_config.
+index_document, index_image, memory_add, memory_update, memory_delete,
+memory_get, list_memories, status, rebuild_fts, list_collections,
+list_namespaces, rename_collection, delete_collection, batch, get_config,
+set_config. Resources expose canonical memories via memory:// URIs.
 
 Calls backend.warm_up() on server start for predictable latency.
 HTTP mode exposes /health, /sse, and /messages/.
@@ -18,11 +19,12 @@ import os
 import signal
 import sys
 import time
+from urllib.parse import unquote
 from typing import Optional, Callable, TypeVar
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent, ImageContent, EmbeddedResource
+from mcp.types import EmbeddedResource, ImageContent, Resource, ResourceTemplate, TextContent, Tool
 
 from . import __version__, get_backend, get_storage, warmup_backend
 from .search import HybridSearcher
@@ -108,6 +110,28 @@ def _error_response(code: str, message: str, details: dict = None) -> list:
     return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
 
+def _normalize_memory_uri(uri: str) -> str:
+    """Extract a memory id from a memory:// URI."""
+    raw = str(uri).strip()
+    if not raw.startswith("memory://"):
+        raise ValueError(f"Unsupported resource URI: {uri}")
+    return unquote(raw[len("memory://"):]).strip("/")
+
+
+def _list_memories_from_storage(storage, **kwargs) -> list[dict]:
+    list_memories = getattr(storage, "list_memories", None)
+    if not callable(list_memories):
+        return []
+    return list_memories(**kwargs)
+
+
+def _get_memory_from_storage(storage, memory_id: str, **kwargs) -> Optional[dict]:
+    get_memory = getattr(storage, "get_memory", None)
+    if not callable(get_memory):
+        return None
+    return get_memory(memory_id, **kwargs)
+
+
 def _signal_handler(signum, frame):
     """Handle shutdown signals gracefully."""
     global _shutdown_requested
@@ -149,6 +173,51 @@ async def create_server(
         "rerank_top_k": int(os.environ.get("RECALLFORGE_RERANK_TOP_K", "20")),
         "caption_media": True,
     }
+
+    @server.list_resources()
+    async def list_resources() -> list[Resource]:
+        memories = await _run_blocking(
+            _list_memories_from_storage,
+            storage,
+            collection=None,
+            limit=100,
+        )
+        resources: list[Resource] = []
+        for memory in memories:
+            memory_id = memory.get("memory_id")
+            if not memory_id:
+                continue
+            title = memory.get("title") or memory.get("path") or memory_id
+            resources.append(
+                Resource(
+                    name=title,
+                    uri=f"memory://{memory_id}",
+                    title=title,
+                    description=f"Canonical memory object for {memory.get('path') or title}",
+                    mimeType="application/json",
+                )
+            )
+        return resources
+
+    @server.list_resource_templates()
+    async def list_resource_templates() -> list[ResourceTemplate]:
+        return [
+            ResourceTemplate(
+                name="memory",
+                uriTemplate="memory://{memory_id}",
+                title="Memory Resource",
+                description="Read a canonical memory object by stable memory_id.",
+                mimeType="application/json",
+            )
+        ]
+
+    @server.read_resource()
+    async def read_resource(uri) -> str:
+        memory_id = _normalize_memory_uri(str(uri))
+        memory = await _run_blocking(_get_memory_from_storage, storage, memory_id)
+        if not memory:
+            raise ValueError(f"Memory not found: {memory_id}")
+        return json.dumps(memory, indent=2)
     
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -320,6 +389,37 @@ async def create_server(
                         "profile": {"type": "string", "description": "Optional profile namespace"},
                     },
                     "required": ["path"],
+                },
+            ),
+            Tool(
+                name="memory_get",
+                description="Fetch a canonical memory object by memory_id or root path",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {"type": "string", "description": "Stable memory identifier"},
+                        "path": {"type": "string", "description": "Optional canonical root path when memory_id is unknown"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
+                    },
+                },
+            ),
+            Tool(
+                name="list_memories",
+                description="List canonical root memories for a collection or namespace",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                        "limit": {"type": "integer", "description": "Maximum memories to return", "default": 50},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
+                    },
                 },
             ),
             Tool(
@@ -575,6 +675,10 @@ async def _dispatch_tool(
         return await _handle_memory_update(arguments, backend, storage)
     elif name == "memory_delete":
         return await _handle_memory_delete(arguments, storage)
+    elif name == "memory_get":
+        return await _handle_memory_get(arguments, storage)
+    elif name == "list_memories":
+        return await _handle_list_memories(arguments, storage)
     elif name == "status":
         return await _handle_status(backend, storage)
     elif name == "rebuild_fts":
@@ -735,6 +839,10 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
                 "session_id": getattr(r, "session_id", None),
                 "project_id": getattr(r, "project_id", None),
                 "profile": getattr(r, "profile", None),
+                "memory_id": getattr(r, "memory_id", None),
+                "memory_role": getattr(r, "memory_role", "root"),
+                "memory_root_path": getattr(r, "memory_root_path", None),
+                "memory_hit_count": getattr(r, "memory_hit_count", 1),
             }
             for r in results
         ],
@@ -1289,6 +1397,82 @@ async def _handle_memory_delete(arguments: dict, storage) -> list[TextContent]:
     trace_log("memory_delete_done", path=path, removed_vectors=output.get("removed_vectors", 0))
 
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_list_memories(arguments: dict, storage) -> list[TextContent]:
+    """Handle canonical memory listing."""
+    collection = arguments.get("collection")
+    limit = arguments.get("limit", 50)
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    memories = await _run_blocking(
+        _list_memories_from_storage,
+        storage,
+        collection=collection,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+        limit=limit,
+    )
+    output = {
+        "success": True,
+        "collection": collection,
+        "count": len(memories),
+        "memories": memories,
+    }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_memory_get(arguments: dict, storage) -> list[TextContent]:
+    """Handle canonical memory fetch by id or root path."""
+    memory_id = arguments.get("memory_id")
+    path = arguments.get("path")
+    collection = arguments.get("collection")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    if not memory_id and not path:
+        return _error_response("INVALID_INPUT", "memory_id or path is required")
+
+    resolved_memory_id = memory_id
+    if not resolved_memory_id and path:
+        memories = await _run_blocking(
+            _list_memories_from_storage,
+            storage,
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            limit=500,
+        )
+        match = next((item for item in memories if item.get("path") == path), None)
+        if match:
+            resolved_memory_id = match.get("memory_id")
+
+    if not resolved_memory_id:
+        return _error_response("NOT_FOUND", "Memory not found", {"path": path})
+
+    memory = await _run_blocking(
+        _get_memory_from_storage,
+        storage,
+        resolved_memory_id,
+        collection=collection,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+    )
+    if not memory:
+        return _error_response("NOT_FOUND", "Memory not found", {"memory_id": resolved_memory_id})
+
+    return [TextContent(type="text", text=json.dumps(memory, indent=2))]
 
 
 async def _handle_get_config(backend, storage, mutable_config: dict) -> list[TextContent]:

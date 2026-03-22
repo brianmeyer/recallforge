@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import struct
+import uuid
 from pathlib import Path
 
 logger = logging.getLogger("recallforge.storage")
@@ -100,3 +101,63 @@ def extract_title(content: str, filename: str) -> str:
 
 def get_docid(hash_str: str) -> str:
     return hash_str[:6]
+
+
+def build_memory_id(
+    collection: str,
+    memory_root_path: str,
+    *,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    project_id: str | None = None,
+    profile: str | None = None,
+) -> str:
+    """Build a deterministic ID for a logical memory root."""
+    root = (memory_root_path or "").strip()
+    if not root:
+        raise ValueError("memory_root_path is required")
+
+    seed = "::".join(
+        [
+            collection or "",
+            user_id or "",
+            session_id or "",
+            project_id or "",
+            profile or "",
+            root,
+        ]
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def resolve_memory_identity(
+    *,
+    collection: str,
+    file_path: str,
+    memory_id: str | None = None,
+    memory_role: str | None = None,
+    memory_root_path: str | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    project_id: str | None = None,
+    profile: str | None = None,
+) -> tuple[str, str, str]:
+    """Return normalized memory identity metadata for a document or chunk."""
+    normalized_path = (file_path or "").strip()
+    if not normalized_path:
+        raise ValueError("file_path is required")
+
+    normalized_root = (memory_root_path or normalized_path).strip() or normalized_path
+    normalized_role = (memory_role or "").strip().lower()
+    if normalized_role not in {"root", "child"}:
+        normalized_role = "root" if normalized_root == normalized_path else "child"
+
+    normalized_id = memory_id or build_memory_id(
+        collection,
+        normalized_root,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+    )
+    return normalized_id, normalized_role, normalized_root

@@ -152,6 +152,10 @@ class HybridResult:
     rerank_score: float  # Reranker score
     source: str  # Sources that contributed to this result
     content_type: str = "text"  # Content modality (text, image, video)
+    memory_id: Optional[str] = None
+    memory_role: str = "root"
+    memory_root_path: Optional[str] = None
+    memory_hit_count: int = 1
     audit: Optional[SearchAudit] = None  # Per-result audit trail
 
 
@@ -423,6 +427,9 @@ class HybridSearcher:
                 rerank_score=0.5,
                 source=result.source,
                 content_type=getattr(result, 'content_type', 'text'),
+                memory_id=getattr(result, "memory_id", None),
+                memory_role=getattr(result, "memory_role", "root"),
+                memory_root_path=getattr(result, "memory_root_path", None),
             ))
         return hybrid_results
 
@@ -1075,6 +1082,9 @@ class HybridSearcher:
                 rerank_score=rerank_score_raw,
                 source=result.source,
                 content_type=getattr(result, 'content_type', 'text'),
+                memory_id=getattr(result, "memory_id", None),
+                memory_role=getattr(result, "memory_role", "root"),
+                memory_root_path=getattr(result, "memory_root_path", None),
                 audit=audit,
             ))
 
@@ -1097,8 +1107,35 @@ class HybridSearcher:
                              hr.audit.reranker_scoring_path, json.dumps(hr.audit.blend_weights),
                              hr.audit.final_blended_score)
 
-        _log_stage_metrics("blend", hybrid_results, start_time=t0)
-        return hybrid_results[:self.limit]
+        rolled_results = self._roll_up_memory_hits(hybrid_results)
+        _log_stage_metrics("blend", rolled_results, start_time=t0)
+        return rolled_results[:self.limit]
+
+    def _roll_up_memory_hits(self, results: List[HybridResult]) -> List[HybridResult]:
+        """Collapse sibling assets into one representative memory result."""
+        if not results:
+            return []
+
+        grouped: Dict[str, List[HybridResult]] = {}
+        order: List[str] = []
+        for result in results:
+            key = result.memory_id or result.filepath
+            if key not in grouped:
+                grouped[key] = []
+                order.append(key)
+            grouped[key].append(result)
+
+        rolled: List[HybridResult] = []
+        for key in order:
+            group = sorted(grouped[key], key=lambda item: item.score, reverse=True)
+            representative = group[0]
+            representative.memory_hit_count = len(group)
+            if len(group) > 1:
+                representative.score *= 1.0 + min(0.15, 0.03 * (len(group) - 1))
+            rolled.append(representative)
+
+        rolled.sort(key=lambda item: item.score, reverse=True)
+        return rolled
     
     def search(self, query: str) -> List[HybridResult]:
         """
