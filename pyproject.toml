@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Local multimodal memory for AI agents — cross-modal vision-language search"
 authors = [{name = "Brian Meyer", email = "brian@recallforge.dev"}]
 readme = "README.md"
-requires-python = ">=3.12,<3.15"
+requires-python = ">=3.12,<3.14"
 license = "MIT"
 keywords = [
     "search", "semantic", "embedding", "vision-language", "cross-modal",

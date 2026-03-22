@@ -464,6 +464,18 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertEqual(data["memory_id"], "mem-123")
 
+    async def test_memory_get_by_path_uses_storage_path_lookup(self):
+        storage = _make_storage()
+        result = await _handle_memory_get({"path": "notes/demo.md"}, storage)
+        data = json.loads(result[0].text)
+        self.assertEqual(data["path"], "notes/demo.md")
+        storage.list_memories.assert_not_called()
+        storage.get_memory.assert_called_once()
+        args, kwargs = storage.get_memory.call_args
+        self.assertEqual(args, ())
+        self.assertEqual(kwargs["path"], "notes/demo.md")
+        self.assertEqual(kwargs["collection"], None)
+
     async def test_get_config_schema(self):
         backend = _make_backend()
         storage = _make_storage()

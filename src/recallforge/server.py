@@ -125,10 +125,12 @@ def _list_memories_from_storage(storage, **kwargs) -> list[dict]:
     return list_memories(**kwargs)
 
 
-def _get_memory_from_storage(storage, memory_id: str, **kwargs) -> Optional[dict]:
+def _get_memory_from_storage(storage, memory_id: Optional[str] = None, **kwargs) -> Optional[dict]:
     get_memory = getattr(storage, "get_memory", None)
     if not callable(get_memory):
         return None
+    if memory_id is None:
+        return get_memory(**kwargs)
     return get_memory(memory_id, **kwargs)
 
 
@@ -1440,37 +1442,20 @@ async def _handle_memory_get(arguments: dict, storage) -> list[TextContent]:
     if not memory_id and not path:
         return _error_response("INVALID_INPUT", "memory_id or path is required")
 
-    resolved_memory_id = memory_id
-    if not resolved_memory_id and path:
-        memories = await _run_blocking(
-            _list_memories_from_storage,
-            storage,
-            collection=collection,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            limit=500,
-        )
-        match = next((item for item in memories if item.get("path") == path), None)
-        if match:
-            resolved_memory_id = match.get("memory_id")
-
-    if not resolved_memory_id:
-        return _error_response("NOT_FOUND", "Memory not found", {"path": path})
-
     memory = await _run_blocking(
         _get_memory_from_storage,
         storage,
-        resolved_memory_id,
+        memory_id,
         collection=collection,
         user_id=user_id,
         session_id=session_id,
         project_id=project_id,
         profile=profile,
+        path=path,
     )
     if not memory:
-        return _error_response("NOT_FOUND", "Memory not found", {"memory_id": resolved_memory_id})
+        details = {"memory_id": memory_id} if memory_id else {"path": path}
+        return _error_response("NOT_FOUND", "Memory not found", details)
 
     return [TextContent(type="text", text=json.dumps(memory, indent=2))]
 

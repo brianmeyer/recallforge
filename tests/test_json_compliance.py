@@ -108,8 +108,14 @@ class _DummyStorage:
     def list_memories(self, **_kwargs):
         return [{"memory_id": "mem-1", "path": "mem/1", "title": "mem", "collection": "default"}]
 
-    def get_memory(self, memory_id, **_kwargs):
-        return {"memory_id": memory_id, "path": "mem/1", "title": "mem", "children": [], "snippets": []}
+    def get_memory(self, memory_id=None, path=None, **_kwargs):
+        return {
+            "memory_id": memory_id or "mem-1",
+            "path": path or "mem/1",
+            "title": "mem",
+            "children": [],
+            "snippets": [],
+        }
 
 
 class _FakeSearchResult:

@@ -393,6 +393,44 @@ class TestBlendScores(unittest.TestCase):
         self.assertAlmostEqual(mid_rank.audit.blend_weights["rrf"], 0.85)
         self.assertAlmostEqual(tail_rank.audit.blend_weights["rrf"], 0.75)
 
+    def test_memory_rollup_updates_audit_boost_and_final_score(self):
+        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage(), limit=12)
+
+        sibling_a = _make_search_result("memory_a.md", 0.9, "fts")
+        sibling_b = _make_search_result("memory_b.md", 0.6, "vec")
+        sibling_a.memory_id = "memory-1"
+        sibling_b.memory_id = "memory-1"
+
+        rrf = [sibling_a, sibling_b]
+        rerank_scores = {
+            "memory_a.md": 0.9,
+            "memory_b.md": 0.2,
+        }
+
+        blended = searcher._blend_scores(rrf, rerank_scores)
+
+        self.assertEqual(len(blended), 1)
+        result = blended[0]
+        self.assertEqual(result.memory_hit_count, 2)
+        self.assertIsNotNone(result.audit)
+        self.assertAlmostEqual(result.audit.memory_rollup_boost, 1.03)
+        self.assertAlmostEqual(result.score, result.audit.final_blended_score)
+
+    def test_memory_rollup_keeps_singletons_unboosted(self):
+        searcher = HybridSearcher(backend=StubBackend(), storage=StubStorage(), limit=12)
+
+        solo = _make_search_result("memory_solo.md", 0.9, "fts")
+        solo.memory_id = "memory-2"
+
+        blended = searcher._blend_scores([solo], {"memory_solo.md": 0.8})
+
+        self.assertEqual(len(blended), 1)
+        result = blended[0]
+        self.assertEqual(result.memory_hit_count, 1)
+        self.assertIsNotNone(result.audit)
+        self.assertAlmostEqual(result.audit.memory_rollup_boost, 1.0)
+        self.assertAlmostEqual(result.score, result.audit.final_blended_score)
+
 
 class TestParallelSearchTaskCapture(unittest.TestCase):
     def test_parallel_search_captures_original_vector(self):
