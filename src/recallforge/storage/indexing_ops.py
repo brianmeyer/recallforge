@@ -195,6 +195,28 @@ class IndexingOps:
             logger.debug("index_%s: tag generation returned no usable tags", media_kind)
         return tags
 
+    def _build_parent_summary(self, parts: List[str], *, fallback: str = "", max_chars: int = 4000) -> str:
+        """Build a compact persisted parent summary/body from existing derived text."""
+        excerpts: List[str] = []
+        seen: set[str] = set()
+
+        for raw in parts:
+            text = re.sub(r"\s+", " ", str(raw or "").strip())
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            excerpts.append(text)
+            if len(excerpts) >= 2 or sum(len(item) for item in excerpts) >= 600:
+                break
+
+        if not excerpts and fallback:
+            excerpts.append(re.sub(r"\s+", " ", fallback.strip()))
+
+        return "\n\n".join(excerpts)[:max_chars].strip()
+
     def index_document(
         self,
         path: str,
@@ -1211,8 +1233,10 @@ class IndexingOps:
             frame_paths=frame_paths,
             enabled=caption_media,
         )
-        parts = [part for part in (video_caption, transcript_summary) if part]
-        video_body = "\n\n".join(parts)[:4000]
+        video_body = self._build_parent_summary(
+            [video_caption, transcript_summary],
+            fallback=resolved_title,
+        )
         video_tag_backend = self._select_generation_backend(embed_video_func, embed_image_func)
         video_tags = (
             self._generate_media_tags(video_tag_backend, video_body, "video")
@@ -1274,6 +1298,35 @@ class IndexingOps:
                 actual_path,
                 e,
             )
+            if video_body:
+                try:
+                    summary_vector = embed_text_func(video_body)
+                    self._backend.insert_embedding(
+                        content_hash=content_hash,
+                        seq=0,
+                        pos=0,
+                        vector=summary_vector.tolist() if hasattr(summary_vector, "tolist") else list(summary_vector),
+                        model=model,
+                        collection=collection,
+                        file_path=logical_path,
+                        title=resolved_title,
+                        text_body=video_body,
+                        content_type="video",
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                        memory_role="root",
+                        memory_root_path=logical_path,
+                        tags=video_tags or None,
+                    )
+                    indexed_video_embeddings = 1
+                except Exception as summary_exc:
+                    logger.warning(
+                        "index_video: fallback summary embedding failed for %s: %s",
+                        actual_path,
+                        summary_exc,
+                    )
 
         indexed_frames = 0
         indexed_transcripts = 0
@@ -1387,6 +1440,38 @@ class IndexingOps:
             memory_role="root",
             memory_root_path=logical_path,
         )
+
+        document_summary = self._build_parent_summary(
+            [section.text for section in artifacts.sections],
+            fallback=document_title,
+        )
+        if document_summary:
+            try:
+                root_vector = embed_func(document_summary)
+                self._backend.insert_embedding(
+                    content_hash=document_hash,
+                    seq=0,
+                    pos=0,
+                    vector=root_vector.tolist() if hasattr(root_vector, "tolist") else list(root_vector),
+                    model=model,
+                    collection=collection,
+                    file_path=logical_path,
+                    title=document_title,
+                    text_body=document_summary,
+                    content_type=artifacts.document_type,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                    memory_role="root",
+                    memory_root_path=logical_path,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "index_document_file: root summary embedding failed for %s; continuing with child assets: %s",
+                    actual_path,
+                    exc,
+                )
 
         # Track temp dirs from PDF vision fallback for cleanup
         _temp_dirs_to_clean: set = set()
