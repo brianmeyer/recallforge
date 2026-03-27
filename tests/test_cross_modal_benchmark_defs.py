@@ -170,6 +170,10 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
         self.assertEqual(prec_5, 1.0)
         self.assertEqual(prec_10, 1.0)
 
+        detailed = module.evaluate_results_detailed([result], gt, module.CORPUS_DIR)
+        self.assertTrue(detailed["memory"].hit_at_1)
+        self.assertFalse(detailed["asset"].hit_at_1)
+
     def test_video_transcript_assets_count_as_hits_for_parent_video_ground_truth(self):
         module = _load_cross_modal_ablation()
 
@@ -196,6 +200,10 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
         self.assertEqual(prec_5, 1.0)
         self.assertEqual(prec_10, 1.0)
 
+        detailed = module.evaluate_results_detailed([result], gt, module.CORPUS_DIR)
+        self.assertTrue(detailed["memory"].hit_at_1)
+        self.assertFalse(detailed["asset"].hit_at_1)
+
     def test_output_payload_tracks_partial_progress(self):
         module = _load_cross_modal_ablation()
 
@@ -214,6 +222,26 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
             mrr_sum=1.0,
             precision_at_5_sum=1.0,
             precision_at_10_sum=1.0,
+        )
+        stage_result.asset_hits_at_1 = 0
+        stage_result.asset_hits_at_5 = 0
+        stage_result.asset_hits_at_10 = 0
+        stage_result.asset_ndcg_sum = 0.0
+        stage_result.asset_mrr_sum = 0.0
+        stage_result.asset_precision_at_5_sum = 0.0
+        stage_result.asset_precision_at_10_sum = 0.0
+        stage_result.per_query_results.append(
+            {
+                "query": module.TEXT_TO_TEXT[0].query,
+                "hit_at_1": True,
+                "hit_at_5": True,
+                "hit_at_10": True,
+                "asset_level": {
+                    "hit_at_1": False,
+                    "hit_at_5": False,
+                    "hit_at_10": False,
+                },
+            }
         )
 
         payload = module._build_output_payload(
@@ -240,6 +268,13 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
         self.assertEqual(
             payload["stages"]["Vector-only"]["text_to_text"]["recall_at_1"],
             1.0,
+        )
+        self.assertEqual(
+            payload["stages"]["Vector-only"]["text_to_text"]["asset_level"]["recall_at_1"],
+            0.0,
+        )
+        self.assertFalse(
+            payload["stages"]["Vector-only"]["text_to_text"]["per_query_results"][0]["asset_level"]["hit_at_1"]
         )
 
 
