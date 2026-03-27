@@ -1447,9 +1447,21 @@ class TestIngestCaptioning(unittest.TestCase):
         for row in child_embedding_rows:
             self.assertEqual(json.loads(row.get("tags") or "[]"), expected_tags)
 
+        root_embedding_rows = self.backend._embeddings_table.search().where(
+            f"collection = 'test' AND file_path = '{logical_path}'"
+        ).to_list()
+        self.assertEqual(len(root_embedding_rows), 1)
+        self.assertIn("Technical explainer video", root_embedding_rows[0].get("text_body") or "")
+        self.assertEqual(json.loads(root_embedding_rows[0].get("tags") or "[]"), expected_tags)
+
+        memories = self.backend.list_memories(collection="test", limit=10)
+        self.assertEqual(len(memories), 1)
+        self.assertTrue((memories[0].get("summary") or "").startswith("Technical explainer video"))
+
         memory = self.backend.get_memory(path=logical_path, collection="test")
         self.assertIsNotNone(memory)
         self.assertEqual(memory["tags"], expected_tags)
+        self.assertTrue((memory.get("summary") or "").startswith("Technical explainer video"))
 
     def test_index_document_file_creates_root_memory_and_links_sections(self):
         document_path = os.path.join(self.temp_dir, "report.pdf")
@@ -1491,6 +1503,69 @@ class TestIngestCaptioning(unittest.TestCase):
         self.assertEqual(child_doc.memory_id, root_doc.memory_id)
         self.assertEqual(child_doc.memory_role, "child")
         self.assertEqual(child_doc.memory_root_path, logical_path)
+
+        root_embedding_rows = self.backend._embeddings_table.search().where(
+            f"collection = 'test' AND file_path = '{logical_path}'"
+        ).to_list()
+        self.assertEqual(len(root_embedding_rows), 1)
+        self.assertIn("Budget and launch notes", root_embedding_rows[0].get("text_body") or "")
+
+        memory = self.backend.get_memory(path=logical_path, collection="test")
+        self.assertIsNotNone(memory)
+        self.assertTrue((memory.get("summary") or "").startswith("Budget and launch notes"))
+
+    def test_index_document_file_continues_when_root_summary_embedding_fails(self):
+        document_path = os.path.join(self.temp_dir, "notes.pdf")
+        logical_path = str(Path(document_path).expanduser().resolve())
+        with open(document_path, "wb") as f:
+            f.write(b"%PDF-1.4 mock")
+
+        fake_artifacts = SimpleNamespace(
+            document_type="pdf",
+            extractor="unit-test",
+            sections=[
+                SimpleNamespace(
+                    logical_path=f"{logical_path}::section:0001",
+                    title="notes section 1",
+                    text="First section about memory retrieval.",
+                    section_type="section",
+                    index=1,
+                    content_type="text",
+                    image_path=None,
+                ),
+                SimpleNamespace(
+                    logical_path=f"{logical_path}::section:0002",
+                    title="notes section 2",
+                    text="Second section about multimodal evidence.",
+                    section_type="section",
+                    index=2,
+                    content_type="text",
+                    image_path=None,
+                ),
+            ],
+        )
+
+        def embed_except_summary(text: str):
+            if "First section about memory retrieval." in text and "Second section about multimodal evidence." in text:
+                raise RuntimeError("summary embed failed")
+            return mock_embed(text)
+
+        with patch("recallforge.storage.indexing_ops.extract_document_artifacts", return_value=fake_artifacts):
+            result = self.backend.index_document_file(
+                path=document_path,
+                collection="test",
+                embed_func=embed_except_summary,
+                model="mock-embedder",
+            )
+
+        self.assertEqual(result["indexed_sections"], 2)
+        child_doc = self.backend.find_document("test", f"{logical_path}::section:0001")
+        self.assertIsNotNone(child_doc)
+
+        root_embedding_rows = self.backend._embeddings_table.search().where(
+            f"collection = 'test' AND file_path = '{logical_path}'"
+        ).to_list()
+        self.assertEqual(len(root_embedding_rows), 0)
 
     def test_index_document_file_preserves_ocr_text_for_image_only_pages(self):
         document_path = os.path.join(self.temp_dir, "scan.pdf")
