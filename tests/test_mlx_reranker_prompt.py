@@ -81,6 +81,13 @@ class _ProcessorWithChatTemplate:
         return "PROCESSOR_TEMPLATE"
 
 
+class _ProcessorWithImageProcessor:
+    def __init__(self):
+        self.min_pixels = None
+        self.max_pixels = None
+        self.image_processor = SimpleNamespace(min_pixels=None, max_pixels=None)
+
+
 class TestMLXRerankerPromptPreparation(unittest.TestCase):
     def _make_backend(self):
         backend = object.__new__(mlx_backend.MLXBackend)
@@ -370,6 +377,26 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
             embeddings,
             np.array([[1.0, 0.0]], dtype=np.float32),
         )
+
+    def test_apply_processor_media_budgets_updates_processor_and_image_processor(self):
+        backend = object.__new__(mlx_backend.MLXBackend)
+        backend._VISION_MIN_PIXELS = 100
+        backend._VISION_MAX_PIXELS = 200
+        processor = _ProcessorWithImageProcessor()
+
+        backend._apply_processor_media_budgets(processor)
+
+        self.assertEqual(processor.min_pixels, 100)
+        self.assertEqual(processor.max_pixels, 200)
+        self.assertEqual(processor.image_processor.min_pixels, 100)
+        self.assertEqual(processor.image_processor.max_pixels, 200)
+
+    def test_apply_processor_media_budgets_ignores_missing_attrs(self):
+        backend = object.__new__(mlx_backend.MLXBackend)
+        backend._VISION_MIN_PIXELS = 100
+        backend._VISION_MAX_PIXELS = 200
+
+        backend._apply_processor_media_budgets(SimpleNamespace())
 
 
 if __name__ == "__main__":

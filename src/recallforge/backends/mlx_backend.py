@@ -181,6 +181,8 @@ class MLXBackend(ModelBackend):
     _VIDEO_SAMPLE_FPS = 1.0
     _VIDEO_MAX_FRAMES = 32
     _VIDEO_FALLBACK_MAX_FRAMES = 8
+    _VISION_MIN_PIXELS = 256 * 28 * 28
+    _VISION_MAX_PIXELS = 1024 * 28 * 28
     _DEFAULT_HEAVY_OP_CONCURRENCY = 1
     # Captioning descriptors removed — they produced captions too generic for BM25.
     # See REC-129 for dedicated captioning model support.
@@ -262,6 +264,17 @@ class MLXBackend(ModelBackend):
                 self._VIDEO_FALLBACK_MAX_FRAMES,
             ),
         )
+        self._VISION_MIN_PIXELS = self._resolve_positive_int_env(
+            "RECALLFORGE_MLX_MIN_PIXELS",
+            self._VISION_MIN_PIXELS,
+        )
+        self._VISION_MAX_PIXELS = max(
+            self._VISION_MIN_PIXELS,
+            self._resolve_positive_int_env(
+                "RECALLFORGE_MLX_MAX_PIXELS",
+                self._VISION_MAX_PIXELS,
+            ),
+        )
 
     def _resolve_heavy_op_concurrency(self) -> int:
         """Return the configured MLX heavy-op concurrency ceiling."""
@@ -321,6 +334,27 @@ class MLXBackend(ModelBackend):
         with self._get_heavy_op_gate().hold(op_name):
             yield
 
+    def _apply_processor_media_budgets(self, processor: Any) -> None:
+        """Apply conservative vision token budgets to a loaded processor."""
+        targets = [processor]
+        image_processor = getattr(processor, "image_processor", None)
+        if image_processor is not None:
+            targets.append(image_processor)
+
+        for target in targets:
+            for attr_name, value in (
+                ("min_pixels", self._VISION_MIN_PIXELS),
+                ("max_pixels", self._VISION_MAX_PIXELS),
+            ):
+                if hasattr(target, attr_name):
+                    setattr(target, attr_name, value)
+
+        logger.debug(
+            "mlx_media_budgets min_pixels=%d max_pixels=%d",
+            self._VISION_MIN_PIXELS,
+            self._VISION_MAX_PIXELS,
+        )
+
     # =========================================================================
     # Embedder
     # =========================================================================
@@ -355,6 +389,7 @@ class MLXBackend(ModelBackend):
                     self.EMBEDDER_MODEL,
                     trust_remote_code=True,
                 )
+                self._apply_processor_media_budgets(self._embedder_processor)
             except Exception as exc:
                 raise MLXEmbeddingError(
                     f"Failed to load MLX embedder '{self.EMBEDDER_MODEL}'."
@@ -865,6 +900,7 @@ class MLXBackend(ModelBackend):
             self._captioner_model, self._captioner_processor = vlm_load(
                 self.CAPTION_MODEL
             )
+            self._apply_processor_media_budgets(self._captioner_processor)
 
     def _unload_captioner(self) -> None:
         """Free captioner memory when no longer needed."""
@@ -1716,6 +1752,7 @@ class MLXBackend(ModelBackend):
                             self.RERANKER_MODEL,
                             trust_remote_code=True,
                         )
+                        self._apply_processor_media_budgets(self._reranker_processor)
                     finally:
                         if hf_logging is not None and prev_hf_verbosity is not None:
                             hf_logging.set_verbosity(prev_hf_verbosity)
