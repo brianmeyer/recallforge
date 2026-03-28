@@ -45,6 +45,26 @@ Then run the expanded benchmark:
 
 The benchmark now checkpoints to JSON as it runs. If the run is interrupted, the output file still contains partial results plus progress metadata.
 
+For safer local validation after the MLX hardening work, prefer the bounded smoke lane first:
+
+```bash
+.venv/bin/python benchmarks/cross_modal_ablation.py --backend mlx --smoke-profile safe --expansion-profile caption_only
+```
+
+That profile defaults to a smaller stage/query footprint and can enforce an RSS stop condition:
+
+```bash
+.venv/bin/python benchmarks/cross_modal_ablation.py --backend mlx --smoke-profile safe --rss-limit-mb 6144
+```
+
+The output JSON now records:
+
+- `configuration.smoke_profile`
+- `configuration.rss_limit_mb`
+- `telemetry.peak_rss_mb`
+
+Use the full benchmark only after the safe smoke completes cleanly on the target machine.
+
 For query-expansion release decisions, compare at least these profiles:
 
 ```bash
@@ -61,6 +81,17 @@ Profile meanings:
 - `off`: pure no-expansion baseline, including no media caption probe, useful for measuring the value of caption/transcript query text itself.
 
 When you omit `--output`, the benchmark now keeps profile-specific filenames for non-default runs, for example `cross_modal_ablation_results_qwen.json`.
+
+### MLX safety notes
+
+- MLX heavy multimodal operations are now intentionally serialized by default via `RECALLFORGE_MLX_HEAVY_OP_CONCURRENCY=1`.
+- On MLX, raw video query embedding is no longer the default hot path. RecallForge prefers caption/transcript-first retrieval unless `RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING=1` is set.
+- The raw-video path now has explicit frame and pixel budget knobs:
+  - `RECALLFORGE_MLX_VIDEO_SAMPLE_FPS`
+  - `RECALLFORGE_MLX_VIDEO_MAX_FRAMES`
+  - `RECALLFORGE_MLX_VIDEO_FALLBACK_MAX_FRAMES`
+  - `RECALLFORGE_MLX_MIN_PIXELS`
+  - `RECALLFORGE_MLX_MAX_PIXELS`
 
 ## 4. Tag and publish
 
