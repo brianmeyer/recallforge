@@ -139,6 +139,8 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
             content = user_messages[0]["content"]
             image_blocks = [block for block in content if block.get("type") == "image"]
             self.assertEqual([block["image"] for block in image_blocks], expected_image_uris)
+            self.assertTrue(all("min_pixels" in block for block in image_blocks))
+            self.assertTrue(all("max_pixels" in block for block in image_blocks))
             return ["query_pixels", "doc_pixels"], None, {}
 
         fake_module = types.SimpleNamespace(process_vision_info=fake_process_vision_info)
@@ -153,6 +155,7 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
         self.assertEqual(call["images"], ["query_pixels", "doc_pixels"])
         self.assertEqual(call["return_tensors"], "pt")
         self.assertTrue(call["padding"])
+        self.assertFalse(call["do_resize"])
 
     def test_text_only_messages_skip_vision_preprocessing(self):
         backend = self._make_backend()
@@ -166,6 +169,25 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
 
         self.assertIn("input_ids", inputs)
         self.assertEqual(len(backend._reranker_processor.calls), 1)
+        self.assertEqual(
+            backend._reranker_processor.calls[0],
+            {"text": "PROMPT", "return_tensors": "np"},
+        )
+
+    def test_video_reranker_inputs_degrade_to_text_when_native_video_disabled(self):
+        backend = self._make_backend()
+        messages = backend._build_reranker_messages(
+            query="caption fallback",
+            document="doc body",
+            instruction="rank this",
+            video_path="docs/example.mp4",
+        )
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING", None)
+            inputs = backend._build_reranker_processor_inputs("PROMPT", messages)
+
+        self.assertIn("input_ids", inputs)
         self.assertEqual(
             backend._reranker_processor.calls[0],
             {"text": "PROMPT", "return_tensors": "np"},
@@ -238,8 +260,28 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
         backend._embed_video_native = _raise_native
         backend._embed_video_via_frames = lambda _path: np.array([0.6, 0.8], dtype=np.float32)
 
-        embeddings = backend.embed_videos(["clip.mp4"])
+        with patch.dict(os.environ, {"RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING": "1"}):
+            embeddings = backend.embed_videos(["clip.mp4"])
 
+        np.testing.assert_allclose(
+            embeddings,
+            np.array([[0.6, 0.8]], dtype=np.float32),
+        )
+
+    def test_embed_videos_use_frame_fallback_by_default_when_native_video_disabled(self):
+        backend = object.__new__(mlx_backend.MLXBackend)
+        backend._validate_video_paths = lambda paths: paths
+        backend._load_embedder = lambda: None
+        backend._get_embedder_num_layers = lambda: 2
+        native_calls = []
+        backend._embed_video_native = lambda *_args, **_kwargs: native_calls.append("native")
+        backend._embed_video_via_frames = lambda _path: np.array([0.6, 0.8], dtype=np.float32)
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING", None)
+            embeddings = backend.embed_videos(["clip.mp4"])
+
+        self.assertEqual(native_calls, [])
         np.testing.assert_allclose(
             embeddings,
             np.array([[0.6, 0.8]], dtype=np.float32),
@@ -370,7 +412,8 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
         backend._get_embedder_num_layers = lambda: 2
         backend._embed_video_native = lambda _path, _num_layers: np.array([1.0, 0.0], dtype=np.float32)
 
-        embeddings = backend.embed_videos(["clip.mp4"])
+        with patch.dict(os.environ, {"RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING": "1"}):
+            embeddings = backend.embed_videos(["clip.mp4"])
 
         self.assertEqual(calls, ["embed_videos"])
         np.testing.assert_allclose(
@@ -397,6 +440,26 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
         backend._VISION_MAX_PIXELS = 200
 
         backend._apply_processor_media_budgets(SimpleNamespace())
+
+    def test_call_media_processor_disables_duplicate_resize(self):
+        backend = object.__new__(mlx_backend.MLXBackend)
+
+        class _Processor:
+            def __init__(self):
+                self.calls = []
+
+            def __call__(self, **kwargs):
+                self.calls.append(kwargs)
+                return {"ok": True}
+
+        processor = _Processor()
+        result = backend._call_media_processor(processor, text=["hello"], return_tensors="pt")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(
+            processor.calls[0],
+            {"text": ["hello"], "return_tensors": "pt", "do_resize": False},
+        )
 
 
 if __name__ == "__main__":

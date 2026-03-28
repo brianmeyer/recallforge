@@ -50,6 +50,7 @@ RECALLFORGE_ENV_VARS = {
     "RECALLFORGE_MLX_VIDEO_FALLBACK_MAX_FRAMES": "Frame cap for ffmpeg frame-averaging fallback when native video embedding is unavailable.",
     "RECALLFORGE_MLX_MIN_PIXELS": "Lower bound for MLX processor visual resolution budgeting.",
     "RECALLFORGE_MLX_MAX_PIXELS": "Upper bound for MLX processor visual resolution budgeting.",
+    "RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING": "Enable qwen-vl-utils native video decoding for MLX; disabled by default for local safety.",
     "RECALLFORGE_STORAGE": "Storage backend selector (currently lancedb).",
     "RECALLFORGE_STORE_PATH": "Path to RecallForge data store.",
     "RECALLFORGE_TRACE": "Enable verbose MCP server trace logging (1=true).",

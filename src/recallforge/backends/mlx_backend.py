@@ -184,6 +184,7 @@ class MLXBackend(ModelBackend):
     _VISION_MIN_PIXELS = 256 * 28 * 28
     _VISION_MAX_PIXELS = 1024 * 28 * 28
     _DEFAULT_HEAVY_OP_CONCURRENCY = 1
+    _ENABLE_NATIVE_VIDEO_PROCESSING_DEFAULT = False
     # Captioning descriptors removed — they produced captions too generic for BM25.
     # See REC-129 for dedicated captioning model support.
 
@@ -317,6 +318,54 @@ class MLXBackend(ModelBackend):
             return default
         return value if value > 0 else default
 
+    def _resolve_bool_env(self, name: str, default: bool) -> bool:
+        """Read a boolean env var with graceful fallback."""
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        normalized = raw.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        logger.warning("Invalid %s=%r; using %s", name, raw, default)
+        return default
+
+    def _native_video_processing_enabled(self) -> bool:
+        """Return whether MLX should use qwen-vl-utils native video processing."""
+        enabled = self._resolve_bool_env(
+            "RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING",
+            self._ENABLE_NATIVE_VIDEO_PROCESSING_DEFAULT,
+        )
+        if not enabled:
+            if not getattr(self, "_warned_native_video_disabled", False):
+                logger.info(
+                    "MLX native video processing is disabled by default for local safety; "
+                    "using frame/caption fallbacks. Set "
+                    "RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING=1 and prefer "
+                    "FORCE_QWENVL_VIDEO_READER=torchcodec to opt in."
+                )
+                self._warned_native_video_disabled = True
+            return False
+
+        if getattr(self, "_warned_native_video_enabled", False):
+            return True
+
+        reader = (os.environ.get("FORCE_QWENVL_VIDEO_READER") or "").strip().lower()
+        if reader == "torchcodec":
+            logger.info(
+                "MLX native video processing enabled with FORCE_QWENVL_VIDEO_READER=torchcodec."
+            )
+        else:
+            configured = reader or "auto"
+            logger.warning(
+                "MLX native video processing is enabled with FORCE_QWENVL_VIDEO_READER=%s. "
+                "Qwen upstream recommends torchcodec for the most stable video loading.",
+                configured,
+            )
+        self._warned_native_video_enabled = True
+        return True
+
     def _get_heavy_op_gate(self) -> _HeavyOpGate:
         """Return the shared gate used to limit overlapping MLX heavy ops."""
         global _HEAVY_OP_GATE, _HEAVY_OP_GATE_LIMIT
@@ -354,6 +403,18 @@ class MLXBackend(ModelBackend):
             self._VISION_MIN_PIXELS,
             self._VISION_MAX_PIXELS,
         )
+
+    def _call_media_processor(self, processor: Any, **kwargs):
+        """Call a media processor without repeating qwen-vl-utils resizing."""
+        proc_kwargs = dict(kwargs)
+        proc_kwargs.setdefault("do_resize", False)
+        try:
+            return processor(**proc_kwargs)
+        except TypeError as exc:
+            if "do_resize" not in str(exc):
+                raise
+            proc_kwargs.pop("do_resize", None)
+            return processor(**proc_kwargs)
 
     # =========================================================================
     # Embedder
@@ -776,7 +837,7 @@ class MLXBackend(ModelBackend):
                 messages_batch.append([{
                     "role": "user",
                     "content": [
-                        {"type": "image", "image": path},
+                        self._image_content(path),
                         {"type": "text", "text": "Describe this image."},
                     ],
                 }])
@@ -812,7 +873,8 @@ class MLXBackend(ModelBackend):
 
             try:
                 # Image processor requires PyTorch tensors, convert to MLX after
-                inputs = self._embedder_processor(
+                inputs = self._call_media_processor(
+                    self._embedder_processor,
                     text=chat_texts, images=image_inputs,
                     return_tensors="pt", padding=True,
                 )
@@ -868,15 +930,30 @@ class MLXBackend(ModelBackend):
 
             return embeddings
 
+    def _image_content(self, path: str) -> dict:
+        """Build an image content block with conservative qwen-vl-utils budgets."""
+        return {
+            "type": "image",
+            "image": path,
+            "min_pixels": self._VISION_MIN_PIXELS,
+            "max_pixels": self._VISION_MAX_PIXELS,
+        }
+
     def _video_content(self, path: str) -> dict:
         """Build a video content dict with adaptive frame sampling.
 
         Uses fps-based sampling (1 frame/sec) so longer videos get more frames.
         Caps at _VIDEO_MAX_FRAMES to bound memory on very long videos.
-        A 30s video → 30 frames. A 10min video → 128 frames (capped).
+        A 30s video → up to 30 frames. Longer videos clamp to the configured cap.
         """
-        return {"type": "video", "video": path, "fps": self._VIDEO_SAMPLE_FPS,
-                "max_frames": self._VIDEO_MAX_FRAMES}
+        return {
+            "type": "video",
+            "video": path,
+            "fps": self._VIDEO_SAMPLE_FPS,
+            "max_frames": self._VIDEO_MAX_FRAMES,
+            "min_pixels": self._VISION_MIN_PIXELS,
+            "max_pixels": self._VISION_MAX_PIXELS,
+        }
 
     def embed_video(self, video_path: str) -> np.ndarray:
         """Embed a single video."""
@@ -1045,15 +1122,18 @@ class MLXBackend(ModelBackend):
 
             embeddings: List[np.ndarray] = []
             for path in video_paths:
-                try:
-                    embedding = self._embed_video_native(path, num_layers)
-                except Exception as exc:
-                    logger.warning(
-                        "native_video_embedding failed for %s: %s; falling back to frame embeddings",
-                        path,
-                        exc,
-                    )
+                if not self._native_video_processing_enabled():
                     embedding = self._embed_video_via_frames(path)
+                else:
+                    try:
+                        embedding = self._embed_video_native(path, num_layers)
+                    except Exception as exc:
+                        logger.warning(
+                            "native_video_embedding failed for %s: %s; falling back to frame embeddings",
+                            path,
+                            exc,
+                        )
+                        embedding = self._embed_video_via_frames(path)
 
                 embeddings.append(embedding)
 
@@ -1110,7 +1190,8 @@ class MLXBackend(ModelBackend):
             normalized_video_kwargs["fps"] = fps_value[0] if fps_value else None
 
         try:
-            inputs = self._embedder_processor(
+            inputs = self._call_media_processor(
+                self._embedder_processor,
                 text=[chat_text],
                 videos=video_inputs,
                 return_tensors="pt",
@@ -1443,7 +1524,7 @@ class MLXBackend(ModelBackend):
         """Build the multimodal chat messages used for reranker prompting."""
         query_content: list = [{"type": "text", "text": "<Query>:"}]
         if query_image_path:
-            query_content.append({"type": "image", "image": self._as_file_uri(query_image_path)})
+            query_content.append(self._image_content(self._as_file_uri(query_image_path)))
             if query:
                 query_content.append({"type": "text", "text": query})
         elif query_video_path:
@@ -1455,7 +1536,7 @@ class MLXBackend(ModelBackend):
 
         doc_content: list = [{"type": "text", "text": "\n<Document>:"}]
         if image_path:
-            doc_content.append({"type": "image", "image": self._as_file_uri(image_path)})
+            doc_content.append(self._image_content(self._as_file_uri(image_path)))
             if document:
                 doc_content.append({"type": "text", "text": document})
         elif video_path:
@@ -1480,6 +1561,23 @@ class MLXBackend(ModelBackend):
             },
         ]
 
+    def _drop_video_blocks(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove video blocks so callers can degrade to text/image-only processing."""
+        filtered_messages: List[Dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                filtered_messages.append(dict(message))
+                continue
+            filtered_message = dict(message)
+            filtered_message["content"] = [
+                block
+                for block in content
+                if not (isinstance(block, dict) and block.get("type") == "video")
+            ]
+            filtered_messages.append(filtered_message)
+        return filtered_messages
+
     def _build_reranker_processor_inputs(
         self,
         prompt: str,
@@ -1493,6 +1591,17 @@ class MLXBackend(ModelBackend):
         content_blocks = []
         for message in user_messages:
             content_blocks.extend(message.get("content", []))
+
+        has_video = any(
+            block.get("type") == "video"
+            for block in content_blocks
+            if isinstance(block, dict)
+        )
+        if has_video and not self._native_video_processing_enabled():
+            user_messages = self._drop_video_blocks(user_messages)
+            content_blocks = []
+            for message in user_messages:
+                content_blocks.extend(message.get("content", []))
 
         has_vision = any(
             block.get("type") in {"image", "video"}
@@ -1520,7 +1629,7 @@ class MLXBackend(ModelBackend):
             proc_kwargs["videos"] = video_inputs
             proc_kwargs.update(normalized_video_kwargs)
 
-        pt_inputs = self._reranker_processor(**proc_kwargs)
+        pt_inputs = self._call_media_processor(self._reranker_processor, **proc_kwargs)
         return {
             key: value.numpy() if hasattr(value, "numpy") else value
             for key, value in pt_inputs.items()

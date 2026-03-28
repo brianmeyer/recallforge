@@ -36,6 +36,9 @@ This is the canonical reference for all `RECALLFORGE_*` environment variables us
 - `RECALLFORGE_MLX_MAX_PIXELS`
   Upper bound for MLX processor visual resolution budgeting.
 
+- `RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING`
+  Enable qwen-vl-utils native video decoding on MLX. Disabled by default for local safety; if you opt in, prefer `FORCE_QWENVL_VIDEO_READER=torchcodec`.
+
 - `RECALLFORGE_STORAGE`
   Storage backend selector (currently `lancedb`).
 

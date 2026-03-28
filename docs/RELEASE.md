@@ -86,6 +86,8 @@ When you omit `--output`, the benchmark now keeps profile-specific filenames for
 
 - MLX heavy multimodal operations are now intentionally serialized by default via `RECALLFORGE_MLX_HEAVY_OP_CONCURRENCY=1`.
 - On MLX, raw video query embedding is no longer the default hot path. RecallForge prefers caption/transcript-first retrieval unless `RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING=1` is set.
+- On MLX, qwen-vl-utils native video decoding is now also opt-in. RecallForge defaults to frame/caption fallbacks unless `RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING=1` is set.
+- If you do opt back into native MLX video decoding, prefer `FORCE_QWENVL_VIDEO_READER=torchcodec` per Qwen's upstream guidance.
 - The raw-video path now has explicit frame and pixel budget knobs:
   - `RECALLFORGE_MLX_VIDEO_SAMPLE_FPS`
   - `RECALLFORGE_MLX_VIDEO_MAX_FRAMES`
