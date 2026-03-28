@@ -1871,12 +1871,44 @@ def _resolve_output_path(output_path: Optional[str], expansion_profile: str) -> 
     )
 
 
+def _apply_smoke_profile_defaults(
+    smoke_profile: str,
+    stage_filters: Optional[List[str]],
+    max_queries_per_category: Optional[int],
+    rss_limit_mb: Optional[int],
+) -> tuple[Optional[List[str]], Optional[int], Optional[int]]:
+    """Resolve smoke-profile defaults without overriding explicit caller choices."""
+    if smoke_profile != "safe":
+        return stage_filters, max_queries_per_category, rss_limit_mb
+
+    resolved_stage_filters = stage_filters or ["rrf"]
+    resolved_max_queries = max_queries_per_category or 1
+    resolved_rss_limit = rss_limit_mb or 6144
+    return resolved_stage_filters, resolved_max_queries, resolved_rss_limit
+
+
+def _current_rss_mb() -> Optional[float]:
+    """Return current peak RSS in MB when available."""
+    try:
+        import resource
+    except ImportError:
+        return None
+
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == "darwin":
+        return usage / (1024 * 1024)
+    return usage / 1024.0
+
+
 def _build_output_payload(
     categories: Dict[str, List[GroundTruth]],
     all_results: Dict[str, Dict[str, StageResult]],
     stages: List[Tuple[str, str]],
     *,
     expansion_profile: ExpansionProfile,
+    smoke_profile: str,
+    rss_limit_mb: Optional[int],
+    peak_rss_mb: Optional[float],
     indexed_items: int,
     run_status: str,
     interrupted: bool,
@@ -1895,6 +1927,8 @@ def _build_output_payload(
             "expand_enabled": expansion_profile.expand,
             "media_query_probe_enabled": expansion_profile.enable_media_query_probe,
             "generated_query_expansion_enabled": expansion_profile.allow_generate_text,
+            "smoke_profile": smoke_profile,
+            "rss_limit_mb": rss_limit_mb,
         },
         "run_status": run_status,
         "interrupted": interrupted,
@@ -1907,6 +1941,9 @@ def _build_output_payload(
             },
             "current_stage": current_stage,
             "current_category": current_category,
+        },
+        "telemetry": {
+            "peak_rss_mb": None if peak_rss_mb is None else round(peak_rss_mb, 1),
         },
         "corpus": {
             "text_docs": len(list((CORPUS_DIR / "text").glob("*.md"))),
@@ -2192,8 +2229,17 @@ def run_benchmark(
     stage_filters: Optional[List[str]] = None,
     max_queries_per_category: Optional[int] = None,
     expansion_profile: str = "caption_only",
+    smoke_profile: str = "off",
+    rss_limit_mb: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run the full cross-modal ablation benchmark."""
+
+    stage_filters, max_queries_per_category, rss_limit_mb = _apply_smoke_profile_defaults(
+        smoke_profile,
+        stage_filters,
+        max_queries_per_category,
+        rss_limit_mb,
+    )
 
     categories = _group_queries(
         category_filters=category_filters,
@@ -2208,6 +2254,7 @@ def run_benchmark(
     completed_stages: List[str] = []
     current_stage_name: Optional[str] = None
     current_category_name: Optional[str] = None
+    peak_rss_mb = _current_rss_mb()
 
     def save_checkpoint(
         *,
@@ -2221,6 +2268,9 @@ def run_benchmark(
             all_results,
             stages,
             expansion_profile=profile,
+            smoke_profile=smoke_profile,
+            rss_limit_mb=rss_limit_mb,
+            peak_rss_mb=peak_rss_mb,
             indexed_items=indexed,
             run_status=run_status,
             interrupted=interrupted,
@@ -2238,6 +2288,9 @@ def run_benchmark(
     print(f"\nQuery categories: {', '.join(f'{k}({len(v)})' for k, v in categories.items())}")
     print(f"Stages: {', '.join(stage_name for stage_name, _ in stages)}")
     print(f"Expansion profile: {profile.name}")
+    print(f"Smoke profile: {smoke_profile}")
+    if rss_limit_mb is not None:
+        print(f"RSS limit: {rss_limit_mb} MB")
     print(f"Total queries: {sum(len(v) for v in categories.values())}")
     print(f"Corpus documents: {len(CORPUS_DOCS)}")
 
@@ -2247,6 +2300,11 @@ def run_benchmark(
         # Ingest corpus
         print("\nIndexing corpus...")
         indexed = ingest_corpus(backend, storage, collection, CORPUS_DIR)
+        peak_rss_mb = max(peak_rss_mb or 0.0, _current_rss_mb() or 0.0)
+        if rss_limit_mb is not None and peak_rss_mb and peak_rss_mb > rss_limit_mb:
+            raise RuntimeError(
+                f"RSS limit exceeded during indexing: peak {peak_rss_mb:.1f} MB > limit {rss_limit_mb} MB"
+            )
         print(f"Indexed {indexed} items.\n")
         save_checkpoint(run_status="partial")
 
@@ -2315,6 +2373,11 @@ def run_benchmark(
                         sr.asset_precision_at_5_sum += asset_metrics.precision_at_5
                         sr.asset_precision_at_10_sum += asset_metrics.precision_at_10
                         sr.latencies_ms.append(latency)
+                        peak_rss_mb = max(peak_rss_mb or 0.0, _current_rss_mb() or 0.0)
+                        if rss_limit_mb is not None and peak_rss_mb and peak_rss_mb > rss_limit_mb:
+                            raise RuntimeError(
+                                f"RSS limit exceeded: peak {peak_rss_mb:.1f} MB > limit {rss_limit_mb} MB"
+                            )
 
                         # Track per-difficulty hits
                         if gt.difficulty == "easy":
@@ -2515,20 +2578,42 @@ def main():
             "(current default), heuristic, or qwen"
         ),
     )
+    parser.add_argument(
+        "--smoke-profile",
+        choices=["off", "safe"],
+        default="off",
+        help="Optional bounded smoke profile for safer local validation.",
+    )
+    parser.add_argument(
+        "--rss-limit-mb",
+        type=int,
+        default=None,
+        help="Abort the benchmark if peak RSS exceeds this limit in MB.",
+    )
     args = parser.parse_args()
 
     if args.dry_run:
+        resolved_stage_mode, resolved_max_queries, resolved_rss_limit = _apply_smoke_profile_defaults(
+            args.smoke_profile,
+            args.stage_mode,
+            args.max_queries_per_category,
+            args.rss_limit_mb,
+        )
         # Validate query structure
         print(f"\n{'=' * 60}")
         print("DRY RUN - Query Structure Validation")
         print(f"{'=' * 60}")
         categories = _group_queries(
             category_filters=args.category,
-            max_queries_per_category=args.max_queries_per_category,
+            max_queries_per_category=resolved_max_queries,
         )
         print(f"Total queries: {sum(len(v) for v in categories.values())}")
         print(f"Corpus documents: {len(CORPUS_DOCS)}")
         print(f"Expansion profile: {args.expansion_profile}")
+        print(f"Smoke profile: {args.smoke_profile}")
+        print(f"Resolved stages: {resolved_stage_mode or 'all'}")
+        if resolved_rss_limit is not None:
+            print(f"Resolved RSS limit: {resolved_rss_limit} MB")
 
         print(f"\nQueries by category:")
         for cat, queries in categories.items():
@@ -2587,6 +2672,8 @@ def main():
             stage_filters=args.stage_mode,
             max_queries_per_category=args.max_queries_per_category,
             expansion_profile=args.expansion_profile,
+            smoke_profile=args.smoke_profile,
+            rss_limit_mb=args.rss_limit_mb,
         )
 
     finally:

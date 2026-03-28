@@ -249,6 +249,9 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
             {"Vector-only": {"text_to_text": stage_result}},
             [("Vector-only", "vector")],
             expansion_profile=module._resolve_expansion_profile("caption_only"),
+            smoke_profile="safe",
+            rss_limit_mb=4096,
+            peak_rss_mb=512.4,
             indexed_items=74,
             run_status="partial",
             interrupted=True,
@@ -260,8 +263,11 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
 
         self.assertEqual(payload["version"], "0.2.0")
         self.assertEqual(payload["configuration"]["expansion_profile"], "caption_only")
+        self.assertEqual(payload["configuration"]["smoke_profile"], "safe")
+        self.assertEqual(payload["configuration"]["rss_limit_mb"], 4096)
         self.assertFalse(payload["configuration"]["expand_enabled"])
         self.assertTrue(payload["configuration"]["media_query_probe_enabled"])
+        self.assertEqual(payload["telemetry"]["peak_rss_mb"], 512.4)
         self.assertEqual(payload["run_status"], "partial")
         self.assertTrue(payload["interrupted"])
         self.assertEqual(payload["progress"]["indexed_items"], 74)
@@ -324,6 +330,39 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
 
         self.assertTrue(default_path.endswith("cross_modal_ablation_results.json"))
         self.assertTrue(qwen_path.endswith("cross_modal_ablation_results_qwen.json"))
+
+    def test_apply_smoke_profile_defaults(self):
+        module = _load_cross_modal_ablation()
+
+        stages, max_queries, rss_limit = module._apply_smoke_profile_defaults(
+            "safe",
+            None,
+            None,
+            None,
+        )
+        self.assertEqual(stages, ["rrf"])
+        self.assertEqual(max_queries, 1)
+        self.assertEqual(rss_limit, 6144)
+
+        stages, max_queries, rss_limit = module._apply_smoke_profile_defaults(
+            "safe",
+            ["hybrid"],
+            2,
+            2048,
+        )
+        self.assertEqual(stages, ["hybrid"])
+        self.assertEqual(max_queries, 2)
+        self.assertEqual(rss_limit, 2048)
+
+        stages, max_queries, rss_limit = module._apply_smoke_profile_defaults(
+            "off",
+            None,
+            None,
+            None,
+        )
+        self.assertIsNone(stages)
+        self.assertIsNone(max_queries)
+        self.assertIsNone(rss_limit)
 
 
 if __name__ == "__main__":
