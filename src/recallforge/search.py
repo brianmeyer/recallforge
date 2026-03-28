@@ -420,6 +420,7 @@ class HybridSearcher:
         cache: Optional[EmbeddingCache] = None,
         intent: Optional[str] = None,
         expand: bool = False,
+        enable_media_query_probe: bool = True,
     ):
         """
         Initialize hybrid searcher.
@@ -443,6 +444,8 @@ class HybridSearcher:
             cache: Optional EmbeddingCache; created with default maxsize if None
             intent: Optional intent for query steering ("exact_lookup", "semantic", "broad")
             expand: Whether to enable VL-aware query expansion (default: False, opt-in)
+            enable_media_query_probe: Whether image/video queries should generate
+                caption/transcript BM25 probe text before fusion. Default True.
         """
         self.backend = backend
         self.storage = storage
@@ -490,6 +493,7 @@ class HybridSearcher:
         self.cache: EmbeddingCache = cache if cache is not None else EmbeddingCache()
         self.intent = intent
         self.expand = expand
+        self.enable_media_query_probe = enable_media_query_probe
 
     def _vector_results_to_hybrid(self, results: List[SearchResult]) -> List[HybridResult]:
         """Convert raw vector results into HybridResult objects."""
@@ -624,6 +628,9 @@ class HybridSearcher:
         video_path: Optional[str] = None,
     ) -> tuple[str, List[SearchResult]]:
         """Generate a text probe from query media and run BM25 when possible."""
+        if not self.enable_media_query_probe:
+            return "", []
+
         query_text = ""
         if image_path:
             query_text = self._caption_image_query(image_path)
@@ -670,9 +677,11 @@ class HybridSearcher:
     def search_image(self, image_path: str) -> List[HybridResult]:
         """Run image-query search through hybrid pipeline (RRF + optional rerank)."""
         # Image query always contributes vector candidates.
-        vector = self._embed_image_cached(image_path)
-        all_results: Dict[str, List[SearchResult]] = {
-            "original_vec": self.storage.search_vec(
+        all_results: Dict[str, List[SearchResult]] = {}
+        query_image_path_for_rerank: Optional[str] = image_path
+        try:
+            vector = self._embed_image_cached(image_path)
+            all_results["original_vec"] = self.storage.search_vec(
                 vector.tolist() if hasattr(vector, 'tolist') else list(vector),
                 limit=self.fts_probe_limit,
                 collection=self.collection,
@@ -682,16 +691,21 @@ class HybridSearcher:
                 project_id=self.project_id,
                 profile=self.profile,
             )
-        }
+        except Exception as exc:
+            logger.warning("image query embedding failed for %s: %s", image_path, exc)
+            query_image_path_for_rerank = None
 
         query_text, bm25_results = self._query_media_probe(image_path=image_path)
         if bm25_results:
             all_results["original_fts"] = bm25_results
         self._add_text_expansion_branches(all_results, query_text)
 
+        if not all_results:
+            return []
+
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_scores, reranker_path = self._rerank_candidates(
-            candidates, query=query_text, query_image_path=image_path
+            candidates, query=query_text, query_image_path=query_image_path_for_rerank
         )
         return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 
@@ -707,9 +721,11 @@ class HybridSearcher:
                 f"Backend {type(self.backend).__name__} does not support raw video queries. "
                 "Install a backend with video support (e.g. recallforge[mlx] or recallforge[torch])."
             )
-        vector = embed_video(video_path)
-        all_results: Dict[str, List[SearchResult]] = {
-            "original_vec": self.storage.search_vec(
+        all_results: Dict[str, List[SearchResult]] = {}
+        query_video_path_for_rerank: Optional[str] = video_path
+        try:
+            vector = embed_video(video_path)
+            all_results["original_vec"] = self.storage.search_vec(
                 vector.tolist() if hasattr(vector, 'tolist') else list(vector),
                 limit=self.fts_probe_limit,
                 collection=self.collection,
@@ -719,16 +735,21 @@ class HybridSearcher:
                 project_id=self.project_id,
                 profile=self.profile,
             )
-        }
+        except Exception as exc:
+            logger.warning("video query embedding failed for %s: %s", video_path, exc)
+            query_video_path_for_rerank = None
 
         query_text, bm25_results = self._query_media_probe(video_path=video_path)
         if bm25_results:
             all_results["original_fts"] = bm25_results
         self._add_text_expansion_branches(all_results, query_text)
 
+        if not all_results:
+            return []
+
         candidates, rrf_audit_info = self._reciprocal_rank_fusion(all_results)
         rerank_scores, reranker_path = self._rerank_candidates(
-            candidates, query=query_text, query_video_path=video_path
+            candidates, query=query_text, query_video_path=query_video_path_for_rerank
         )
         return self._blend_scores(candidates, rerank_scores, rrf_audit_info, reranker_path)
 

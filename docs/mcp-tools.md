@@ -149,7 +149,7 @@ Example MCP client config (Claude Desktop):
 | profile | string | No | — | Profile namespace filter |
 | intent | string (`exact_lookup`\|`semantic`\|`broad`) | No | — | Intent steering for RRF weights |
 | rerank_top_k | integer | No | 20 | Max top RRF candidates to rerank (`0` disables reranking) |
-| expand | boolean | No | false | Enable VL-aware query expansion |
+| expand | boolean | No | false | Enable opt-in query expansion. Text queries use Qwen-backed variants when the backend supports `generate_text()`, otherwise they fall back to heuristic rewrites. Image/video queries expand the generated caption/transcript probe text on the same rules. |
 
 \* Exactly one of `query`, `image_path`, or `video_path` must be provided.
 
@@ -203,6 +203,7 @@ Example MCP client config (Claude Desktop):
 
 **Notes:**
 - Reuses the same retrieval pipeline as `search`, so explanations reflect the actual ranking path.
+- `expand=true` is still opt-in. It adds extra retrieval branches, so expect a latency/quality tradeoff rather than a free win.
 - `provenance.rrf.sources` maps each contributing RRF list to that result’s rank in the list.
 - `provenance.reranker.scoring_path` shows whether the reranker used text or VL scoring.
 - `media_compensation_applied` is `true` for image/video candidates that received RRF compensation because BM25 cannot surface them structurally.

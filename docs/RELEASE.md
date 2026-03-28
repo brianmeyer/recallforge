@@ -40,10 +40,27 @@ UAT_MCP_LIVE=1 .venv/bin/python -m pytest -q tests/uat/test_uat_comprehensive.py
 Then run the expanded benchmark:
 
 ```bash
-.venv/bin/python benchmarks/cross_modal_ablation.py --backend mlx --output benchmarks/results/cross_modal_ablation_results.json
+.venv/bin/python benchmarks/cross_modal_ablation.py --backend mlx --expansion-profile caption_only --output benchmarks/results/cross_modal_ablation_results.json
 ```
 
 The benchmark now checkpoints to JSON as it runs. If the run is interrupted, the output file still contains partial results plus progress metadata.
+
+For query-expansion release decisions, compare at least these profiles:
+
+```bash
+.venv/bin/python benchmarks/cross_modal_ablation.py --backend mlx --expansion-profile caption_only
+.venv/bin/python benchmarks/cross_modal_ablation.py --backend mlx --expansion-profile heuristic
+.venv/bin/python benchmarks/cross_modal_ablation.py --backend mlx --expansion-profile qwen
+```
+
+Profile meanings:
+
+- `caption_only`: shipped default baseline for media queries. Text queries do not expand; image/video queries still use caption or transcript BM25 probes.
+- `heuristic`: opt-in expansion branches using the legacy heuristic rewrite fallback.
+- `qwen`: opt-in expansion branches using the backend `generate_text()` path when available.
+- `off`: pure no-expansion baseline, including no media caption probe, useful for measuring the value of caption/transcript query text itself.
+
+When you omit `--output`, the benchmark now keeps profile-specific filenames for non-default runs, for example `cross_modal_ablation_results_qwen.json`.
 
 ## 4. Tag and publish
 

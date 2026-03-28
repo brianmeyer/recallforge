@@ -658,6 +658,47 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("original_fts", results[0].source)
 
+    def test_search_image_can_disable_media_query_probe(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.88])
+        storage = StubStorage(
+            fts_results=[_make_search_result("doc1.md", 0.95, "fts")],
+            vec_results=[_make_search_result("doc1.md", 0.9, "vec")],
+        )
+        storage.search_fts = MagicMock(side_effect=storage.search_fts)
+        searcher = HybridSearcher(
+            backend=backend,
+            storage=storage,
+            limit=1,
+            enable_media_query_probe=False,
+        )
+
+        results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(len(results), 1)
+        storage.search_fts.assert_not_called()
+        self.assertEqual(results[0].source, "original_vec")
+
+    def test_search_image_falls_back_to_caption_probe_when_query_embedding_fails(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.88])
+        backend.embed_image = MagicMock(side_effect=RuntimeError("image embed failed"))
+        storage = StubStorage(
+            fts_results=[_make_search_result("doc1.md", 0.95, "fts")],
+            vec_results=[],
+        )
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1)
+
+        with self.assertLogs("recallforge.search", level="WARNING") as captured:
+            results = searcher.search_image("/tmp/query.png")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(storage.last_fts_query, "caption for query.png")
+        self.assertIn("original_fts", results[0].source)
+        self.assertTrue(
+            any("image query embedding failed" in message for message in captured.output)
+        )
+
     def test_search_image_expands_caption_probe_when_enabled(self):
         backend = StubBackend(
             mode="hybrid",
@@ -768,6 +809,28 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
             ],
         )
         self.assertEqual(storage.search_vec.call_count, 3)
+
+    def test_search_video_falls_back_to_caption_probe_when_query_embedding_fails(self):
+        backend = StubBackend(mode="hybrid")
+        backend.embed_video = MagicMock(side_effect=RuntimeError("video embed failed"))
+        backend.rerank = MagicMock(return_value=[0.88])
+        storage = StubStorage(
+            fts_results=[_make_search_result("clip.md", 0.95, "fts")],
+            vec_results=[],
+        )
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1)
+        searcher._caption_video_query = MagicMock(return_value="forest timelapse mountains")
+
+        with self.assertLogs("recallforge.search", level="WARNING") as captured:
+            results = searcher.search_video("/tmp/query.mp4")
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(storage.last_fts_query, "forest timelapse mountains")
+        searcher._caption_video_query.assert_called_once_with("/tmp/query.mp4")
+        self.assertIn("original_fts", results[0].source)
+        self.assertTrue(
+            any("video query embedding failed" in message for message in captured.output)
+        )
 
     def test_text_query_with_media_candidates_skips_reranker_by_default(self):
         backend = StubBackend(mode="hybrid")

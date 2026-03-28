@@ -219,13 +219,16 @@ class TestHybridSearcherExpandParameter:
             expand=True,
         )
         assert searcher.expand is True
+        assert searcher.enable_media_query_probe is True
 
         searcher_false = HybridSearcher(
             backend=backend,
             storage=storage,
             expand=False,
+            enable_media_query_probe=False,
         )
         assert searcher_false.expand is False
+        assert searcher_false.enable_media_query_probe is False
 
     def test_searcher_defaults_expand_to_false(self):
         """HybridSearcher should default expand to False."""
@@ -237,6 +240,7 @@ class TestHybridSearcherExpandParameter:
             storage=storage,
         )
         assert searcher.expand is False
+        assert searcher.enable_media_query_probe is True
 
 
 class TestQueryExpansionIntegration:
