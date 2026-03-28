@@ -240,7 +240,8 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
 
     def test_embed_video_via_frames_averages_and_normalizes_frame_embeddings(self):
         backend = object.__new__(mlx_backend.MLXBackend)
-        backend._VIDEO_MAX_FRAMES = 128
+        backend._VIDEO_MAX_FRAMES = 32
+        backend._VIDEO_FALLBACK_MAX_FRAMES = 2
         backend.embed_images = lambda _paths: np.array(
             [[1.0, 0.0], [0.0, 1.0]],
             dtype=np.float32,
@@ -261,6 +262,32 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
             atol=1e-5,
         )
 
+    def test_embed_video_via_frames_uses_configured_fallback_cap(self):
+        backend = object.__new__(mlx_backend.MLXBackend)
+        backend._VIDEO_FALLBACK_MAX_FRAMES = 3
+        backend.embed_images = lambda _paths: np.array([[1.0, 0.0]], dtype=np.float32)
+
+        def fake_extract_video_frames(
+            path,
+            temp_dir,
+            logical_path,
+            frame_interval_seconds,
+            max_frames,
+        ):
+            self.assertEqual(path, "clip.mp4")
+            self.assertEqual(logical_path, "clip.mp4")
+            self.assertEqual(frame_interval_seconds, 5.0)
+            self.assertEqual(max_frames, 3)
+            return ([SimpleNamespace(image_path="frame1.png")], None)
+
+        with patch("recallforge.video.extract_video_frames", side_effect=fake_extract_video_frames):
+            embedding = backend._embed_video_via_frames("clip.mp4")
+
+        np.testing.assert_allclose(
+            embedding,
+            np.array([1.0, 0.0], dtype=np.float32),
+        )
+
     def test_resolve_heavy_op_concurrency_defaults_to_one(self):
         backend = object.__new__(mlx_backend.MLXBackend)
 
@@ -273,6 +300,41 @@ class TestMLXRerankerPromptPreparation(unittest.TestCase):
 
         with patch.dict(os.environ, {"RECALLFORGE_MLX_HEAVY_OP_CONCURRENCY": "nope"}):
             self.assertEqual(backend._resolve_heavy_op_concurrency(), 1)
+
+    def test_resolve_positive_video_envs_fall_back_gracefully(self):
+        backend = object.__new__(mlx_backend.MLXBackend)
+
+        with patch.dict(
+            os.environ,
+            {
+                "RECALLFORGE_MLX_VIDEO_MAX_FRAMES": "48",
+                "RECALLFORGE_MLX_VIDEO_SAMPLE_FPS": "0.5",
+            },
+        ):
+            self.assertEqual(
+                backend._resolve_positive_int_env("RECALLFORGE_MLX_VIDEO_MAX_FRAMES", 32),
+                48,
+            )
+            self.assertEqual(
+                backend._resolve_positive_float_env("RECALLFORGE_MLX_VIDEO_SAMPLE_FPS", 1.0),
+                0.5,
+            )
+
+        with patch.dict(
+            os.environ,
+            {
+                "RECALLFORGE_MLX_VIDEO_MAX_FRAMES": "0",
+                "RECALLFORGE_MLX_VIDEO_SAMPLE_FPS": "-2",
+            },
+        ):
+            self.assertEqual(
+                backend._resolve_positive_int_env("RECALLFORGE_MLX_VIDEO_MAX_FRAMES", 32),
+                32,
+            )
+            self.assertEqual(
+                backend._resolve_positive_float_env("RECALLFORGE_MLX_VIDEO_SAMPLE_FPS", 1.0),
+                1.0,
+            )
 
     def test_heavy_op_gate_is_reentrant_on_same_thread(self):
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
