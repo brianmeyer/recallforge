@@ -56,6 +56,7 @@ RECALLFORGE_ENV_VARS = {
     "RECALLFORGE_MAX_CANDIDATES": "Hard cap for candidate pool before reranking.",
     "RECALLFORGE_RERANK_TOP_K": "Number of top RRF candidates sent to reranker.",
     "RECALLFORGE_ENABLE_MEDIA_RERANKING": "Enable multimodal reranking for image/video-involved searches (disabled by default).",
+    "RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING": "Enable raw video query embedding; MLX defaults to safer caption/transcript-first retrieval unless explicitly enabled.",
     "RECALLFORGE_MEDIA_QUERY_RERANK_TOP_K": "Rerank cap for query-side image/video searches.",
     "RECALLFORGE_MEDIA_RESULT_RERANK_TOP_K": "Rerank cap when text queries retrieve image/video candidates.",
     "RECALLFORGE_DISABLE_MLX": "Force-disable MLX backend detection (1=true).",

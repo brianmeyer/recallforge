@@ -832,6 +832,45 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
             any("video query embedding failed" in message for message in captured.output)
         )
 
+    def test_search_video_skips_raw_embedding_for_mlx_backend_by_default(self):
+        MLXStubBackend = type("MLXBackend", (StubBackend,), {})
+        backend = MLXStubBackend(mode="hybrid")
+        backend.embed_video = MagicMock(return_value=np.ones(2048, dtype=np.float32))
+        storage = StubStorage(
+            fts_results=[_make_search_result("clip.md", 0.95, "fts")],
+            vec_results=[_make_search_result("clip.md", 0.9, "vec")],
+        )
+        searcher = HybridSearcher(backend=backend, storage=storage, limit=1)
+        searcher._caption_video_query = MagicMock(return_value="forest timelapse mountains")
+
+        with self.assertLogs("recallforge.search", level="INFO") as captured:
+            results = searcher.search_video("/tmp/query.mp4")
+
+        backend.embed_video.assert_not_called()
+        self.assertEqual(storage.last_fts_query, "forest timelapse mountains")
+        self.assertEqual(len(results), 1)
+        self.assertTrue(
+            any("raw video query embedding disabled" in message for message in captured.output)
+        )
+
+    def test_search_video_can_opt_back_into_raw_embedding_for_mlx_backend(self):
+        MLXStubBackend = type("MLXBackend", (StubBackend,), {})
+        backend = MLXStubBackend(mode="hybrid")
+        backend.embed_video = MagicMock(return_value=np.ones(2048, dtype=np.float32))
+        storage = StubStorage(
+            fts_results=[_make_search_result("clip.md", 0.95, "fts")],
+            vec_results=[_make_search_result("clip.md", 0.9, "vec")],
+        )
+
+        with patch.dict(os.environ, {"RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING": "1"}):
+            searcher = HybridSearcher(backend=backend, storage=storage, limit=1)
+            searcher._caption_video_query = MagicMock(return_value="forest timelapse mountains")
+            results = searcher.search_video("/tmp/query.mp4")
+
+        backend.embed_video.assert_called_once_with("/tmp/query.mp4")
+        self.assertEqual(storage.last_fts_query, "forest timelapse mountains")
+        self.assertEqual(len(results), 1)
+
     def test_text_query_with_media_candidates_skips_reranker_by_default(self):
         backend = StubBackend(mode="hybrid")
         backend.rerank = MagicMock(return_value=[0.99])

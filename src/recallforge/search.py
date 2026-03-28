@@ -40,6 +40,11 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _is_mlx_backend(backend: ModelBackend) -> bool:
+    """Best-effort detection for the MLX backend without importing it here."""
+    return type(backend).__name__ == "MLXBackend"
+
+
 def _log_stage_metrics(
     stage: str,
     results: List[Any],
@@ -478,6 +483,10 @@ class HybridSearcher:
             "RECALLFORGE_ENABLE_MEDIA_RERANKING",
             False,
         )
+        self.enable_raw_video_query_embedding = _env_flag(
+            "RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING",
+            not _is_mlx_backend(self.backend),
+        )
         self.overfetch_factor = max(2, env_overfetch)
         self.max_candidates = max(self.limit, env_max_candidates)
         self.candidate_limit = min(self.max_candidates, self.limit * self.overfetch_factor)
@@ -715,29 +724,36 @@ class HybridSearcher:
         Raises:
             NotImplementedError: If the backend does not support native video embedding.
         """
-        embed_video = getattr(self.backend, "embed_video", None)
-        if not callable(embed_video):
-            raise NotImplementedError(
-                f"Backend {type(self.backend).__name__} does not support raw video queries. "
-                "Install a backend with video support (e.g. recallforge[mlx] or recallforge[torch])."
-            )
         all_results: Dict[str, List[SearchResult]] = {}
-        query_video_path_for_rerank: Optional[str] = video_path
-        try:
-            vector = embed_video(video_path)
-            all_results["original_vec"] = self.storage.search_vec(
-                vector.tolist() if hasattr(vector, 'tolist') else list(vector),
-                limit=self.fts_probe_limit,
-                collection=self.collection,
-                content_type=self.content_type,
-                user_id=self.user_id,
-                session_id=self.session_id,
-                project_id=self.project_id,
-                profile=self.profile,
+        query_video_path_for_rerank: Optional[str] = None
+        embed_video = getattr(self.backend, "embed_video", None)
+        if self.enable_raw_video_query_embedding:
+            if not callable(embed_video):
+                raise NotImplementedError(
+                    f"Backend {type(self.backend).__name__} does not support raw video queries. "
+                    "Install a backend with video support (e.g. recallforge[mlx] or recallforge[torch])."
+                )
+            query_video_path_for_rerank = video_path
+            try:
+                vector = embed_video(video_path)
+                all_results["original_vec"] = self.storage.search_vec(
+                    vector.tolist() if hasattr(vector, 'tolist') else list(vector),
+                    limit=self.fts_probe_limit,
+                    collection=self.collection,
+                    content_type=self.content_type,
+                    user_id=self.user_id,
+                    session_id=self.session_id,
+                    project_id=self.project_id,
+                    profile=self.profile,
+                )
+            except Exception as exc:
+                logger.warning("video query embedding failed for %s: %s", video_path, exc)
+                query_video_path_for_rerank = None
+        else:
+            logger.info(
+                "raw video query embedding disabled for backend=%s; using caption/transcript-first retrieval",
+                type(self.backend).__name__,
             )
-        except Exception as exc:
-            logger.warning("video query embedding failed for %s: %s", video_path, exc)
-            query_video_path_for_rerank = None
 
         query_text, bm25_results = self._query_media_probe(video_path=video_path)
         if bm25_results:
