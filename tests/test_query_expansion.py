@@ -31,6 +31,43 @@ class BackendWithGenerateText:
         return self.response
 
 
+class CountingBackend(BackendWithGenerateText):
+    """Backend that counts embedding and generation calls."""
+
+    model_name = "counting-test-model"
+
+    def __init__(self, response: str = "alternate wording"):
+        super().__init__(response)
+        self.embed_text_calls = 0
+
+    def embed_text(self, text: str):
+        self.embed_text_calls += 1
+        return [float(len(text) % 7)] * 2048
+
+    def needs_reranker(self):
+        return False
+
+
+class VersionedEmptyStorage:
+    """Storage test double with an explicit index version token."""
+
+    def __init__(self, version: str = "1"):
+        self.version = version
+        self.vec_calls = 0
+        self.fts_calls = 0
+
+    def get_index_version(self) -> str:
+        return self.version
+
+    def search_fts(self, *_args, **_kwargs):
+        self.fts_calls += 1
+        return []
+
+    def search_vec(self, *_args, **_kwargs):
+        self.vec_calls += 1
+        return []
+
+
 class TestVisualQueryDetection:
     """Test visual query detection."""
 
@@ -241,6 +278,36 @@ class TestHybridSearcherExpandParameter:
         )
         assert searcher.expand is False
         assert searcher.enable_media_query_probe is True
+
+    def test_text_embedding_cache_uses_index_version(self):
+        backend = CountingBackend()
+        storage = VersionedEmptyStorage(version="1")
+        searcher = HybridSearcher(backend=backend, storage=storage)
+
+        searcher.search("repeatable query")
+        searcher.search("repeatable query")
+
+        assert backend.embed_text_calls == 1
+
+        storage.version = "2"
+        searcher.search("repeatable query")
+
+        assert backend.embed_text_calls == 2
+
+    def test_generated_expansion_cache_uses_index_version(self):
+        backend = CountingBackend("cached variant")
+        storage = VersionedEmptyStorage(version="1")
+        searcher = HybridSearcher(backend=backend, storage=storage, expand=True)
+
+        searcher.search("how to cache queries")
+        searcher.search("how to cache queries")
+
+        assert len(backend.calls) == 1
+
+        storage.version = "2"
+        searcher.search("how to cache queries")
+
+        assert len(backend.calls) == 2
 
 
 class TestQueryExpansionIntegration:

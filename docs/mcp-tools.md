@@ -215,7 +215,7 @@ Example MCP client config (Claude Desktop):
 
 **Notes:**
 - Reuses the same retrieval pipeline as `search`, so explanations reflect the actual ranking path.
-- `expand=true` is still opt-in. It adds extra retrieval branches, so expect a latency/quality tradeoff rather than a free win.
+- `expand=true` is still opt-in. Generated expansion branches are cached by model and index version, but extra retrieval branches can still add latency.
 - `provenance.rrf.sources` maps each contributing RRF list to that result’s rank in the list.
 - `provenance.reranker.scoring_path` shows whether the reranker used text or VL scoring.
 - `media_compensation_applied` is `true` for image/video candidates that received RRF compensation because BM25 cannot surface them structurally.

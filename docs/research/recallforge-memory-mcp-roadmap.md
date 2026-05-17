@@ -108,9 +108,11 @@ Goal:
 
 Current Linear fit:
 - `REC-130`
-- `REC-115`
 - `REC-147`
 - `REC-168`
+
+Shipped Linear work:
+- `REC-115`
 
 What this phase should look like:
 - retrieve first

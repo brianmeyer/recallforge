@@ -91,6 +91,7 @@ class LanceDBBackend(StorageBackend):
     FTS_REBUILD_PENDING_THRESHOLD = 10  # Rebuild after this many pending writes
     BULK_FLUSH_DOCS_THRESHOLD = max(1, int(os.environ.get("RECALLFORGE_BULK_FLUSH_DOCS", "75")))
     BULK_FLUSH_EMBEDDINGS_THRESHOLD = max(1, int(os.environ.get("RECALLFORGE_BULK_FLUSH_EMBEDDINGS", "600")))
+    INDEX_VERSION_CACHE_KEY = "__recallforge_index_version__"
     
     def __init__(self, store_path: Optional[str] = None):
         """
@@ -108,6 +109,8 @@ class LanceDBBackend(StorageBackend):
         self._entities_table = None
         self._relations_table = None
         self._visibility_lock = threading.RLock()
+        self._index_version_lock = threading.RLock()
+        self._index_version: Optional[int] = None
         
         # FTS rebuild debouncing state
         self._fts_rebuild_pending = 0
@@ -133,6 +136,12 @@ class LanceDBBackend(StorageBackend):
         if not hasattr(self, "_visibility_lock") or self._visibility_lock is None:
             self._visibility_lock = threading.RLock()
         return self._visibility_lock
+
+    def _get_index_version_lock(self):
+        """Return the index-version lock, creating it for __new__ tests."""
+        if not hasattr(self, "_index_version_lock") or self._index_version_lock is None:
+            self._index_version_lock = threading.RLock()
+        return self._index_version_lock
     
     def initialize(self, store_path: Optional[str] = None) -> None:
         """Initialize the LanceDB database."""
@@ -693,6 +702,9 @@ class LanceDBBackend(StorageBackend):
             self._documents_table.delete(_safe_filter("id", doc_id))
             self._documents_table.add(pa.Table.from_pylist([row], schema=self._build_documents_schema()))
 
+        if int(active) == 1 and index_batch_id is None:
+            self.bump_index_version("insert_document")
+
         return doc_id
     
     def find_document(self, collection: str, file_path: str) -> Optional[Document]:
@@ -746,6 +758,7 @@ class LanceDBBackend(StorageBackend):
             where=f"{_safe_filter('collection', collection)} AND {_safe_filter('file_path', file_path)} AND active = 1",
             values={"active": 0, "updated_at": int(time.time() * 1000)}
         )
+        self.bump_index_version("deactivate_document")
     
     # =========================================================================
     # Content Operations
@@ -916,6 +929,8 @@ class LanceDBBackend(StorageBackend):
             active=int(active),
             index_batch_id=index_batch_id,
         )
+        if int(active) == 1 and index_batch_id is None:
+            self.bump_index_version("insert_embedding")
 
     def _index_graph_rows_for_embedding(
         self,
@@ -1243,6 +1258,8 @@ class LanceDBBackend(StorageBackend):
 
         # Schedule FTS rebuild since we modified embeddings
         self._schedule_fts_rebuild()
+        if embeddings_updated or documents_updated or entities_updated or relations_updated:
+            self.bump_index_version("rename_collection")
 
         return {
             "success": True,
@@ -1369,6 +1386,8 @@ class LanceDBBackend(StorageBackend):
 
         # Schedule FTS rebuild
         self._schedule_fts_rebuild()
+        if embeddings_deleted or documents_deleted or entities_deleted or relations_deleted:
+            self.bump_index_version("delete_collection")
 
         return {
             "success": True,
@@ -1496,6 +1515,8 @@ class LanceDBBackend(StorageBackend):
             activated_embeddings=activated_embeddings,
             activated_documents=activated_documents,
         )
+        if activated_embeddings or activated_documents or deactivated_embeddings or deactivated_documents:
+            self.bump_index_version("promote_index_batch")
         return {
             "activated_embeddings": activated_embeddings,
             "activated_documents": activated_documents,
@@ -2707,6 +2728,50 @@ class LanceDBBackend(StorageBackend):
     # =========================================================================
     # Cache Operations
     # =========================================================================
+
+    def _parse_index_version(self, raw: Optional[str]) -> int:
+        if not raw:
+            return 0
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                return max(0, int(payload.get("version", 0)))
+        except Exception:
+            pass
+        try:
+            return max(0, int(raw))
+        except Exception:
+            return 0
+
+    def get_index_version(self) -> str:
+        """Return a durable version token for cache keys."""
+        if getattr(self, "_cache_table", None) is None:
+            return str(getattr(self, "_index_version", 0) or 0)
+
+        with self._get_index_version_lock():
+            cached_version = getattr(self, "_index_version", None)
+            if cached_version is not None:
+                return str(cached_version)
+            version = self._parse_index_version(self.get_cached(self.INDEX_VERSION_CACHE_KEY))
+            self._index_version = version
+            return str(version)
+
+    def bump_index_version(self, reason: str = "") -> str:
+        """Advance the durable index version after visible storage mutations."""
+        with self._get_index_version_lock():
+            current = self._parse_index_version(self.get_cached(self.INDEX_VERSION_CACHE_KEY))
+            next_version = current + 1
+            self._index_version = next_version
+            payload = {
+                "version": next_version,
+                "updated_at": int(time.time() * 1000),
+                "reason": str(reason or "index_update"),
+            }
+            try:
+                self.set_cached(self.INDEX_VERSION_CACHE_KEY, json.dumps(payload, sort_keys=True))
+            except Exception as exc:
+                logger.debug("bump_index_version: failed to persist version: %s", exc)
+            return str(next_version)
     
     def get_cached(self, key: str) -> Optional[str]:
         """Get a cached value."""

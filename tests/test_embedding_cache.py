@@ -139,7 +139,7 @@ class TestHybridSearcherCacheIntegration:
     def test_cache_populated_after_miss(self):
         searcher, backend, storage, cache = _make_searcher()
         searcher._vector_search("hello")
-        key = cache.make_key("text", "hello")
+        key = searcher._make_query_cache_key("text", "hello")
         assert cache.get(key) is not None
         np.testing.assert_array_equal(cache.get(key), backend.embed_text.return_value)
 

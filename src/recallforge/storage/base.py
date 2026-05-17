@@ -93,6 +93,14 @@ class StorageBackend(ABC):
     def close(self) -> None:
         """Close connections and release resources."""
         pass
+
+    def get_index_version(self) -> str:
+        """Return a storage-level version token for query-cache invalidation."""
+        return "0"
+
+    def bump_index_version(self, reason: str = "") -> str:
+        """Advance and return the storage-level version token after visible writes."""
+        return self.get_index_version()
     
     # =========================================================================
     # Document Operations
