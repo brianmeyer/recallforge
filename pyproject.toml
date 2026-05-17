@@ -1,6 +1,6 @@
 [project]
 name = "recallforge"
-version = "0.3.0"
+version = "0.3.1"
 description = "Local multimodal memory for AI agents — cross-modal vision-language search"
 authors = [{name = "Brian Meyer", email = "brian@recallforge.dev"}]
 readme = "README.md"
