@@ -216,6 +216,7 @@ Tools: 26 MCP tools across search, ingest, memory, memory graph, collection admi
 Transport: stdio (default) or HTTP/SSE (`/health`, `/sse`, `/messages/`)
 Startup: backend.warm_up() for predictable latency
 Signals: SIGTERM/SIGINT graceful shutdown
+Progress: request `_meta.progressToken` enables `notifications/progress` during long-running tool calls
 ```
 
 Key runtime details:
@@ -223,6 +224,7 @@ Key runtime details:
 - Blocking tool work is routed through a bounded async semaphore to avoid overloading local model/runtime resources
 - HTTP mode requires the optional `server` extra (`starlette` + `uvicorn`)
 - Runtime-safe config changes (`mode`, `collection`, `rerank_top_k`, `caption_media`, model IDs) are exposed through `get_config` / `set_config`
+- Progress notifications are best-effort and preserve stable final response JSON. `search_batch` reports per-query completion before returning the final merged results; `batch` reports per-operation completion.
 
 ## Storage Layout
 

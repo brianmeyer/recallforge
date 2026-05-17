@@ -135,9 +135,10 @@ Goal:
 - Prove RecallForge as a memory MCP, not just a benchmark pipeline.
 
 Current Linear fit:
-- `REC-160`
-- `REC-153`
 - `REC-33`
+
+Shipped Linear work:
+- `REC-153`
 - `REC-61`
 
 What this phase delivers:
@@ -145,6 +146,7 @@ What this phase delivers:
 - explanation quality checks
 - latency and RSS budget enforcement
 - real episodic corpora coverage
+- MCP progress notifications for long-running search, ingest, batch, and rebuild workflows
 - alpha and beta validation with real workflows
 
 Why this comes last:
@@ -156,7 +158,7 @@ Why this comes last:
 - Keep `Retrieval and Ranking` for cheap broad retrieval work like `REC-169`, `REC-148`, `REC-72`, `REC-71`, `REC-146`
 - Add a milestone such as `Memory Policy and Enrichment` for `REC-84`, `REC-83`, `REC-75`, `REC-76`, `REC-78`
 - Keep `Research Queue` for gated expensive-stage work like `REC-130`, `REC-115`, `REC-147`, `REC-168`
-- Keep `Benchmark Integrity` and `Launch and Distribution` for `REC-160`, `REC-153`, `REC-33`, `REC-61`
+- Keep `Benchmark Integrity` and `Launch and Distribution` for `REC-33` and any future public validation work
 
 ## Architecture Principle
 

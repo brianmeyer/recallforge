@@ -6,6 +6,7 @@ All notable changes to RecallForge will be documented in this file.
 
 - Added staged background reindex promotion so document, video, audio, and conversation replacements stay hidden until their parent/child memory batches are complete.
 - Added index-version-aware query caching for repeated text/media embeddings and generated expansion branches.
+- Added MCP progress notifications for long-running search, ingest, batch, memory write, and FTS rebuild tool calls when clients provide a progress token.
 - Added deterministic memory graph enrichment with entity/relation side tables and new `memory_graph_entities` / `memory_graph_related` MCP tools.
 - Replaced the tiny UAT video clips with compact episodic-memory fixtures, richer transcript sidecars, related artifact metadata, and regression coverage for the video corpus.
 - Added `memory_add_conversation` so conversation threads ingest as canonical parent memories with turn-level child memories and standard memory rollups.

@@ -146,7 +146,7 @@ Run over HTTP/SSE:
 recallforge serve --http --host 127.0.0.1 --port 7433 --mode embed
 ```
 
-RecallForge now exposes **26 MCP tools** across search, ingest, memory graph navigation, collection admin, and runtime config. HTTP/SSE mode also exposes `/health`, `/sse`, and `/messages/`.
+RecallForge now exposes **26 MCP tools** across search, ingest, memory graph navigation, collection admin, and runtime config. HTTP/SSE mode also exposes `/health`, `/sse`, and `/messages/`. Long-running tools emit MCP `notifications/progress` when the client supplies a request `_meta.progressToken`, so compatible HTTP/SSE clients can show live progress for ingest, search, batch, memory writes, and FTS rebuilds.
 
 See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 
