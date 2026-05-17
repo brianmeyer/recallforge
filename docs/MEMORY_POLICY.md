@@ -23,6 +23,7 @@ RecallForge stores complex files as a root memory plus child assets:
 - Video memory: one root video memory, with frame children and transcript children when available.
 - Document memory: one root document memory, with section/page children and OCR siblings when available.
 - Audio memory: one root audio memory, with timestamped transcript children from sidecar transcripts.
+- Conversation memory: one root text memory with a summary/participant overview, plus one child memory per turn.
 
 The root memory uses `memory_role="root"` and child assets use `memory_role="child"` with `memory_root_path` pointing back to the root.
 
@@ -42,3 +43,7 @@ The boost is intentionally modest: it can break ties and surface important recen
 Audio support is transcript-first. Put a `.srt`, `.vtt`, `.txt`, or `.transcript.json` sidecar next to the audio file. RecallForge indexes the audio as a root `content_type="audio"` memory and indexes transcript segments as text child memories.
 
 Raw audio transcription and dedicated audio encoders are not part of the shipped v0.3.0 policy.
+
+## Conversations
+
+Use `memory_add_conversation` when an agent or app wants to persist a thread. RecallForge stores the parent at the supplied `path` and stores each turn at `path::turn:0001`, `path::turn:0002`, and so on. All turns share the parent `memory_id`, so if several turns match a query, search and explanation output roll them up into the parent conversation with evidence paths.

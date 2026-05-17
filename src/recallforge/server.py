@@ -4,7 +4,7 @@ server.py - MCP Server for RecallForge.
 MCP protocol server with stdio or HTTP/SSE transport.
 Tools: search, search_fts, search_vec, explain_results, search_batch, ingest,
 index_document, index_image, index_audio, memory_add, memory_update, memory_delete,
-memory_get, list_memories, status, rebuild_fts, list_collections,
+memory_add_conversation, memory_get, list_memories, status, rebuild_fts, list_collections,
 list_namespaces, rename_collection, delete_collection, batch, get_config,
 set_config. Resources expose canonical memories via memory:// URIs.
 
@@ -29,6 +29,7 @@ from mcp.types import EmbeddedResource, ImageContent, Resource, ResourceTemplate
 
 from . import __version__, get_backend, get_storage, warmup_backend
 from .audio import is_audio_file, load_audio_transcript_segments
+from .conversations import normalize_conversation_turns
 from .documents import extract_document_artifacts, is_document_file
 from .search import HybridSearcher
 from .video import is_video_file
@@ -470,6 +471,42 @@ async def create_server(
                 },
             ),
             Tool(
+                name="memory_add_conversation",
+                description="Add or replace a conversation memory with a canonical parent and turn-level child memories",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Conversation memory root path within collection"},
+                        "turns": {
+                            "type": "array",
+                            "description": "Conversation turns or message groups in chronological order",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": {"type": "string", "description": "Speaker role such as user, assistant, agent, tool, or system"},
+                                    "speaker": {"type": "string", "description": "Optional speaker/persona label"},
+                                    "content": {"type": "string", "description": "Turn text content"},
+                                    "text": {"type": "string", "description": "Alias for content"},
+                                    "timestamp": {"type": "string", "description": "Optional timestamp string, ideally ISO 8601"},
+                                },
+                            },
+                        },
+                        "title": {"type": "string", "description": "Optional conversation title"},
+                        "summary": {"type": "string", "description": "Optional caller-provided summary for the parent memory"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                        "user_id": {"type": "string", "description": "Optional user namespace for multi-tenant isolation"},
+                        "session_id": {"type": "string", "description": "Optional session/thread namespace"},
+                        "project_id": {"type": "string", "description": "Optional project namespace"},
+                        "profile": {"type": "string", "description": "Optional profile namespace"},
+                        "importance": {"type": "number", "description": "Importance score 0.0-1.0 (optional)", "minimum": 0, "maximum": 1},
+                        "ttl_seconds": {"type": "integer", "description": "Time-to-live in seconds, 0 or null = no expiration (optional)"},
+                        "tags": {"type": "array", "items": {"type": "string"}, "description": "Extra string tags (optional)"},
+                    },
+                    "required": ["path", "turns"],
+                },
+            ),
+            Tool(
                 name="memory_update",
                 description="Update a text memory entry at path, replacing old vectors",
                 inputSchema={
@@ -788,6 +825,8 @@ async def _dispatch_tool(
         return await _handle_index_audio(arguments, backend, storage)
     elif name == "memory_add":
         return await _handle_memory_add(arguments, backend, storage)
+    elif name == "memory_add_conversation":
+        return await _handle_memory_add_conversation(arguments, backend, storage)
     elif name == "memory_update":
         return await _handle_memory_update(arguments, backend, storage)
     elif name == "memory_delete":
@@ -966,6 +1005,8 @@ async def _handle_search(arguments: dict, backend, storage) -> list[TextContent]
                 "memory_role": getattr(r, "memory_role", "root"),
                 "memory_root_path": getattr(r, "memory_root_path", None),
                 "memory_hit_count": getattr(r, "memory_hit_count", 1),
+                "memory_primary_evidence_path": getattr(r, "memory_primary_evidence_path", None),
+                "memory_supporting_paths": getattr(r, "memory_supporting_paths", None),
                 "tags": getattr(r, "tags", None),
             }
             for r in results
@@ -1290,6 +1331,12 @@ async def _handle_search_batch(arguments: dict, backend, storage) -> list[TextCo
                 "session_id": getattr(r, "session_id", None),
                 "project_id": getattr(r, "project_id", None),
                 "profile": getattr(r, "profile", None),
+                "memory_id": getattr(r, "memory_id", None),
+                "memory_role": getattr(r, "memory_role", "root"),
+                "memory_root_path": getattr(r, "memory_root_path", None),
+                "memory_hit_count": getattr(r, "memory_hit_count", 1),
+                "memory_primary_evidence_path": getattr(r, "memory_primary_evidence_path", None),
+                "memory_supporting_paths": getattr(r, "memory_supporting_paths", None),
                 "tags": getattr(r, "tags", None),
             }
             for r in results
@@ -1487,6 +1534,72 @@ async def _handle_memory_add(arguments: dict, backend, storage) -> list[TextCont
         "ttl_seconds": ttl_seconds,
         "tags": tags,
     }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_memory_add_conversation(arguments: dict, backend, storage) -> list[TextContent]:
+    """Handle conversation memory ingest."""
+    path = arguments.get("path", "")
+    turns = arguments.get("turns")
+    collection = arguments.get("collection", "default")
+    title = arguments.get("title")
+    summary = arguments.get("summary")
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+    importance = arguments.get("importance")
+    ttl_seconds = arguments.get("ttl_seconds")
+    tags = arguments.get("tags")
+
+    trace_log("memory_add_conversation_start", path=path, collection=collection,
+              user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
+              importance=importance, ttl_seconds=ttl_seconds, tags=tags)
+
+    if not isinstance(path, str) or not path.strip():
+        return _error_response("INVALID_INPUT", "path is required")
+    if tags is not None and not isinstance(tags, list):
+        return _error_response("INVALID_INPUT", "tags must be an array of strings")
+
+    try:
+        normalize_conversation_turns(turns)
+    except ValueError as exc:
+        return _error_response("INVALID_INPUT", str(exc))
+
+    index_conversation = getattr(storage, "index_conversation", None)
+    if not callable(index_conversation):
+        return _error_response("BACKEND_ERROR", "Storage backend does not support conversation memories")
+
+    try:
+        output = await _run_blocking(
+            index_conversation,
+            path=path,
+            turns=turns,
+            collection=collection,
+            model="Qwen3-VL-Embedding-2B",
+            embed_func=backend.embed_text,
+            title=title,
+            summary=summary,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            importance=importance,
+            ttl_seconds=ttl_seconds,
+            tags=tags,
+        )
+    except ValueError as exc:
+        return _error_response("INVALID_INPUT", str(exc))
+
+    trace_log(
+        "memory_add_conversation_done",
+        path=path,
+        hash=str(output.get("hash", ""))[:8],
+        indexed_turns=output.get("indexed_turns", 0),
+    )
+
+    output = dict(output)
+    output["operation"] = "add_conversation"
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 

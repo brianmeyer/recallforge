@@ -51,8 +51,11 @@ Example MCP client config (Claude Desktop):
 
 ### Memory
 - `memory_add`
+- `memory_add_conversation`
 - `memory_update`
 - `memory_delete`
+- `memory_get`
+- `list_memories`
 
 ### Admin / Introspection
 - `status`
@@ -117,7 +120,13 @@ Example MCP client config (Claude Desktop):
       "user_id": null,
       "session_id": null,
       "project_id": null,
-      "profile": null
+      "profile": null,
+      "memory_id": "b4f7...",
+      "memory_role": "root",
+      "memory_root_path": "notes/meeting.md",
+      "memory_hit_count": 2,
+      "memory_primary_evidence_path": "recallforge://default/notes/meeting.md::turn:0002",
+      "memory_supporting_paths": []
     }
   ]
 }
@@ -632,6 +641,77 @@ Example MCP client config (Claude Desktop):
 
 ---
 
+## memory_add_conversation
+
+**Description:** Add or replace a conversation as a canonical parent memory with turn-level child memories. Matching turns roll up into the parent conversation in `search` and `explain_results`.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| path | string | Yes | — | Conversation root path |
+| turns | array[object] | Yes | — | Chronological turns or message groups |
+| title | string | No | derived from `path` | Conversation title |
+| summary | string | No | — | Optional parent summary |
+| collection | string | No | server default collection | Collection name |
+| user_id | string | No | — | User namespace |
+| session_id | string | No | — | Session/thread namespace |
+| project_id | string | No | — | Project namespace |
+| profile | string | No | — | Profile namespace |
+| importance | number | No | — | 0.0 to 1.0 importance score |
+| ttl_seconds | integer | No | — | TTL in seconds; `0`/`null` means no expiration |
+| tags | array[string] | No | — | Extra tags |
+
+Turn objects accept:
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| role | string | No | Role such as `user`, `assistant`, `agent`, `tool`, or `system` |
+| speaker | string | No | Persona/person label |
+| content | string | Conditionally* | Turn content |
+| text | string | Conditionally* | Alias for `content` |
+| timestamp | string | No | Timestamp string, ideally ISO 8601 |
+
+\* Each turn must include non-empty `content` or `text`.
+
+**Example Request:**
+```json
+{
+  "path": "threads/customer-renewal",
+  "title": "Customer Renewal Thread",
+  "summary": "Pricing approval and legal review are the open blockers.",
+  "turns": [
+    { "role": "user", "content": "Can we renew the customer contract before Q3?" },
+    { "role": "assistant", "content": "Yes. The renewal plan depends on pricing approval." },
+    { "role": "user", "content": "Please remember the pricing risk and legal review." }
+  ],
+  "tags": ["sales"]
+}
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "path": "threads/customer-renewal",
+  "collection": "default",
+  "hash": "abc123...",
+  "memory_id": "b4f7...",
+  "title": "Customer Renewal Thread",
+  "indexed_turns": 3,
+  "tags": ["conversation", "turns:3", "role:user", "role:assistant", "sales"],
+  "operation": "add_conversation"
+}
+```
+
+**Errors:**
+- `INVALID_INPUT`: when `path` is missing, `turns` is empty, or a turn lacks text.
+- `BACKEND_ERROR`: when the storage backend does not support conversation memories.
+- `INTERNAL_ERROR`: uncaught exceptions.
+
+**Notes:** The root path becomes the stable `memory_id` identity seed. Child turns are stored at `path::turn:0001`, `path::turn:0002`, and so on with the same `memory_id` and `memory_root_path`.
+
+---
+
 ## memory_update
 
 **Description:** Update an existing memory entry (same upsert backend path as add).
@@ -720,6 +800,100 @@ Example MCP client config (Claude Desktop):
 - `INTERNAL_ERROR`: uncaught exceptions.
 
 **Notes:** Namespace filters must match the original memory to delete it.
+
+---
+
+## memory_get
+
+**Description:** Fetch one canonical memory object by stable `memory_id` or by root `path`.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| memory_id | string | Conditionally* | — | Stable memory identifier |
+| path | string | Conditionally* | — | Root memory path |
+| collection | string | No | server default collection | Collection name |
+| user_id | string | No | — | User namespace |
+| session_id | string | No | — | Session namespace |
+| project_id | string | No | — | Project namespace |
+| profile | string | No | — | Profile namespace |
+
+\* Provide either `memory_id` or `path`.
+
+**Example Request:**
+```json
+{
+  "path": "threads/customer-renewal",
+  "collection": "default"
+}
+```
+
+**Example Response:**
+```json
+{
+  "memory_id": "b4f7...",
+  "collection": "default",
+  "title": "Customer Renewal Thread",
+  "path": "threads/customer-renewal",
+  "content_type": "text",
+  "summary": "Discussion about renewal timing...",
+  "children": [
+    { "path": "threads/customer-renewal::turn:0001", "content_type": "text", "memory_role": "child" }
+  ],
+  "snippets": [
+    { "path": "threads/customer-renewal::turn:0001", "text": "..." }
+  ]
+}
+```
+
+**Errors:**
+- `INVALID_INPUT`: when neither `memory_id` nor `path` is provided.
+- `NOT_FOUND`: when the memory cannot be found.
+- `INTERNAL_ERROR`: uncaught exceptions.
+
+---
+
+## list_memories
+
+**Description:** List canonical root memories for a collection or namespace.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| collection | string | No | all collections | Collection filter |
+| limit | integer | No | 50 | Max memories |
+| user_id | string | No | — | User namespace |
+| session_id | string | No | — | Session namespace |
+| project_id | string | No | — | Project namespace |
+| profile | string | No | — | Profile namespace |
+
+**Example Request:**
+```json
+{
+  "collection": "default",
+  "limit": 20
+}
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "collection": "default",
+  "count": 1,
+  "memories": [
+    {
+      "memory_id": "b4f7...",
+      "path": "threads/customer-renewal",
+      "title": "Customer Renewal Thread",
+      "summary": "Discussion about renewal timing..."
+    }
+  ]
+}
+```
+
+**Errors:**
+- `INTERNAL_ERROR`: uncaught exceptions.
 
 ---
 
@@ -1006,7 +1180,12 @@ Operation object schema:
 2. Update with `memory_update` as facts evolve.
 3. Retrieve later with `search` + matching namespace filters.
 
-### 3) Configure mode, then ingest
+### 3) Persist a conversation thread
+1. Call `memory_add_conversation` with a stable thread `path`, optional `summary`, and chronological `turns`.
+2. Query with `search` or `explain_results`; matching turns roll up to the parent `memory_id`.
+3. Inspect the full memory with `memory_get` when the agent needs turn evidence.
+
+### 4) Configure mode, then ingest
 1. Inspect config using `get_config`.
 2. Set desired runtime defaults with `set_config` (for mode, default collection, max file size).
 3. Run `ingest` without repeating shared defaults.
@@ -1019,7 +1198,7 @@ Structured errors returned via `_error_response(code, message, details)`:
 - `NOT_FOUND`
   - Resource is missing (for example, image path does not exist) or capability is unavailable (e.g., unsupported raw video query backend).
 - `BACKEND_ERROR`
-  - Backend/storage operation failed in handler-managed exception path (currently used in `rebuild_fts`).
+  - Backend/storage capability is unavailable or failed in a handler-managed path.
 - `INTERNAL_ERROR`
   - Unhandled exception at top-level tool dispatch.
 

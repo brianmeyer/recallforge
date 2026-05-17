@@ -33,7 +33,7 @@ One query. Any modality. All local.
 | Audio transcript ingest | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
-| MCP-native | ✅ 21 tools | ❌ | ❌ | ❌ | ❌ |
+| MCP-native | ✅ 24 tools | ❌ | ❌ | ❌ | ❌ |
 | 100% local | ✅ | ✅ | ⚠️ Cloud default | ✅ | ✅ Docker |
 | Apple Silicon optimized | ✅ MLX 4-bit | ❌ | ❌ | ❌ | ❌ |
 | Cloud option | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -146,7 +146,7 @@ Run over HTTP/SSE:
 recallforge serve --http --host 127.0.0.1 --port 7433 --mode embed
 ```
 
-RecallForge now exposes **21 MCP tools** across search, ingest, memory, collection admin, and runtime config. HTTP/SSE mode also exposes `/health`, `/sse`, and `/messages/`.
+RecallForge now exposes **24 MCP tools** across search, ingest, memory, collection admin, and runtime config. HTTP/SSE mode also exposes `/health`, `/sse`, and `/messages/`.
 
 See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 
@@ -161,7 +161,7 @@ See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 
 ## How it works
 
-RecallForge encodes text, images, video frames, documents, and audio transcripts into the same 2048-dimensional vector space using Qwen3-VL. This means "find notes about this diagram" works whether the diagram is text, an image, or a frame from a video. A 3-stage pipeline handles the rest:
+RecallForge encodes text, images, video frames, documents, conversation turns, and audio transcripts into the same 2048-dimensional vector space using Qwen3-VL. This means "find notes about this diagram" works whether the diagram is text, an image, a conversation thread, or a frame from a video. A 3-stage pipeline handles the rest:
 
 ```mermaid
 graph TD
@@ -170,6 +170,7 @@ graph TD
         Imgs[🖼️ Images]
         Vids[🎬 Video]
         Aud[🎙️ Audio + Transcript]
+        Conv[Conversation Turns]
     end
 
     subgraph RecallForge Ingest
@@ -177,6 +178,7 @@ graph TD
         Imgs --> VLM[Qwen3-VL Encoder]
         Vids --> Frame[Frame & Audio Extractor]
         Aud --> TxtExt
+        Conv --> TxtExt
         Frame --> VLM
         TxtExt --> VLM
     end
@@ -274,7 +276,7 @@ src/recallforge/
 │   └── lancedb_backend.py # LanceDB + Tantivy FTS
 ├── cache.py              # LRU embedding cache
 ├── search.py             # Hybrid search pipeline (BM25 + vector + RRF)
-├── server.py             # MCP server (21 tools, stdio + HTTP/SSE)
+├── server.py             # MCP server (24 tools, stdio + HTTP/SSE)
 ├── documents.py          # PDF/DOCX/PPTX extraction
 ├── video.py              # Frame/transcript extraction
 ├── audio.py              # Transcript-first audio ingest

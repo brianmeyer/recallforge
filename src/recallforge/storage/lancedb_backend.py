@@ -1608,6 +1608,41 @@ class LanceDBBackend(StorageBackend):
             project_id=project_id,
             profile=profile,
         )
+
+    def index_conversation(
+        self,
+        path: str,
+        turns: List[Dict[str, Any]],
+        collection: str,
+        embed_func,
+        model: str,
+        title: Optional[str] = None,
+        summary: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Index a conversation root plus turn-level child memories."""
+        return self._indexer.index_conversation(
+            path=path,
+            turns=turns,
+            collection=collection,
+            embed_func=embed_func,
+            model=model,
+            title=title,
+            summary=summary,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            importance=importance,
+            ttl_seconds=ttl_seconds,
+            tags=tags,
+        )
     
     def delete_path(
         self,

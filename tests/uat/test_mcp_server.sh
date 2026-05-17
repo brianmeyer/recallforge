@@ -236,6 +236,13 @@ def _as_json_payload(content):
         return {"error": text}
 
 
+def _result_paths(result):
+    """Return canonical and evidence paths from a rolled memory search result."""
+    paths = [result.get("filepath"), result.get("memory_primary_evidence_path")]
+    paths.extend(result.get("memory_supporting_paths") or [])
+    return [path for path in paths if path]
+
+
 async def test_server():
     global pass_count, fail_count
 
@@ -251,7 +258,7 @@ async def test_server():
 
     required_tools = [
         "search", "search_fts", "search_vec", "ingest", "index_document", "index_image",
-        "memory_add", "memory_update", "memory_delete",
+        "memory_add", "memory_add_conversation", "memory_update", "memory_delete",
         "rename_collection", "delete_collection", "list_collections",
         "status", "rebuild_fts", "get_config", "set_config"
     ]
@@ -400,7 +407,10 @@ async def test_server():
     })
     document_search = json.loads(result[0].text)
     report(
-        any("deployment_review.pptx::slide:" in r.get("filepath", "") for r in document_search.get("results", [])),
+        any(
+            any("deployment_review.pptx::slide:" in path for path in _result_paths(r))
+            for r in document_search.get("results", [])
+        ),
         "document-derived sections are searchable after ingest",
     )
 
@@ -454,6 +464,25 @@ async def test_server():
     ).to_list()
     initial_count = len(initial_rows)
     report(initial_count > 0, f"memory_add created {initial_count} embedding rows")
+
+    result = await _call_tool(server, "memory_add_conversation", {
+        "path": "threads/customer-renewal",
+        "title": "Customer Renewal Thread",
+        "summary": "Pricing approval and legal review are the open blockers.",
+        "turns": [
+            {"role": "user", "content": "Can we renew the customer contract before Q3?"},
+            {"role": "assistant", "content": "The renewal depends on pricing approval."},
+            {"role": "user", "content": "Please remember the pricing risk and legal review."},
+        ],
+        "collection": "mcp_test",
+    })
+    conversation_data = json.loads(result[0].text)
+    report(conversation_data.get("success") == True, "memory_add_conversation succeeded")
+    report(conversation_data.get("indexed_turns") == 3, "conversation memory indexed turn children")
+
+    conversation_memory = storage.get_memory(path="threads/customer-renewal", collection="mcp_test")
+    report(conversation_memory is not None, "conversation memory can be fetched by root path")
+    report(len((conversation_memory or {}).get("children", [])) == 3, "conversation memory exposes three child turns")
 
     result = await _call_tool(server, "memory_update", {
         "path": "memories/agent-notes.md",
@@ -633,7 +662,10 @@ async def test_server():
         "content_type": "text",
     })
     video_search = json.loads(result[0].text)
-    has_transcripts = any("whiteboard_session.mp4::transcript:" in r.get("filepath", "") for r in video_search.get("results", []))
+    has_transcripts = any(
+        any("whiteboard_session.mp4::transcript:" in path for path in _result_paths(r))
+        for r in video_search.get("results", [])
+    )
     if transcripts >= 1:
         report(has_transcripts, "video transcript assets are searchable after ingest")
     elif has_transcripts:

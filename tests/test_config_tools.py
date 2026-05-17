@@ -26,6 +26,7 @@ from recallforge.server import (
     _handle_list_memories,
     _handle_memory_get,
     _handle_search,
+    _handle_memory_add_conversation,
     _resolve_file_query_input,
     _handle_set_config,
     create_server,
@@ -95,6 +96,16 @@ def _make_storage(store_path="/tmp/test-store"):
         "summary": "Demo summary",
         "children": [],
         "snippets": [],
+    }
+    s.index_conversation.return_value = {
+        "success": True,
+        "path": "threads/demo",
+        "collection": "default",
+        "hash": "hash-conversation",
+        "memory_id": "mem-conversation",
+        "title": "Demo Conversation",
+        "indexed_turns": 2,
+        "tags": ["conversation"],
     }
     return s
 
@@ -412,6 +423,26 @@ class TestDispatchConfigTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("version", data)
         self.assertEqual(data["collection"], "default")
 
+    async def test_memory_add_conversation_dispatched(self):
+        cfg = _mutable_config()
+        result = await _dispatch_tool(
+            "memory_add_conversation",
+            {
+                "path": "threads/demo",
+                "turns": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                ],
+            },
+            self.backend,
+            self.storage,
+            cfg,
+        )
+        data = json.loads(result[0].text)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["operation"], "add_conversation")
+        self.storage.index_conversation.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # create_server: new tools appear in list_tools
@@ -441,6 +472,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
 
     async def test_memory_tools_registered(self):
         names = await self._get_tool_names()
+        self.assertIn("memory_add_conversation", names)
         self.assertIn("memory_get", names)
         self.assertIn("list_memories", names)
 
@@ -449,7 +481,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         expected = {
             "search", "search_fts", "search_vec", "ingest",
             "index_document", "index_image", "index_audio",
-            "memory_add", "memory_update", "memory_delete",
+            "memory_add", "memory_add_conversation", "memory_update", "memory_delete",
             "status", "rebuild_fts", "batch",
             "list_collections", "list_namespaces",
             "rename_collection", "delete_collection",
@@ -460,6 +492,37 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
 
 
 class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
+
+    async def test_memory_add_conversation_returns_json(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        result = await _handle_memory_add_conversation(
+            {
+                "path": "threads/demo",
+                "title": "Demo Conversation",
+                "turns": [
+                    {"role": "user", "content": "remember the pricing risk"},
+                    {"role": "assistant", "content": "pricing risk recorded"},
+                ],
+                "tags": ["sales"],
+            },
+            backend,
+            storage,
+        )
+        data = json.loads(result[0].text)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["operation"], "add_conversation")
+        storage.index_conversation.assert_called_once()
+
+    async def test_memory_add_conversation_invalid_turns_returns_error(self):
+        result = await _handle_memory_add_conversation(
+            {"path": "threads/demo", "turns": []},
+            _make_backend(),
+            _make_storage(),
+        )
+        data = json.loads(result[0].text)
+        self.assertTrue(data["error"])
+        self.assertEqual(data["code"], "INVALID_INPUT")
 
     async def test_list_memories_returns_json(self):
         result = await _handle_list_memories({}, _make_storage())
@@ -572,6 +635,8 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         result_item.memory_role = "root"
         result_item.memory_root_path = None
         result_item.memory_hit_count = 1
+        result_item.memory_primary_evidence_path = None
+        result_item.memory_supporting_paths = []
         result_item.tags = ["memory query", "markdown"]
 
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tmp:
@@ -696,6 +761,21 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         self.assertIn("video_path", schema["properties"])
         self.assertIn("file_path", schema["properties"])
         self.assertIn("rerank_top_k", schema["properties"])
+
+    async def test_memory_add_conversation_schema(self):
+        backend = _make_backend()
+        storage = _make_storage()
+        server = await create_server(backend=backend, storage=storage)
+        handler = server.request_handlers[ListToolsRequest]
+        result = await handler(ListToolsRequest(method="tools/list", params=None))
+        tool = next(t for t in result.root.tools if t.name == "memory_add_conversation")
+        schema = tool.inputSchema
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(schema["required"], ["path", "turns"])
+        self.assertIn("turns", schema["properties"])
+        self.assertIn("summary", schema["properties"])
+        self.assertIn("role", schema["properties"]["turns"]["items"]["properties"])
+        self.assertIn("content", schema["properties"]["turns"]["items"]["properties"])
 
     async def test_search_schema_accepts_file_path(self):
         backend = _make_backend()

@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from recallforge.storage.base import StorageBackend, SearchResult, Document
 from recallforge.storage.lancedb_backend import LanceDBBackend
 from recallforge.storage.lancedb_shared import build_memory_id
+from recallforge.search import HybridSearcher
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,19 @@ def mock_embed(text: str) -> List[float]:
 
 def mock_embed_array(text: str) -> np.ndarray:
     return np.array(mock_embed(text), dtype=np.float32)
+
+
+class EmbedOnlyBackend:
+    """Minimal backend for storage-backed hybrid search tests."""
+
+    def get_mode(self):
+        return "embed"
+
+    def needs_reranker(self):
+        return False
+
+    def embed_text(self, text: str):
+        return mock_embed(text)
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +814,107 @@ class TestMemoryLookupCompatibility(unittest.TestCase):
         self.assertIsNotNone(memory)
         self.assertTrue(memory["summary"].startswith("RecallForge stores memory summaries"))
         self.assertEqual(memory["path"], path)
+
+
+class TestConversationMemoryIndexing(unittest.TestCase):
+    """Tests for first-class conversation memories with turn rollups."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-conversation-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_index_conversation_creates_root_and_turn_children(self):
+        turns = [
+            {"role": "user", "content": "Can we renew the customer contract before Q3?"},
+            {"role": "assistant", "content": "Yes. The renewal plan depends on pricing approval."},
+            {"role": "user", "content": "Please remember the pricing risk and legal review."},
+        ]
+
+        result = self.backend.index_conversation(
+            path="threads/customer-renewal",
+            title="Customer Renewal Thread",
+            summary="Discussion about renewal timing, pricing risk, and legal review.",
+            turns=turns,
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            user_id="alice",
+            session_id="thread-123",
+            tags=["sales"],
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["indexed_turns"], 3)
+        self.assertEqual(result["path"], "threads/customer-renewal")
+        self.assertEqual(
+            result["memory_id"],
+            build_memory_id(
+                "test",
+                "threads/customer-renewal",
+                user_id="alice",
+                session_id="thread-123",
+            ),
+        )
+        self.assertIn("conversation", result["tags"])
+        self.assertIn("sales", result["tags"])
+
+        rows = self.backend._documents_table.search().where(
+            "collection = 'test' AND active = 1"
+        ).to_list()
+        self.assertEqual(len(rows), 4)
+        roles = {row["file_path"]: row["memory_role"] for row in rows}
+        self.assertEqual(roles["threads/customer-renewal"], "root")
+        self.assertEqual(roles["threads/customer-renewal::turn:0001"], "child")
+        self.assertEqual(roles["threads/customer-renewal::turn:0002"], "child")
+        self.assertEqual(roles["threads/customer-renewal::turn:0003"], "child")
+        self.assertEqual({row["memory_id"] for row in rows}, {result["memory_id"]})
+        self.assertEqual({row["memory_root_path"] for row in rows}, {"threads/customer-renewal"})
+
+        memory = self.backend.get_memory(path="threads/customer-renewal", collection="test", user_id="alice")
+        self.assertIsNotNone(memory)
+        self.assertEqual(memory["memory_id"], result["memory_id"])
+        self.assertEqual(len(memory["children"]), 3)
+        self.assertTrue(any("pricing risk" in snippet["text"] for snippet in memory["snippets"]))
+
+    def test_matching_turns_roll_up_to_parent_conversation(self):
+        turns = [
+            {"role": "user", "content": "The launch needs pricing approval from finance."},
+            {"role": "assistant", "content": "I noted that pricing approval blocks the renewal email."},
+            {"role": "user", "content": "Legal review is separate from the pricing approval path."},
+        ]
+        self.backend.index_conversation(
+            path="threads/pricing-approval",
+            title="Pricing Approval Thread",
+            turns=turns,
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        self.backend.rebuild_fts_index()
+
+        searcher = HybridSearcher(
+            backend=EmbedOnlyBackend(),
+            storage=self.backend,
+            collection="test",
+            limit=5,
+            fts_probe_limit=10,
+        )
+        results = searcher.search("pricing approval renewal")
+
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        self.assertEqual(result.memory_role, "root")
+        self.assertEqual(result.memory_root_path, "threads/pricing-approval")
+        self.assertEqual(result.filepath, "recallforge://test/threads/pricing-approval")
+        self.assertEqual(result.display_path, "test/threads/pricing-approval")
+        self.assertGreaterEqual(result.memory_hit_count, 2)
+        evidence_paths = [result.memory_primary_evidence_path] + (result.memory_supporting_paths or [])
+        self.assertIn("recallforge://test/threads/pricing-approval::turn:0002", evidence_paths)
 
 
 class TestFTSMissFallbackBehavior(unittest.TestCase):

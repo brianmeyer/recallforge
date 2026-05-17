@@ -294,6 +294,14 @@ class TestHandleMemoryErrors:
         assert result["code"] == "INVALID_INPUT"
 
     @pytest.mark.asyncio
+    async def test_memory_add_conversation_missing_turns(self, mocks):
+        from recallforge.server import _handle_memory_add_conversation
+        backend, storage = mocks
+        result = _parse(await _handle_memory_add_conversation({"path": "threads/demo"}, backend, storage))
+        assert result["error"] is True
+        assert result["code"] == "INVALID_INPUT"
+
+    @pytest.mark.asyncio
     async def test_memory_update_missing_fields(self, mocks):
         from recallforge.server import _handle_memory_update
         backend, storage = mocks
