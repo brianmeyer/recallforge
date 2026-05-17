@@ -1,0 +1,1579 @@
+{
+  "all_categories": [
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 8,
+        "original_vec": 8
+      },
+      "best_recall_at_5": 0.0,
+      "best_stage": "Vector-only",
+      "category": "image_to_document",
+      "configured_content_type_filter": null,
+      "failure_examples": [
+        {
+          "image_query_path": "images/neural_network_diagram.png",
+          "query": "related document",
+          "query_type": "image",
+          "relevant_paths": [
+            "documents/ai_strategy_report.docx",
+            "documents/ai_architecture_deck.pptx",
+            "documents/embedding_research.pdf"
+          ],
+          "top_results": [
+            "images/neural_network_diagram.png",
+            "images/whiteboard_brainstorm.png",
+            "images/whiteboard_architecture.png"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": "images/code_editor_screenshot.png",
+          "query": "related document",
+          "query_type": "image",
+          "relevant_paths": [
+            "documents/recallforge_spec.docx",
+            "documents/operations_manual.pdf"
+          ],
+          "top_results": [
+            "images/code_editor_screenshot.png",
+            "videos/coding_demo.mp4::transcript:0001@0.00s",
+            "images/whiteboard_architecture.png"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "2 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process image queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.000; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_lift",
+          "evidence": "RRF improves R@5 by +0.000 and R@10 by +0.500 over raw vector search.",
+          "severity": "positive"
+        },
+        {
+          "code": "reranker_no_lift",
+          "evidence": "Hybrid reranker changes R@5 by only +0.000 versus RRF.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "document_family_filter_gap",
+          "evidence": "Benchmark cannot currently constrain results to the pdf/docx/pptx document family with a single content_type filter.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 0.5,
+        "hybrid_recall_at_5": 0.0,
+        "rrf_recall_at_10": 0.5,
+        "rrf_recall_at_5": 0.0,
+        "vector_recall_at_10": 0.0,
+        "vector_recall_at_5": 0.0
+      },
+      "priority_score": 0.85,
+      "target_content_type": "document_family",
+      "total_queries": 2
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 4,
+        "original_vec": 4
+      },
+      "best_recall_at_5": 0.0,
+      "best_stage": "Vector-only",
+      "category": "video_to_document",
+      "configured_content_type_filter": null,
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "related document",
+          "query_type": "video",
+          "relevant_paths": [
+            "documents/ai_architecture_deck.pptx"
+          ],
+          "top_results": [
+            "videos/architecture_walkthrough.mp4",
+            "videos/architecture_walkthrough.mp4::frame:0004@15.00s",
+            "videos/architecture_walkthrough.mp4::frame:0006@25.00s"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "1 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process video queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.000; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_insufficient",
+          "evidence": "RRF R@5=0.000 does not materially lift vector R@5=0.000.",
+          "severity": "high"
+        },
+        {
+          "code": "reranker_no_lift",
+          "evidence": "Hybrid reranker changes R@5 by only +0.000 versus RRF.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "document_family_filter_gap",
+          "evidence": "Benchmark cannot currently constrain results to the pdf/docx/pptx document family with a single content_type filter.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        },
+        {
+          "code": "media_query_path_missing",
+          "evidence": "1 per-query rows omit image_query_path or video_query_path instrumentation.",
+          "severity": "low"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 0.0,
+        "hybrid_recall_at_5": 0.0,
+        "rrf_recall_at_10": 0.0,
+        "rrf_recall_at_5": 0.0,
+        "vector_recall_at_10": 0.0,
+        "vector_recall_at_5": 0.0
+      },
+      "priority_score": 0.85,
+      "target_content_type": "document_family",
+      "total_queries": 1
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 7,
+        "original_vec": 8
+      },
+      "best_recall_at_5": 0.0,
+      "best_stage": "Vector-only",
+      "category": "video_to_image",
+      "configured_content_type_filter": "image",
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "related image",
+          "query_type": "video",
+          "relevant_paths": [
+            "images/forest_landscape.png",
+            "images/mountain_landscape.png",
+            "images/ocean_beach.png"
+          ],
+          "top_results": [
+            "videos/nature_timelapse.mp4::frame:0006@25.00s",
+            "videos/nature_timelapse.mp4::frame:0005@20.00s",
+            "videos/nature_timelapse.mp4::frame:0007@30.00s"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": null,
+          "query": "related image",
+          "query_type": "video",
+          "relevant_paths": [
+            "images/whiteboard_brainstorm.png",
+            "images/whiteboard_architecture.png"
+          ],
+          "top_results": [
+            "videos/whiteboard_session.mp4::frame:0003@10.00s",
+            "videos/whiteboard_session.mp4::frame:0002@5.00s",
+            "videos/whiteboard_session.mp4::frame:0001@0.00s"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "2 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process video queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.000; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_insufficient",
+          "evidence": "RRF R@5=0.000 does not materially lift vector R@5=0.000.",
+          "severity": "high"
+        },
+        {
+          "code": "reranker_no_lift",
+          "evidence": "Hybrid reranker changes R@5 by only +0.000 versus RRF.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        },
+        {
+          "code": "media_query_path_missing",
+          "evidence": "2 per-query rows omit image_query_path or video_query_path instrumentation.",
+          "severity": "low"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 0.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 0.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 0.0
+      },
+      "priority_score": 0.8,
+      "target_content_type": "image",
+      "total_queries": 2
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 8,
+        "original_vec": 12
+      },
+      "best_recall_at_5": 0.3333,
+      "best_stage": "Vector-only",
+      "category": "video_to_text",
+      "configured_content_type_filter": "text",
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "related text",
+          "query_type": "video",
+          "relevant_paths": [
+            "text/tech_cybersecurity.md",
+            "text/tech_cloud_computing.md"
+          ],
+          "top_results": [
+            "videos/coding_demo.mp4::transcript:0002@2.00s",
+            "videos/whiteboard_session.mp4::transcript:0001@0.00s",
+            "text/medicine_nutrition.md"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": null,
+          "query": "related text",
+          "query_type": "video",
+          "relevant_paths": [
+            "text/architecture_gothic.md",
+            "text/architecture_modern.md",
+            "text/architecture_blueprints.md"
+          ],
+          "top_results": [
+            "videos/coding_demo.mp4::transcript:0002@2.00s",
+            "text/ai_agents.md",
+            "documents/ai_architecture_deck.pptx::slide:0001"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "3 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process video queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.333; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_insufficient",
+          "evidence": "RRF R@5=0.333 does not materially lift vector R@5=0.333.",
+          "severity": "high"
+        },
+        {
+          "code": "reranker_no_lift",
+          "evidence": "Hybrid reranker changes R@5 by only +0.000 versus RRF.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        },
+        {
+          "code": "media_query_path_missing",
+          "evidence": "3 per-query rows omit image_query_path or video_query_path instrumentation.",
+          "severity": "low"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 0.3333,
+        "hybrid_recall_at_5": 0.3333,
+        "rrf_recall_at_10": 0.3333,
+        "rrf_recall_at_5": 0.3333,
+        "vector_recall_at_10": 0.3333,
+        "vector_recall_at_5": 0.3333
+      },
+      "priority_score": 0.4667,
+      "target_content_type": "text",
+      "total_queries": 3
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 8,
+        "original_vec": 12
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "image_to_image",
+      "configured_content_type_filter": "image",
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "3 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process image queries",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.2,
+      "target_content_type": "image",
+      "total_queries": 3
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 60,
+        "original_vec": 63
+      },
+      "best_recall_at_5": 0.6,
+      "best_stage": "Vector + BM25 (RRF)",
+      "category": "image_to_text",
+      "configured_content_type_filter": "text",
+      "failure_examples": [
+        {
+          "image_query_path": "images/ocean_beach.png",
+          "query": "",
+          "query_type": "image",
+          "relevant_paths": [
+            "text/nature_oceans.md"
+          ],
+          "top_results": [
+            "text/sports_golf.md",
+            "text/music_production.md",
+            "text/nature_forests.md"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": "images/whiteboard_architecture.png",
+          "query": "",
+          "query_type": "image",
+          "relevant_paths": [
+            "text/ai_agents.md",
+            "text/tech_edge_ai.md"
+          ],
+          "top_results": [
+            "videos/architecture_walkthrough.mp4::transcript:0001@0.00s",
+            "text/tech_cloud_computing.md",
+            "videos/whiteboard_session.mp4::transcript:0001@0.00s"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": "images/whiteboard_brainstorm.png",
+          "query": "",
+          "query_type": "image",
+          "relevant_paths": [
+            "text/ai_agents.md",
+            "text/tech_cloud_computing.md"
+          ],
+          "top_results": [
+            "videos/whiteboard_session.mp4::transcript:0002@2.00s",
+            "videos/whiteboard_session.mp4::transcript:0001@0.00s",
+            "videos/architecture_walkthrough.mp4::transcript:0001@0.00s"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "15 queries is below the 20-query diagnostic floor.",
+          "severity": "medium"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process image queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.467; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_lift",
+          "evidence": "RRF improves R@5 by +0.133 and R@10 by +0.133 over raw vector search.",
+          "severity": "positive"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 0.8667,
+        "hybrid_recall_at_5": 0.6,
+        "rrf_recall_at_10": 0.8667,
+        "rrf_recall_at_5": 0.6,
+        "vector_recall_at_10": 0.7333,
+        "vector_recall_at_5": 0.4667
+      },
+      "priority_score": 0.2,
+      "target_content_type": "text",
+      "total_queries": 15
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 2,
+        "original_vec": 8
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "image_to_video",
+      "configured_content_type_filter": "video",
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "2 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process image queries",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.2,
+      "target_content_type": "video",
+      "total_queries": 2
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 44,
+        "original_vec": 48
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "text_to_document",
+      "configured_content_type_filter": null,
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "12 queries is below the 20-query diagnostic floor.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "document_family_filter_gap",
+          "evidence": "Benchmark cannot currently constrain results to the pdf/docx/pptx document family with a single content_type filter.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": 1.0,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.2,
+      "target_content_type": "document_family",
+      "total_queries": 12
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_vec": 4
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "video_to_video",
+      "configured_content_type_filter": "video",
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "1 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process video queries",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "media_query_path_missing",
+          "evidence": "1 per-query rows omit image_query_path or video_query_path instrumentation.",
+          "severity": "low"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.2,
+      "target_content_type": "video",
+      "total_queries": 1
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 17,
+        "original_vec": 72
+      },
+      "best_recall_at_5": 0.9444,
+      "best_stage": "Vector + BM25 (RRF)",
+      "category": "text_to_image",
+      "configured_content_type_filter": "image",
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "coastal landscape photography",
+          "query_type": "text",
+          "relevant_paths": [
+            "images/ocean_beach.png"
+          ],
+          "top_results": [
+            "videos/nature_timelapse.mp4::frame:0006@25.00s",
+            "videos/nature_timelapse.mp4::frame:0005@20.00s",
+            "videos/nature_timelapse.mp4::frame:0003@10.00s"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "18 queries is below the 20-query diagnostic floor.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": 0.7222,
+        "hybrid_recall_at_10": 0.9444,
+        "hybrid_recall_at_5": 0.9444,
+        "rrf_recall_at_10": 0.9444,
+        "rrf_recall_at_5": 0.9444,
+        "vector_recall_at_10": 0.9444,
+        "vector_recall_at_5": 0.8889
+      },
+      "priority_score": 0.15,
+      "target_content_type": "image",
+      "total_queries": 18
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 1,
+        "original_vec": 60
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "text_to_video",
+      "configured_content_type_filter": "video",
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "15 queries is below the 20-query diagnostic floor.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": 0.1333,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.15,
+      "target_content_type": "video",
+      "total_queries": 15
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 75,
+        "original_vec": 78
+      },
+      "best_recall_at_5": 0.95,
+      "best_stage": "BM25-only",
+      "category": "mixed_modal",
+      "configured_content_type_filter": null,
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "comprehensive guide to athletic performance",
+          "query_type": "text",
+          "relevant_paths": [
+            "text/sports_running.md",
+            "text/sports_cycling.md",
+            "text/sports_swimming.md",
+            "text/sports_yoga.md",
+            "text/medicine_nutrition.md",
+            "text/medicine_cardiology.md"
+          ],
+          "top_results": [
+            "text/cooking_sourdough.md",
+            "documents/ai_architecture_deck.pptx::slide:0003",
+            "documents/edge_deployment_guide.pdf::page:0001"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": 0.95,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 0.9,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 0.95,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 0.85
+      },
+      "priority_score": 0.0,
+      "target_content_type": null,
+      "total_queries": 20
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 188,
+        "original_vec": 241
+      },
+      "best_recall_at_5": 0.9,
+      "best_stage": "Vector + BM25 (RRF)",
+      "category": "text_to_text",
+      "configured_content_type_filter": "text",
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "how do computers understand the meaning of words",
+          "query_type": "text",
+          "relevant_paths": [
+            "text/ai_embeddings.md"
+          ],
+          "top_results": [
+            "text/ai_transformers.md",
+            "text/tech_quantum_computing.md",
+            "text/tech_cloud_computing.md"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": null,
+          "query": "underwater basket weaving techniques",
+          "query_type": "text",
+          "relevant_paths": [],
+          "top_results": [
+            "text/sports_swimming.md",
+            "text/architecture_gothic.md",
+            "text/cooking_sourdough.md"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": null,
+          "query": "medieval jousting tournament rules and equipment",
+          "query_type": "text",
+          "relevant_paths": [],
+          "top_results": [
+            "text/sports_swimming.md",
+            "text/sports_cycling.md",
+            "text/history_renaissance.md"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": 0.8667,
+        "hybrid_recall_at_10": 0.9167,
+        "hybrid_recall_at_5": 0.9,
+        "rrf_recall_at_10": 0.9167,
+        "rrf_recall_at_5": 0.9,
+        "vector_recall_at_10": 0.9,
+        "vector_recall_at_5": 0.8833
+      },
+      "priority_score": 0.0,
+      "target_content_type": "text",
+      "total_queries": 60
+    }
+  ],
+  "diagnosed_at": "2026-05-17T17:57:55.151267+00:00",
+  "diagnostic": "cross_modal_retrieval",
+  "method_notes": [
+    "Vector-only is treated as the raw embedding baseline.",
+    "RRF lift over vector-only is treated as evidence from derived text probes such as captions, transcripts, OCR, or BM25 text.",
+    "Hybrid-minus-RRF isolates the current reranker contribution.",
+    "Parent-memory versus asset-level scoring is only available when the source payload includes asset_level metrics."
+  ],
+  "prioritized_actions": [
+    {
+      "owner": "search",
+      "priority": 1,
+      "rationale": "The weakest media-query categories are not rescued by current RRF/reranker stages, so REC-130 should target a strict top-K cascade instead of broad expensive scoring.",
+      "title": "Add bounded cascaded media reranking only after cheap top-K retrieval."
+    },
+    {
+      "owner": "evals",
+      "priority": 2,
+      "rationale": "Several weak categories have 1-3 examples, which is too small to distinguish model weakness from benchmark noise; this maps directly to REC-160.",
+      "title": "Expand weak categories to at least 20 queries and keep parent-memory scoring."
+    },
+    {
+      "owner": "indexing",
+      "priority": 3,
+      "rationale": "Document retrieval categories are evaluated without a proper document-family content filter, so unrelated images/videos can dominate media-query results.",
+      "title": "Represent document-family filters explicitly across pdf/docx/pptx roots and children."
+    },
+    {
+      "owner": "evals",
+      "priority": 4,
+      "rationale": "Queries such as 'related document' are useful smoke probes but too ambiguous for release-quality diagnostics.",
+      "title": "Replace placeholder media prompts with grounded intent labels and provenance."
+    },
+    {
+      "owner": "evals",
+      "priority": 5,
+      "rationale": "The checked-in result is from v0.2.0 and predates serialized asset-level rollups, so it cannot fully separate child-asset hits from parent-memory hits.",
+      "title": "Rerun cross-modal ablation with the current harness to populate asset_level metrics."
+    },
+    {
+      "owner": "ingest",
+      "priority": 6,
+      "rationale": "Where RRF improves over vector-only, the improvement is evidence that derived text is helping and should be cached/versioned rather than recomputed ad hoc.",
+      "title": "Keep strengthening captions, transcripts, and OCR as first-class retrieval text."
+    },
+    {
+      "owner": "model_research",
+      "priority": 7,
+      "rationale": "ViDoRe-style visual document retrieval and MTEB/BEIR-style qrels offer better external baselines for document-heavy failures than anecdotes from one synthetic corpus.",
+      "title": "Benchmark visual/document-specialized retrievers against the weak categories."
+    }
+  ],
+  "source": {
+    "benchmark": "cross_modal_ablation",
+    "generated_at": "2026-03-22T01:15:51.127774+00:00",
+    "run_status": "complete",
+    "version": "0.2.0"
+  },
+  "summary": {
+    "categories": 13,
+    "issue_counts": {
+      "bm25_modality_blind": 8,
+      "derived_text_probe_insufficient": 3,
+      "derived_text_probe_lift": 2,
+      "document_family_filter_gap": 3,
+      "embedding_alignment_gap": 5,
+      "generic_query_artifact": 6,
+      "media_query_path_missing": 4,
+      "parent_asset_metrics_missing": 13,
+      "reranker_no_lift": 4,
+      "under_sampled_category": 11
+    },
+    "weak_categories": 9
+  },
+  "thresholds": {
+    "meaningful_delta": 0.1,
+    "min_category_queries": 20,
+    "weak_recall_at_5": 0.6
+  },
+  "weak_categories": [
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 8,
+        "original_vec": 8
+      },
+      "best_recall_at_5": 0.0,
+      "best_stage": "Vector-only",
+      "category": "image_to_document",
+      "configured_content_type_filter": null,
+      "failure_examples": [
+        {
+          "image_query_path": "images/neural_network_diagram.png",
+          "query": "related document",
+          "query_type": "image",
+          "relevant_paths": [
+            "documents/ai_strategy_report.docx",
+            "documents/ai_architecture_deck.pptx",
+            "documents/embedding_research.pdf"
+          ],
+          "top_results": [
+            "images/neural_network_diagram.png",
+            "images/whiteboard_brainstorm.png",
+            "images/whiteboard_architecture.png"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": "images/code_editor_screenshot.png",
+          "query": "related document",
+          "query_type": "image",
+          "relevant_paths": [
+            "documents/recallforge_spec.docx",
+            "documents/operations_manual.pdf"
+          ],
+          "top_results": [
+            "images/code_editor_screenshot.png",
+            "videos/coding_demo.mp4::transcript:0001@0.00s",
+            "images/whiteboard_architecture.png"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "2 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process image queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.000; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_lift",
+          "evidence": "RRF improves R@5 by +0.000 and R@10 by +0.500 over raw vector search.",
+          "severity": "positive"
+        },
+        {
+          "code": "reranker_no_lift",
+          "evidence": "Hybrid reranker changes R@5 by only +0.000 versus RRF.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "document_family_filter_gap",
+          "evidence": "Benchmark cannot currently constrain results to the pdf/docx/pptx document family with a single content_type filter.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 0.5,
+        "hybrid_recall_at_5": 0.0,
+        "rrf_recall_at_10": 0.5,
+        "rrf_recall_at_5": 0.0,
+        "vector_recall_at_10": 0.0,
+        "vector_recall_at_5": 0.0
+      },
+      "priority_score": 0.85,
+      "target_content_type": "document_family",
+      "total_queries": 2
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 4,
+        "original_vec": 4
+      },
+      "best_recall_at_5": 0.0,
+      "best_stage": "Vector-only",
+      "category": "video_to_document",
+      "configured_content_type_filter": null,
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "related document",
+          "query_type": "video",
+          "relevant_paths": [
+            "documents/ai_architecture_deck.pptx"
+          ],
+          "top_results": [
+            "videos/architecture_walkthrough.mp4",
+            "videos/architecture_walkthrough.mp4::frame:0004@15.00s",
+            "videos/architecture_walkthrough.mp4::frame:0006@25.00s"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "1 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process video queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.000; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_insufficient",
+          "evidence": "RRF R@5=0.000 does not materially lift vector R@5=0.000.",
+          "severity": "high"
+        },
+        {
+          "code": "reranker_no_lift",
+          "evidence": "Hybrid reranker changes R@5 by only +0.000 versus RRF.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "document_family_filter_gap",
+          "evidence": "Benchmark cannot currently constrain results to the pdf/docx/pptx document family with a single content_type filter.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        },
+        {
+          "code": "media_query_path_missing",
+          "evidence": "1 per-query rows omit image_query_path or video_query_path instrumentation.",
+          "severity": "low"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 0.0,
+        "hybrid_recall_at_5": 0.0,
+        "rrf_recall_at_10": 0.0,
+        "rrf_recall_at_5": 0.0,
+        "vector_recall_at_10": 0.0,
+        "vector_recall_at_5": 0.0
+      },
+      "priority_score": 0.85,
+      "target_content_type": "document_family",
+      "total_queries": 1
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 7,
+        "original_vec": 8
+      },
+      "best_recall_at_5": 0.0,
+      "best_stage": "Vector-only",
+      "category": "video_to_image",
+      "configured_content_type_filter": "image",
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "related image",
+          "query_type": "video",
+          "relevant_paths": [
+            "images/forest_landscape.png",
+            "images/mountain_landscape.png",
+            "images/ocean_beach.png"
+          ],
+          "top_results": [
+            "videos/nature_timelapse.mp4::frame:0006@25.00s",
+            "videos/nature_timelapse.mp4::frame:0005@20.00s",
+            "videos/nature_timelapse.mp4::frame:0007@30.00s"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": null,
+          "query": "related image",
+          "query_type": "video",
+          "relevant_paths": [
+            "images/whiteboard_brainstorm.png",
+            "images/whiteboard_architecture.png"
+          ],
+          "top_results": [
+            "videos/whiteboard_session.mp4::frame:0003@10.00s",
+            "videos/whiteboard_session.mp4::frame:0002@5.00s",
+            "videos/whiteboard_session.mp4::frame:0001@0.00s"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "2 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process video queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.000; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_insufficient",
+          "evidence": "RRF R@5=0.000 does not materially lift vector R@5=0.000.",
+          "severity": "high"
+        },
+        {
+          "code": "reranker_no_lift",
+          "evidence": "Hybrid reranker changes R@5 by only +0.000 versus RRF.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        },
+        {
+          "code": "media_query_path_missing",
+          "evidence": "2 per-query rows omit image_query_path or video_query_path instrumentation.",
+          "severity": "low"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 0.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 0.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 0.0
+      },
+      "priority_score": 0.8,
+      "target_content_type": "image",
+      "total_queries": 2
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 8,
+        "original_vec": 12
+      },
+      "best_recall_at_5": 0.3333,
+      "best_stage": "Vector-only",
+      "category": "video_to_text",
+      "configured_content_type_filter": "text",
+      "failure_examples": [
+        {
+          "image_query_path": null,
+          "query": "related text",
+          "query_type": "video",
+          "relevant_paths": [
+            "text/tech_cybersecurity.md",
+            "text/tech_cloud_computing.md"
+          ],
+          "top_results": [
+            "videos/coding_demo.mp4::transcript:0002@2.00s",
+            "videos/whiteboard_session.mp4::transcript:0001@0.00s",
+            "text/medicine_nutrition.md"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": null,
+          "query": "related text",
+          "query_type": "video",
+          "relevant_paths": [
+            "text/architecture_gothic.md",
+            "text/architecture_modern.md",
+            "text/architecture_blueprints.md"
+          ],
+          "top_results": [
+            "videos/coding_demo.mp4::transcript:0002@2.00s",
+            "text/ai_agents.md",
+            "documents/ai_architecture_deck.pptx::slide:0001"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "3 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process video queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.333; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_insufficient",
+          "evidence": "RRF R@5=0.333 does not materially lift vector R@5=0.333.",
+          "severity": "high"
+        },
+        {
+          "code": "reranker_no_lift",
+          "evidence": "Hybrid reranker changes R@5 by only +0.000 versus RRF.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        },
+        {
+          "code": "media_query_path_missing",
+          "evidence": "3 per-query rows omit image_query_path or video_query_path instrumentation.",
+          "severity": "low"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 0.3333,
+        "hybrid_recall_at_5": 0.3333,
+        "rrf_recall_at_10": 0.3333,
+        "rrf_recall_at_5": 0.3333,
+        "vector_recall_at_10": 0.3333,
+        "vector_recall_at_5": 0.3333
+      },
+      "priority_score": 0.4667,
+      "target_content_type": "text",
+      "total_queries": 3
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 8,
+        "original_vec": 12
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "image_to_image",
+      "configured_content_type_filter": "image",
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "3 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process image queries",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.2,
+      "target_content_type": "image",
+      "total_queries": 3
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 60,
+        "original_vec": 63
+      },
+      "best_recall_at_5": 0.6,
+      "best_stage": "Vector + BM25 (RRF)",
+      "category": "image_to_text",
+      "configured_content_type_filter": "text",
+      "failure_examples": [
+        {
+          "image_query_path": "images/ocean_beach.png",
+          "query": "",
+          "query_type": "image",
+          "relevant_paths": [
+            "text/nature_oceans.md"
+          ],
+          "top_results": [
+            "text/sports_golf.md",
+            "text/music_production.md",
+            "text/nature_forests.md"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": "images/whiteboard_architecture.png",
+          "query": "",
+          "query_type": "image",
+          "relevant_paths": [
+            "text/ai_agents.md",
+            "text/tech_edge_ai.md"
+          ],
+          "top_results": [
+            "videos/architecture_walkthrough.mp4::transcript:0001@0.00s",
+            "text/tech_cloud_computing.md",
+            "videos/whiteboard_session.mp4::transcript:0001@0.00s"
+          ],
+          "video_query_path": null
+        },
+        {
+          "image_query_path": "images/whiteboard_brainstorm.png",
+          "query": "",
+          "query_type": "image",
+          "relevant_paths": [
+            "text/ai_agents.md",
+            "text/tech_cloud_computing.md"
+          ],
+          "top_results": [
+            "videos/whiteboard_session.mp4::transcript:0002@2.00s",
+            "videos/whiteboard_session.mp4::transcript:0001@0.00s",
+            "videos/architecture_walkthrough.mp4::transcript:0001@0.00s"
+          ],
+          "video_query_path": null
+        }
+      ],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "15 queries is below the 20-query diagnostic floor.",
+          "severity": "medium"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process image queries",
+          "severity": "medium"
+        },
+        {
+          "code": "embedding_alignment_gap",
+          "evidence": "Vector-only R@5=0.467; media-query categories need raw embedding alignment above 0.60.",
+          "severity": "high"
+        },
+        {
+          "code": "derived_text_probe_lift",
+          "evidence": "RRF improves R@5 by +0.133 and R@10 by +0.133 over raw vector search.",
+          "severity": "positive"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 0.8667,
+        "hybrid_recall_at_5": 0.6,
+        "rrf_recall_at_10": 0.8667,
+        "rrf_recall_at_5": 0.6,
+        "vector_recall_at_10": 0.7333,
+        "vector_recall_at_5": 0.4667
+      },
+      "priority_score": 0.2,
+      "target_content_type": "text",
+      "total_queries": 15
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 2,
+        "original_vec": 8
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "image_to_video",
+      "configured_content_type_filter": "video",
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "2 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process image queries",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "generic_query_artifact",
+          "evidence": "Most media-query prompts are generic placeholders such as 'related document', so scores mix retrieval quality with query-definition ambiguity.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.2,
+      "target_content_type": "video",
+      "total_queries": 2
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_fts": 44,
+        "original_vec": 48
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "text_to_document",
+      "configured_content_type_filter": null,
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "12 queries is below the 20-query diagnostic floor.",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "document_family_filter_gap",
+          "evidence": "Benchmark cannot currently constrain results to the pdf/docx/pptx document family with a single content_type filter.",
+          "severity": "medium"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": 1.0,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.2,
+      "target_content_type": "document_family",
+      "total_queries": 12
+    },
+    {
+      "audit_source_counts_top5": {
+        "original_vec": 4
+      },
+      "best_recall_at_5": 1.0,
+      "best_stage": "Vector-only",
+      "category": "video_to_video",
+      "configured_content_type_filter": "video",
+      "failure_examples": [],
+      "issues": [
+        {
+          "code": "under_sampled_category",
+          "evidence": "1 queries is below the 20-query diagnostic floor.",
+          "severity": "high"
+        },
+        {
+          "code": "bm25_modality_blind",
+          "evidence": "BM25 can't process video queries",
+          "severity": "medium"
+        },
+        {
+          "code": "parent_asset_metrics_missing",
+          "evidence": "Saved payload lacks asset_level metrics; rerun the benchmark with the current harness to separate parent-memory and child-asset hits.",
+          "severity": "medium"
+        },
+        {
+          "code": "media_query_path_missing",
+          "evidence": "1 per-query rows omit image_query_path or video_query_path instrumentation.",
+          "severity": "low"
+        }
+      ],
+      "metrics": {
+        "bm25_recall_at_5": null,
+        "hybrid_recall_at_10": 1.0,
+        "hybrid_recall_at_5": 1.0,
+        "rrf_recall_at_10": 1.0,
+        "rrf_recall_at_5": 1.0,
+        "vector_recall_at_10": 1.0,
+        "vector_recall_at_5": 1.0
+      },
+      "priority_score": 0.2,
+      "target_content_type": "video",
+      "total_queries": 1
+    }
+  ]
+}

@@ -287,6 +287,52 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
             payload["stages"]["Vector-only"]["text_to_text"]["per_query_results"][0]["asset_level"]["hit_at_1"]
         )
 
+    def test_output_payload_preserves_video_query_path(self):
+        module = _load_cross_modal_ablation()
+
+        gt = module.VIDEO_TO_TEXT[0]
+        stage_result = module.StageResult(
+            stage="Vector-only",
+            category=gt.category,
+            total_queries=1,
+            hits_at_1=0,
+            hits_at_5=0,
+            hits_at_10=0,
+        )
+        stage_result.per_query_results.append(
+            {
+                "query": gt.query,
+                "query_type": gt.query_type,
+                "image_query_path": gt.image_query_path,
+                "video_query_path": gt.video_query_path,
+                "relevant_paths": gt.relevant_paths,
+                "hit_at_1": False,
+                "hit_at_5": False,
+                "hit_at_10": False,
+            }
+        )
+
+        payload = module._build_output_payload(
+            {gt.category: [gt]},
+            {"Vector-only": {gt.category: stage_result}},
+            [("Vector-only", "embed")],
+            expansion_profile=module._resolve_expansion_profile("caption_only"),
+            smoke_profile="safe",
+            rss_limit_mb=None,
+            peak_rss_mb=None,
+            indexed_items=1,
+            run_status="complete",
+            interrupted=False,
+            completed_stages=["Vector-only"],
+            current_stage=None,
+            current_category=None,
+        )
+
+        self.assertEqual(
+            payload["stages"]["Vector-only"][gt.category]["per_query_results"][0]["video_query_path"],
+            gt.video_query_path,
+        )
+
     def test_resolve_expansion_profile_variants(self):
         module = _load_cross_modal_ablation()
 
