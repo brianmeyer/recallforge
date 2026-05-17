@@ -459,7 +459,7 @@ class TestServerCreation:
         required_tools = {
             "search", "search_fts", "search_vec", "ingest",
             "index_document", "index_image",
-            "memory_add", "memory_update", "memory_delete",
+            "memory_add", "memory_add_conversation", "memory_update", "memory_delete",
             "status", "rebuild_fts", "get_config", "set_config",
             "list_collections", "list_namespaces",
             "rename_collection", "delete_collection",

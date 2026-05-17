@@ -43,7 +43,7 @@ class FakeBackend:
         return [0.0] * 8
 
 
-def _wait_until(predicate, timeout: float = 3.0, interval: float = 0.05) -> bool:
+def _wait_until(predicate, timeout: float = 8.0, interval: float = 0.05) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():

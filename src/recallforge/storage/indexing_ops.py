@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from ..audio import is_audio_file, load_audio_transcript_segments
+from ..conversations import (
+    build_conversation_summary,
+    build_conversation_turn_text,
+    conversation_turn_path,
+    normalize_conversation_tags,
+    normalize_conversation_turns,
+)
 from ..documents import extract_document_artifacts, is_document_file
 from ..video import extract_video_artifacts, is_video_file
 from .chunking import chunk_document
@@ -21,6 +28,7 @@ from .lancedb_shared import (
     _safe_filter,
     _validate_identifier,
     hash_file_bytes,
+    build_memory_id,
     extract_title,
     hash_content,
     trace_log,
@@ -397,6 +405,156 @@ class IndexingOps:
 
         trace_log("upsert_memory_done", path=normalized_path, hash=content_hash[:8], chunks=len(chunks))
         return content_hash
+
+    def index_conversation(
+        self,
+        path: str,
+        turns: List[Dict[str, Any]],
+        collection: str,
+        embed_func,
+        model: str,
+        title: Optional[str] = None,
+        summary: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Index a conversation as one root memory plus turn-level children."""
+        normalized_path = path.strip() if isinstance(path, str) else ""
+        if not normalized_path:
+            raise ValueError("path is required")
+
+        normalized_turns = normalize_conversation_turns(turns)
+        resolved_title = (
+            (title or "").strip()
+            or os.path.splitext(os.path.basename(normalized_path))[0]
+            or normalized_path
+        )
+        root_text = build_conversation_summary(
+            title=resolved_title,
+            turns=normalized_turns,
+            summary=summary,
+        )
+        root_tags = normalize_conversation_tags(normalized_turns, tags)
+        memory_id = build_memory_id(
+            collection,
+            normalized_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+
+        trace_log(
+            "index_conversation_start",
+            path=normalized_path,
+            collection=collection,
+            turns=len(normalized_turns),
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+
+        self._delete_path_entries(
+            collection=collection,
+            logical_path=normalized_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            include_children=True,
+        )
+
+        root_hash = ""
+        child_hashes: List[str] = []
+        with self._backend.bulk_mode():
+            root_hash = self.upsert_memory(
+                path=normalized_path,
+                text=root_text,
+                collection=collection,
+                embed_func=embed_func,
+                model=model,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                importance=importance,
+                ttl_seconds=ttl_seconds,
+                tags=root_tags,
+                _skip_delete=True,
+                memory_role="root",
+                memory_root_path=normalized_path,
+            )
+
+            total_turns = len(normalized_turns)
+            for index, turn in enumerate(normalized_turns, start=1):
+                turn_tags: List[str] = []
+                for raw_tag in root_tags + [
+                    "conversation_turn",
+                    f"turn:{index:04d}",
+                    f"role:{turn.role}",
+                ]:
+                    tag = str(raw_tag or "").strip().lower()
+                    if tag and tag not in turn_tags:
+                        turn_tags.append(tag)
+                if turn.speaker:
+                    speaker_tag = f"participant:{turn.speaker.lower()}"
+                    if speaker_tag not in turn_tags:
+                        turn_tags.append(speaker_tag)
+                turn_text = build_conversation_turn_text(
+                    title=resolved_title,
+                    turn=turn,
+                    index=index,
+                    total=total_turns,
+                )
+                child_hashes.append(
+                    self.upsert_memory(
+                        path=conversation_turn_path(normalized_path, index),
+                        text=turn_text,
+                        collection=collection,
+                        embed_func=embed_func,
+                        model=model,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                        importance=importance,
+                        ttl_seconds=ttl_seconds,
+                        tags=turn_tags,
+                        _skip_delete=True,
+                        memory_role="child",
+                        memory_root_path=normalized_path,
+                    )
+                )
+
+        trace_log(
+            "index_conversation_done",
+            path=normalized_path,
+            hash=root_hash[:8],
+            indexed_turns=len(child_hashes),
+        )
+
+        return {
+            "success": True,
+            "path": normalized_path,
+            "collection": collection,
+            "hash": root_hash,
+            "memory_id": memory_id,
+            "title": resolved_title,
+            "indexed_turns": len(child_hashes),
+            "user_id": user_id,
+            "session_id": session_id,
+            "project_id": project_id,
+            "profile": profile,
+            "importance": importance,
+            "ttl_seconds": ttl_seconds,
+            "tags": root_tags,
+        }
 
     def delete_memory(
         self,

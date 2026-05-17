@@ -114,6 +114,16 @@ id | collection | file_path | title | content_hash | content_type | active
 created_at | updated_at
 ```
 
+Conversation memories use the same parent/child layout as media-derived memories:
+
+```
+conversation root path
+     ├──> root text memory with summary, participants, and excerpts
+     └──> turn child memories (`path::turn:0001`, `path::turn:0002`, ...)
+```
+
+All turn children share the root `memory_id` and `memory_root_path`, so matching turns strengthen the parent conversation result through the standard memory rollup path.
+
 **content** (bodies, content-addressed)
 ```
 hash | doc | content_type | created_at
@@ -183,7 +193,7 @@ backend = recallforge.get_backend()
 ### 5. MCP Server (`src/recallforge/server.py`)
 
 ```
-Tools: 21 MCP tools across search, ingest, memory, collection admin, batch, and runtime config
+Tools: 24 MCP tools across search, ingest, memory, collection admin, batch, and runtime config
 Transport: stdio (default) or HTTP/SSE (`/health`, `/sse`, `/messages/`)
 Startup: backend.warm_up() for predictable latency
 Signals: SIGTERM/SIGINT graceful shutdown

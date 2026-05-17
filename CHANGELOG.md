@@ -5,6 +5,7 @@ All notable changes to RecallForge will be documented in this file.
 ## [Unreleased]
 
 - Replaced the tiny UAT video clips with compact episodic-memory fixtures, richer transcript sidecars, related artifact metadata, and regression coverage for the video corpus.
+- Added `memory_add_conversation` so conversation threads ingest as canonical parent memories with turn-level child memories and standard memory rollups.
 
 ## [0.2.1] — 2026-05-17
 

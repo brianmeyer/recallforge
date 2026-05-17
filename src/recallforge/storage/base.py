@@ -172,6 +172,9 @@ class StorageBackend(ABC):
         memory_id: Optional[str] = None,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
     ) -> None:
         """Insert an embedding for a document chunk."""
         pass
@@ -264,8 +267,35 @@ class StorageBackend(ABC):
         session_id: Optional[str] = None,
         project_id: Optional[str] = None,
         profile: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+        _skip_delete: bool = False,
+        memory_role: str = "root",
+        memory_root_path: Optional[str] = None,
     ) -> str:
         """Create or update a memory entry and its embeddings."""
+        pass
+
+    @abstractmethod
+    def index_conversation(
+        self,
+        path: str,
+        turns: List[Dict[str, Any]],
+        collection: str,
+        embed_func: Callable[[str], List[float]],
+        model: str,
+        title: Optional[str] = None,
+        summary: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        importance: Optional[float] = None,
+        ttl_seconds: Optional[int] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Index a conversation root plus turn-level child memories."""
         pass
 
     @abstractmethod

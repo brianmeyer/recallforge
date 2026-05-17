@@ -20,6 +20,7 @@ from recallforge.server import (
     _handle_list_memories,
     _handle_list_namespaces,
     _handle_memory_add,
+    _handle_memory_add_conversation,
     _handle_memory_delete,
     _handle_memory_get,
     _handle_memory_update,
@@ -87,6 +88,17 @@ class _DummyStorage:
 
     def upsert_memory(self, **_kwargs):
         return "hash-mem"
+
+    def index_conversation(self, **_kwargs):
+        return {
+            "success": True,
+            "path": "threads/demo",
+            "collection": "default",
+            "hash": "hash-conversation",
+            "memory_id": "mem-conversation",
+            "indexed_turns": 2,
+            "tags": ["conversation"],
+        }
 
     def delete_memory(self, **_kwargs):
         return {"success": True, "removed_vectors": 1}
@@ -202,6 +214,24 @@ class TestMCPJsonCompliance(unittest.IsolatedAsyncioTestCase):
                     (
                         lambda: _handle_memory_add({"path": "mem/1", "text": "x"}, self.backend, self.storage),
                         lambda: _handle_memory_add({"path": "", "text": ""}, self.backend, self.storage),
+                    ),
+                    (
+                        lambda: _handle_memory_add_conversation(
+                            {
+                                "path": "threads/demo",
+                                "turns": [
+                                    {"role": "user", "content": "hello"},
+                                    {"role": "assistant", "content": "hi"},
+                                ],
+                            },
+                            self.backend,
+                            self.storage,
+                        ),
+                        lambda: _handle_memory_add_conversation(
+                            {"path": "threads/demo", "turns": []},
+                            self.backend,
+                            self.storage,
+                        ),
                     ),
                     (
                         lambda: _handle_memory_update({"path": "mem/1", "text": "x"}, self.backend, self.storage),
