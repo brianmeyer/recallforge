@@ -153,6 +153,25 @@ class TestHybridSearcherInit(unittest.TestCase):
             searcher = HybridSearcher(backend=backend, storage=storage)
         self.assertTrue(searcher.enable_media_reranking)
 
+    def test_media_reranking_caps_read_env_overrides(self):
+        backend = StubBackend()
+        storage = StubStorage()
+        with patch.dict(
+            os.environ,
+            {
+                "RECALLFORGE_RERANK_TOP_K": "9",
+                "RECALLFORGE_MEDIA_QUERY_RERANK_TOP_K": "3",
+                "RECALLFORGE_MEDIA_RESULT_RERANK_TOP_K": "4",
+                "RECALLFORGE_MEDIA_RERANK_MIN_RRF_MARGIN": "0.4",
+            },
+        ):
+            searcher = HybridSearcher(backend=backend, storage=storage)
+
+        self.assertEqual(searcher.rerank_top_k, 9)
+        self.assertEqual(searcher.media_query_rerank_top_k, 3)
+        self.assertEqual(searcher.media_result_rerank_top_k, 4)
+        self.assertEqual(searcher.media_rerank_min_rrf_margin, 0.4)
+
 
 class TestBM25Probe(unittest.TestCase):
     def test_bm25_probe_delegates_to_storage(self):
@@ -348,6 +367,107 @@ class TestRerankCandidates(unittest.TestCase):
 
         backend.rerank.assert_not_called()
         self.assertEqual(scores["doc.md"], 0.5)
+
+    def test_media_query_reranking_uses_media_query_top_k_cap(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.91, 0.72])
+        candidates = [
+            _make_search_result("a.md", 0.95),
+            _make_search_result("b.md", 0.92),
+            _make_search_result("c.md", 0.89),
+            _make_search_result("d.md", 0.86),
+        ]
+        with patch.dict(
+            os.environ,
+            {
+                "RECALLFORGE_ENABLE_MEDIA_RERANKING": "1",
+                "RECALLFORGE_MEDIA_QUERY_RERANK_TOP_K": "2",
+                "RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY": "0",
+            },
+        ):
+            searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=10)
+
+        scores, path = searcher._rerank_candidates(
+            candidates,
+            query="caption text",
+            query_image_path="/tmp/query.png",
+        )
+
+        backend.rerank.assert_called_once()
+        rerank_docs = backend.rerank.call_args[0][1]
+        self.assertEqual([d["filepath"] for d in rerank_docs], ["a.md", "b.md"])
+        self.assertEqual(scores["a.md"], 0.91)
+        self.assertEqual(scores["b.md"], 0.72)
+        self.assertEqual(scores["c.md"], 0.5)
+        self.assertEqual(path, "vl_image")
+
+    def test_media_result_reranking_uses_media_result_top_k_cap(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.81])
+        candidates = [
+            _make_search_result("img.png", 0.95, content_type="image"),
+            _make_search_result("doc.md", 0.92),
+            _make_search_result("other.md", 0.89),
+        ]
+        with patch.dict(
+            os.environ,
+            {
+                "RECALLFORGE_ENABLE_MEDIA_RERANKING": "1",
+                "RECALLFORGE_MEDIA_RESULT_RERANK_TOP_K": "1",
+                "RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY": "0",
+            },
+        ):
+            searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=10)
+
+        scores, path = searcher._rerank_candidates(candidates, query="diagram")
+
+        backend.rerank.assert_called_once()
+        rerank_docs = backend.rerank.call_args[0][1]
+        self.assertEqual([d["filepath"] for d in rerank_docs], ["img.png"])
+        self.assertEqual(scores["img.png"], 0.81)
+        self.assertEqual(scores["doc.md"], 0.5)
+        self.assertEqual(path, "text")
+
+    def test_media_reranking_skips_when_rrf_margin_is_confident(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock()
+        candidates = [
+            _make_search_result("img.png", 1.0, content_type="image"),
+            _make_search_result("doc.md", 0.5),
+        ]
+        with patch.dict(os.environ, {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"}):
+            searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=10)
+
+        scores, path = searcher._rerank_candidates(candidates, query="diagram")
+
+        backend.rerank.assert_not_called()
+        self.assertEqual(scores, {"img.png": 0.5, "doc.md": 0.5})
+        self.assertEqual(path, "media_confident_skip")
+
+    def test_media_reranking_prefilters_empty_media_candidates(self):
+        backend = StubBackend(mode="hybrid")
+        backend.rerank = MagicMock(return_value=[0.73])
+        empty_media = _make_search_result("missing.png", 0.95, content_type="image")
+        empty_media.body = ""
+        text_candidate = _make_search_result("doc.md", 0.92)
+        candidates = [empty_media, text_candidate]
+        with patch.dict(
+            os.environ,
+            {
+                "RECALLFORGE_ENABLE_MEDIA_RERANKING": "1",
+                "RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY": "0",
+            },
+        ):
+            searcher = HybridSearcher(backend=backend, storage=StubStorage(), rerank_top_k=2)
+
+        scores, path = searcher._rerank_candidates(candidates, query="diagram")
+
+        backend.rerank.assert_called_once()
+        rerank_docs = backend.rerank.call_args[0][1]
+        self.assertEqual([d["filepath"] for d in rerank_docs], ["doc.md"])
+        self.assertEqual(scores["missing.png"], 0.5)
+        self.assertEqual(scores["doc.md"], 0.73)
+        self.assertEqual(path, "text")
 
     def test_embed_mode_returns_default_score(self):
         backend = StubBackend(mode="embed")
