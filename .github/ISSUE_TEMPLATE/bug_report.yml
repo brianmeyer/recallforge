@@ -1,0 +1,61 @@
+name: Bug report
+description: Report a reproducible RecallForge bug.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. For alpha/beta workflow feedback that is not a reproducible bug, use Discussions instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include commands, MCP client, backend, and a tiny fixture if possible.
+      placeholder: |
+        1. Run `recallforge ...`
+        2. Ingest ...
+        3. Search ...
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - CLI
+        - MCP stdio
+        - MCP HTTP/SSE
+        - Python API
+        - Storage/indexing
+        - Search/retrieval
+        - Packaging/install
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: RecallForge version
+      placeholder: recallforge --version
+    validations:
+      required: true
+  - type: textarea
+    id: crash_report
+    attributes:
+      label: Optional crash report
+      description: Run `recallforge crash-report --include-env` and paste or attach the reviewed JSON if helpful. Do not include private indexed content.
+      render: json
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I reviewed logs/crash reports for secrets and private indexed content before attaching them.
+          required: true

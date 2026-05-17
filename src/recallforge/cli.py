@@ -6,6 +6,8 @@ Commands:
   recallforge index       Index a file or directory
   recallforge search      Run a search query
   recallforge status      Show system status
+  recallforge flags       Show feature flags
+  recallforge crash-report  Create a local opt-in crash report
 """
 
 import argparse
@@ -183,6 +185,35 @@ def main():
         default=None,
         help="Path to storage directory",
     )
+
+    # feature flags command
+    flags_parser = subparsers.add_parser("flags", help="Show feature flags")
+    flags_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print feature flags as JSON",
+    )
+
+    # crash-report command
+    crash_parser = subparsers.add_parser(
+        "crash-report",
+        help="Create a local-only opt-in crash report",
+    )
+    crash_parser.add_argument(
+        "--output", "-o",
+        default=None,
+        help="Write report JSON to this path. Defaults to stdout.",
+    )
+    crash_parser.add_argument(
+        "--message",
+        default="",
+        help="Optional human-readable note about what happened.",
+    )
+    crash_parser.add_argument(
+        "--include-env",
+        action="store_true",
+        help="Include allowlisted RECALLFORGE_* environment values with home paths redacted.",
+    )
     
     # collections command
     collections_parser = subparsers.add_parser("collections", help="Manage collections")
@@ -318,6 +349,10 @@ def main():
         return cmd_search(args)
     elif args.command == "status":
         return cmd_status(args)
+    elif args.command == "flags":
+        return cmd_flags(args)
+    elif args.command == "crash-report":
+        return cmd_crash_report(args)
     elif args.command == "collections":
         return cmd_collections(args)
     elif args.command == "watch":
@@ -586,6 +621,51 @@ def cmd_status(args):
     print(f"  Documents:    {storage.count_documents()}")
     print()
     
+    return 0
+
+
+def cmd_flags(args):
+    """Show effective feature flags."""
+    from .feature_flags import list_feature_flags
+
+    flags = list_feature_flags()
+    if args.json:
+        print(json.dumps({"feature_flags": flags}, indent=2))
+        return 0
+
+    print("RecallForge Feature Flags")
+    print("=" * 40)
+    for flag in flags:
+        value = flag["value"]
+        default = flag["default"]
+        enabled = flag["enabled"]
+        enabled_text = "n/a" if enabled is None else ("on" if enabled else "off")
+        print(f"{flag['name']}={value} (default: {default}, {enabled_text})")
+        print(f"  stage: {flag['stage']}")
+        print(f"  {flag['description']}")
+        print()
+    return 0
+
+
+def cmd_crash_report(args):
+    """Create a local-only diagnostic crash report."""
+    from .diagnostics import collect_crash_report, write_crash_report
+
+    if args.output:
+        output = write_crash_report(
+            args.output,
+            message=args.message,
+            include_env=args.include_env,
+        )
+        print(f"Wrote local crash report: {output}")
+        print("Review it before attaching it to a GitHub Discussion or Issue.")
+        return 0
+
+    report = collect_crash_report(
+        message=args.message,
+        include_env=args.include_env,
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
 

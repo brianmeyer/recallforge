@@ -265,6 +265,15 @@ Full references:
 [`docs/MEMORY_POLICY.md`](docs/MEMORY_POLICY.md), and
 [`docs/RUNTIME_BUDGETS.md`](docs/RUNTIME_BUDGETS.md)
 
+For alpha/beta testers:
+
+```bash
+recallforge flags
+recallforge crash-report --output recallforge-crash-report.json --message "what happened"
+```
+
+Testing guidance, feature-flag defaults, and the opt-in crash-report policy live in [docs/ALPHA_BETA_TESTING.md](docs/ALPHA_BETA_TESTING.md).
+
 ## Project structure
 
 ```
@@ -280,6 +289,8 @@ src/recallforge/
 ├── documents.py          # PDF/DOCX/PPTX extraction
 ├── video.py              # Frame/transcript extraction
 ├── audio.py              # Transcript-first audio ingest
+├── feature_flags.py      # Alpha/beta feature flag registry
+├── diagnostics.py        # Local-only crash report helpers
 ├── watch_folder.py       # Folder monitoring with dedup
 └── cli.py                # CLI interface
 ```

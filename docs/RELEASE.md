@@ -15,6 +15,7 @@ Use this checklist before cutting a version.
    - `docs/ARCHITECTURE.md`
    - `docs/mcp-tools.md`
 3. Confirm CLI help and MCP tool lists still match the docs.
+4. Review [ALPHA_BETA_TESTING.md](ALPHA_BETA_TESTING.md) and confirm the alpha/beta defaults still match the release candidate.
 
 ## 2. Required local validation
 
@@ -123,7 +124,17 @@ When you omit `--output`, the benchmark now keeps profile-specific filenames for
 - `ingest`, `index_audio`, watch-folder indexing, CLI indexing, and `content_type="audio"` filters cover the shipped audio path.
 - Dedicated raw-audio embeddings or transcription are still future work; release checks should verify sidecar transcript retrieval rather than microphone/audio decoding.
 
-## 4. Tag and publish
+## 4. Alpha/beta release readiness
+
+Before inviting alpha or beta users:
+
+1. Confirm GitHub Discussions is enabled.
+2. Create discussion categories with slugs matching `.github/DISCUSSION_TEMPLATE/alpha-feedback.yml` and `.github/DISCUSSION_TEMPLATE/beta-feedback.yml`.
+3. Run `recallforge flags --json` from the release candidate and check that risky flags default off.
+4. Run `recallforge crash-report --include-env` and inspect the JSON for secret-free, manually shareable diagnostics.
+5. Point testers to [ALPHA_BETA_TESTING.md](ALPHA_BETA_TESTING.md).
+
+## 5. Tag and publish
 
 1. Commit the release changes.
 2. Create the release tag:
@@ -141,7 +152,7 @@ If your checkout uses a conventional `origin` remote instead of `recallforge`, p
 gh run list --repo brianmeyer/recallforge --workflow publish.yml --limit 5
 ```
 
-## 5. Post-release smoke check
+## 6. Post-release smoke check
 
 Verify the released package from PyPI:
 
@@ -153,6 +164,6 @@ recallforge serve --http --mode embed --host 127.0.0.1 --port 7433
 
 Then hit `http://127.0.0.1:7433/health` and confirm the process reports healthy model state.
 
-## 6. Git cleanup
+## 7. Git cleanup
 
 After the release PR is merged and the tag is published, follow the routine in [`docs/GIT_HYGIENE.md`](GIT_HYGIENE.md) to prune remote-tracking refs, remove local merged branches, and clear generated build artifacts.

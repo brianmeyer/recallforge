@@ -1,0 +1,48 @@
+title: "[Beta]: "
+labels: ["beta", "feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Beta feedback should focus on release readiness: install, MCP startup, workflow quality, and safe defaults.
+  - type: input
+    id: install_source
+    attributes:
+      label: Install source
+      placeholder: PyPI, release candidate wheel, source checkout
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: OS, Python version, backend, MCP client
+    validations:
+      required: true
+  - type: textarea
+    id: workflows
+    attributes:
+      label: Workflows tested
+      description: List the 3-5 real workflows you tried and whether they succeeded.
+    validations:
+      required: true
+  - type: textarea
+    id: flags
+    attributes:
+      label: Feature flags
+      description: Paste `recallforge flags --json` if you changed any defaults.
+      render: json
+  - type: textarea
+    id: quality
+    attributes:
+      label: Quality and performance notes
+      description: Note slow spots, bad matches, missing docs, or release-blocking behavior.
+  - type: checkboxes
+    id: release_readiness
+    attributes:
+      label: Release readiness
+      options:
+        - label: Install was understandable.
+        - label: MCP startup worked in my client.
+        - label: Default feature flags felt safe.
+        - label: I would trust this build for a small local-memory workflow.
