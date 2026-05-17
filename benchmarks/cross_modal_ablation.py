@@ -1001,37 +1001,37 @@ MIXED_MODAL = [
 TEXT_TO_VIDEO = [
     # EASY (6 queries)
     GroundTruth(
-        query="architecture walkthrough building tour presentation",
+        query="office walkthrough connecting floor plan and system architecture",
         relevant_paths=["videos/architecture_walkthrough.mp4"],
         category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
-        query="coding demonstration software development tutorial",
+        query="screen recording debugging RecallForge video search test",
         relevant_paths=["videos/coding_demo.mp4"],
         category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
-        query="cooking tutorial recipe demonstration video",
+        query="family dinner pasta recipe video with handwritten substitutions",
         relevant_paths=["videos/cooking_tutorial.mp4"],
         category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
-        query="nature timelapse video forest mountains",
+        query="weekend trail scouting video forest mountain coast",
         relevant_paths=["videos/nature_timelapse.mp4"],
         category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
-        query="whiteboard session brainstorming meeting recording",
+        query="product planning whiteboard meeting memory rollups",
         relevant_paths=["videos/whiteboard_session.mp4"],
         category="text_to_video",
         difficulty="easy",
     ),
     GroundTruth(
-        query="video content with transcript about buildings",
+        query="walkthrough transcript about floor plan architecture deck",
         relevant_paths=["videos/architecture_walkthrough.mp4", "videos/architecture_walkthrough.transcript.json"],
         category="text_to_video",
         difficulty="easy",
@@ -1040,33 +1040,33 @@ TEXT_TO_VIDEO = [
     
     # MEDIUM (6 queries)
     GroundTruth(
-        query="programming and software engineering video content",
+        query="developer screen recording and meeting notes about search pipeline",
         relevant_paths=["videos/coding_demo.mp4", "videos/whiteboard_session.mp4"],
         category="text_to_video",
         difficulty="medium",
         graded_relevance={"videos/coding_demo.mp4": 2, "videos/whiteboard_session.mp4": 1},
     ),
     GroundTruth(
-        query="food preparation and culinary instruction videos",
+        query="recipe memory with pasta sauce timing and grocery planning",
         relevant_paths=["videos/cooking_tutorial.mp4"],
         category="text_to_video",
         difficulty="medium",
     ),
     GroundTruth(
-        query="natural environment scenery video footage",
+        query="outdoor field clip with route planning and park notes",
         relevant_paths=["videos/nature_timelapse.mp4"],
         category="text_to_video",
         difficulty="medium",
     ),
     GroundTruth(
-        query="meeting recordings with transcripts for review",
+        query="meeting recordings with transcript action items for review",
         relevant_paths=["videos/whiteboard_session.mp4", "videos/whiteboard_session.transcript.json"],
         category="text_to_video",
         difficulty="medium",
         graded_relevance={"videos/whiteboard_session.mp4": 2, "videos/whiteboard_session.transcript.json": 2},
     ),
     GroundTruth(
-        query="educational video content with searchable transcripts",
+        query="searchable transcript memories from kitchen and developer videos",
         relevant_paths=["videos/cooking_tutorial.mp4", "videos/cooking_tutorial.transcript.json",
                         "videos/coding_demo.mp4", "videos/coding_demo.transcript.json"],
         category="text_to_video",
@@ -1075,7 +1075,7 @@ TEXT_TO_VIDEO = [
                          "videos/coding_demo.mp4": 2, "videos/coding_demo.transcript.json": 2},
     ),
     GroundTruth(
-        query="visual documentation of outdoor spaces",
+        query="visual documentation of outdoor spaces and walkthrough locations",
         relevant_paths=["videos/nature_timelapse.mp4", "videos/architecture_walkthrough.mp4"],
         category="text_to_video",
         difficulty="medium",
@@ -1084,7 +1084,7 @@ TEXT_TO_VIDEO = [
     
     # HARD (3 queries)
     GroundTruth(
-        query="multimedia content for learning and development",
+        query="episodic videos with procedural learning and follow-up actions",
         relevant_paths=["videos/cooking_tutorial.mp4", "videos/coding_demo.mp4", "videos/whiteboard_session.mp4",
                         "videos/cooking_tutorial.transcript.json", "videos/coding_demo.transcript.json", "videos/whiteboard_session.transcript.json"],
         category="text_to_video",
@@ -1093,7 +1093,7 @@ TEXT_TO_VIDEO = [
                          "videos/cooking_tutorial.transcript.json": 2, "videos/coding_demo.transcript.json": 2, "videos/whiteboard_session.transcript.json": 2},
     ),
     GroundTruth(
-        query="archived recordings with searchable text content",
+        query="archived recordings with field notes and architecture narration",
         relevant_paths=["videos/architecture_walkthrough.mp4", "videos/architecture_walkthrough.transcript.json",
                         "videos/nature_timelapse.mp4", "videos/nature_timelapse.transcript.json"],
         category="text_to_video",
@@ -1102,7 +1102,7 @@ TEXT_TO_VIDEO = [
                          "videos/nature_timelapse.mp4": 2, "videos/nature_timelapse.transcript.json": 2},
     ),
     GroundTruth(
-        query="comprehensive video library with transcripts",
+        query="comprehensive episodic video library with transcripts",
         relevant_paths=["videos/cooking_tutorial.mp4", "videos/coding_demo.mp4", "videos/whiteboard_session.mp4", "videos/architecture_walkthrough.mp4", "videos/nature_timelapse.mp4"],
         category="text_to_video",
         difficulty="hard",
@@ -1434,7 +1434,7 @@ VIDEO_TO_TEXT = [
         query="related text",
         query_type="video",
         video_query_path="videos/coding_demo.mp4",
-        relevant_paths=["text/tech_cybersecurity.md", "text/tech_cloud_computing.md"],
+        relevant_paths=["text/ai_agents.md", "text/tech_cloud_computing.md", "text/ai_embeddings.md"],
         category="video_to_text",
         difficulty="hard",
     ),

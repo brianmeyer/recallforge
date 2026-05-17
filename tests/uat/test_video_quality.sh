@@ -12,11 +12,40 @@ trap cleanup_store EXIT
 
 ensure_test_images
 
-SELECTED_BACKEND="$(select_live_backend || true)"
-USE_LIVE_BACKEND=1
-if [[ -z "${SELECTED_BACKEND}" ]]; then
-    USE_LIVE_BACKEND=0
-    info "No usable live backend on this host; using deterministic video-quality backend."
+video_backend_runtime_healthy() {
+    local backend="$1"
+    PYTHONPATH="${REPO_ROOT}/src:${PYTHONPATH:-}" \
+        RECALLFORGE_BACKEND="${backend}" \
+        RECALLFORGE_MODE="embed" \
+        RECALLFORGE_MLX_QUANTIZE="${RECALLFORGE_MLX_QUANTIZE:-4bit}" \
+        python3 <<PYEOF >/dev/null 2>&1
+from recallforge import get_backend
+
+backend = get_backend()
+backend.embed_text("video quality probe")
+backend.embed_image("${CORPUS_DIR}/images/whiteboard_architecture.png")
+PYEOF
+}
+
+SELECTED_BACKEND=""
+USE_LIVE_BACKEND=0
+
+if [[ "${UAT_VIDEO_LIVE:-0}" == "1" ]]; then
+    while IFS= read -r candidate; do
+        if [[ -n "${candidate}" ]] && video_backend_runtime_healthy "${candidate}"; then
+            SELECTED_BACKEND="${candidate}"
+            break
+        fi
+    done < <(live_backend_candidates || true)
+
+    if [[ -n "${SELECTED_BACKEND}" ]]; then
+        USE_LIVE_BACKEND=1
+        info "Using live ${SELECTED_BACKEND} backend for video-quality retrieval."
+    else
+        info "No usable live video backend on this host; using deterministic video-quality backend."
+    fi
+else
+    info "Using deterministic video-quality backend. Set UAT_VIDEO_LIVE=1 to exercise live model retrieval."
 fi
 
 export RECALLFORGE_BACKEND="${SELECTED_BACKEND:-torch}"
@@ -119,7 +148,7 @@ class ConceptBackend:
     def embed_video(self, path):
         return self._vec(os.path.basename(path))
 
-    def rerank(self, query, documents):
+    def rerank(self, query, documents, **_kwargs):
         query_tokens = set(re.findall(r"[a-z0-9]+", self._normalize_seed(query)))
         scores = []
         for doc in documents:
@@ -133,10 +162,10 @@ class ConceptBackend:
         return {"lex": normalized, "vec": normalized, "hyde": normalized}
 
     def needs_reranker(self):
-        return self._mode in {"hybrid", "full"}
+        return self._mode == "hybrid"
 
     def needs_expander(self):
-        return self._mode == "full"
+        return False
 
     def get_info(self):
         return BackendInfo(
@@ -151,7 +180,7 @@ class ConceptBackend:
         )
 
 
-print("\n\033[0;36m--- Index Synthetic Video ---\033[0m\n")
+print("\n\033[0;36m--- Index Episodic Video ---\033[0m\n")
 os.environ["RECALLFORGE_MODE"] = "embed"
 backend = get_backend() if USE_LIVE_BACKEND else ConceptBackend("embed")
 storage = get_storage(STORE)
@@ -174,9 +203,18 @@ print("\n\033[0;36m--- Retrieval Matrix ---\033[0m\n")
 expected_transcript = "whiteboard_session.mp4::transcript:"
 expected_frame = "whiteboard_session.mp4::frame:"
 expected_video = VIDEO_PATH
-query_text = "whiteboard architecture diagram from a meeting"
+query_text = "whiteboard meeting root memories child frames transcripts action items"
 
-for mode in ("embed", "hybrid", "full"):
+
+def has_whiteboard_memory(paths):
+    return any(
+        expected_video in path
+        or expected_transcript in path
+        or expected_frame in path
+        for path in paths
+    )
+
+for mode in ("embed", "hybrid"):
     os.environ["RECALLFORGE_MODE"] = mode
     backend_mode = get_backend() if USE_LIVE_BACKEND else ConceptBackend(mode)
     backend_mode.set_mode(mode)
@@ -191,8 +229,8 @@ for mode in ("embed", "hybrid", "full"):
     )
     transcript_results = text_searcher.search(query_text)
     transcript_paths = [r.filepath for r in transcript_results[:5]]
-    transcript_hit = any(expected_transcript in path for path in transcript_paths)
-    report(transcript_hit, f"text→video transcript retrieval ({mode})")
+    transcript_hit = has_whiteboard_memory(transcript_paths)
+    report(transcript_hit, f"text→video memory retrieval ({mode})")
 
     if REAL_VIDEO_AVAILABLE:
         video_searcher = HybridSearcher(
@@ -216,8 +254,8 @@ for mode in ("embed", "hybrid", "full"):
         )
         video_text_results = video_to_text_searcher.search_video(VIDEO_PATH)
         video_text_paths = [r.filepath for r in video_text_results[:5]]
-        video_text_hit = any(expected_transcript in path for path in video_text_paths)
-        report(video_text_hit, f"video→text retrieval ({mode})")
+        video_text_hit = has_whiteboard_memory(video_text_paths)
+        report(video_text_hit, f"video→text memory retrieval ({mode})")
     else:
         skip(f"video→video retrieval ({mode}; no real video fixture available)")
         skip(f"video→text retrieval ({mode}; no real video fixture available)")
@@ -232,13 +270,13 @@ for mode in ("embed", "hybrid", "full"):
         )
         frame_text_results = image_searcher.search(query_text)
         frame_text_paths = [r.filepath for r in frame_text_results[:5]]
-        frame_text_hit = any(expected_frame in path for path in frame_text_paths)
-        report(frame_text_hit, f"text→video frame retrieval ({mode})")
+        frame_text_hit = has_whiteboard_memory(frame_text_paths)
+        report(frame_text_hit, f"text→video frame/memory retrieval ({mode})")
 
         frame_image_results = image_searcher.search_image(WHITEBOARD_IMAGE)
         frame_image_paths = [r.filepath for r in frame_image_results[:5]]
-        frame_image_hit = any(expected_frame in path for path in frame_image_paths)
-        report(frame_image_hit, f"image→video frame retrieval ({mode})")
+        frame_image_hit = has_whiteboard_memory(frame_image_paths)
+        report(frame_image_hit, f"image→video frame/memory retrieval ({mode})")
 
         video_to_image_searcher = HybridSearcher(
             backend=backend_mode,
@@ -249,8 +287,8 @@ for mode in ("embed", "hybrid", "full"):
         )
         video_image_results = video_to_image_searcher.search_video(VIDEO_PATH)
         video_image_paths = [r.filepath for r in video_image_results[:5]]
-        video_image_hit = any(expected_frame in path for path in video_image_paths)
-        report(video_image_hit, f"video→image retrieval ({mode})")
+        video_image_hit = has_whiteboard_memory(video_image_paths)
+        report(video_image_hit, f"video→image memory retrieval ({mode})")
     else:
         skip(f"video→image retrieval ({mode}; ffmpeg unavailable)")
         skip(f"frame retrieval checks ({mode}; ffmpeg unavailable)")

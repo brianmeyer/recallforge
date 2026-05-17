@@ -4,7 +4,7 @@ All notable changes to RecallForge will be documented in this file.
 
 ## [Unreleased]
 
-*Nothing yet.*
+- Replaced the tiny UAT video clips with compact episodic-memory fixtures, richer transcript sidecars, related artifact metadata, and regression coverage for the video corpus.
 
 ## [0.2.1] — 2026-05-17
 

@@ -1,19 +1,43 @@
 {
   "video": "coding_demo.mp4",
-  "description": "Coding tutorial demo with text overlay on code editor screenshot.",
-  "duration_seconds": 4,
-  "resolution": "320x240",
-  "fps": 15,
+  "memory_type": "episodic_video_fixture",
+  "scenario": "Screen recording from a late-afternoon RecallForge debugging session.",
+  "description": "Screen recording of a RecallForge debugging session with code, architecture notes, and action items.",
+  "notes": "Useful for queries about debugging, screen recordings, RecallForge implementation details, reranking gates, and transcript-heavy developer memories.",
+  "related_images": [
+    "images/code_editor_screenshot.png",
+    "images/whiteboard_architecture.png",
+    "images/handwritten_notes.png"
+  ],
+  "related_documents": [
+    "documents/recallforge_spec.docx",
+    "documents/operations_manual.pdf",
+    "documents/edge_deployment_guide.pdf"
+  ],
+  "duration_seconds": 12,
+  "resolution": "480x270",
+  "fps": 12,
+  "text": "Screen recording of a RecallForge debugging session with code, architecture notes, and action items. Screen recording from a late-afternoon RecallForge debugging session. Useful for queries about debugging, screen recordings, RecallForge implementation details, reranking gates, and transcript-heavy developer memories. The developer opens the RecallForge search pipeline test and points out a failing video-to-text case. They compare vector retrieval, BM25 fusion, and reranker candidates for the same query. The architecture whiteboard shows parent video memories rolling up transcript and frame children. Handwritten notes capture follow-up actions: cap media reranking, keep transcripts searchable, and rerun the benchmark.",
   "segments": [
     {
       "start": 0.0,
-      "end": 2.0,
-      "text": "Code editor showing a Python script."
+      "end": 3.0,
+      "text": "The developer opens the RecallForge search pipeline test and points out a failing video-to-text case."
     },
     {
-      "start": 2.0,
-      "end": 4.0,
-      "text": "Walkthrough of coding concepts and syntax."
+      "start": 3.0,
+      "end": 6.5,
+      "text": "They compare vector retrieval, BM25 fusion, and reranker candidates for the same query."
+    },
+    {
+      "start": 6.5,
+      "end": 9.5,
+      "text": "The architecture whiteboard shows parent video memories rolling up transcript and frame children."
+    },
+    {
+      "start": 9.5,
+      "end": 12.0,
+      "text": "Handwritten notes capture follow-up actions: cap media reranking, keep transcripts searchable, and rerun the benchmark."
     }
   ]
 }

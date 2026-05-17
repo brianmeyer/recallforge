@@ -6,11 +6,31 @@ This document describes the expanded RecallForge benchmark corpus and what addit
 
 - **Text documents**: 54 files (15 original + 39 new)
 - **Images**: 10 files (existing)
-- **Videos**: 5 `.mp4` files plus 5 transcript JSON placeholders
+- **Videos**: 5 compact episodic `.mp4` fixtures plus 5 rich transcript JSON sidecars
 - **Documents**: 8 generated `.docx` / `.pptx` / `.pdf` files
 - **Total corpus documents**: 82 registered in `CORPUS_DOCS`
-- **Total indexed benchmark items**: 77 searchable items (the transcript JSON placeholders are empty and not indexed)
+- **Total indexed benchmark items**: 82 searchable top-level/sidecar items, plus derived video frame and transcript child memories during video ingest
 - **Total benchmark queries**: 231 queries across all modalities
+
+## Episodic Video Corpus
+
+REC-153 replaced the earlier tiny toy clips with a license-safe episodic fixture set. The files are still small enough to commit, but each video now resembles a real personal or work memory: a screen recording, a field clip, a walkthrough, a kitchen note, or a product-planning meeting.
+
+| File | Memory Scenario | Primary Signals |
+|------|-----------------|-----------------|
+| `coding_demo.mp4` | RecallForge debugging screen recording | code editor, architecture board, action notes, reranking and transcript discussion |
+| `nature_timelapse.mp4` | Weekend trail scouting phone clip | forest, mountain, coast, route planning, park/climate notes |
+| `architecture_walkthrough.mp4` | Office and system architecture walkthrough | floor plan, service diagram, model diagram, milestone narration |
+| `cooking_tutorial.mp4` | Weeknight family recipe memory | pasta, recipe substitutions, handwritten cooking notes |
+| `whiteboard_session.mp4` | Product planning meeting | brainstorm board, parent/child memory rollups, benchmark scoring, release actions |
+
+Each `.transcript.json` sidecar now includes:
+
+- timed transcript segments used by video ingest
+- a top-level `text` field so the sidecar can also be indexed as a searchable transcript artifact
+- `scenario`, `notes`, `related_images`, and `related_documents` metadata for benchmark and documentation provenance
+
+The design follows the same broad shape as episodic-memory video benchmarks such as [Ego4D Episodic Memory](https://ego4d-data.org/docs/benchmarks/episodic-memory/): queries should be able to recover an event, scene, moment, transcript detail, or related artifact from a video-backed memory.
 
 ## New Text Documents Added (39 files)
 
@@ -120,18 +140,17 @@ To further expand the corpus for more comprehensive cross-modal testing, the fol
 39. **travel_yosemite.jpg** - Yosemite National Park
 40. **travel_grand_canyon.jpg** - Grand Canyon landscape
 
-### Recommended Videos to Add
+### Future Real-World Video Additions
 
-1. **tech_quantum_explainer.mp4** - Quantum computing explanation
-2. **tech_security_demo.mp4** - Cybersecurity demonstration
-3. **science_lab_experiment.mp4** - Science lab experiment
-4. **cooking_masterclass.mp4** - Professional cooking demonstration
-5. **sports_highlights.mp4** - Sports highlights reel
-6. **history_documentary.mp4** - Historical documentary clip
-7. **medicine_procedure.mp4** - Medical procedure video
-8. **music_concert.mp4** - Live music performance
-9. **art_gallery_tour.mp4** - Art gallery walkthrough
-10. **travel_vlog.mp4** - Travel destination vlog
+The committed corpus is intentionally compact and license-safe. Future benchmark expansions should add opt-in downloaded fixtures or locally supplied clips in these shapes:
+
+1. **meeting_recording_with_slides.mp4** - transcript-heavy meeting with visible slide/document references
+2. **screen_recording_debug_trace.mp4** - developer workflow with code, terminal output, and spoken issue context
+3. **mobile_walkthrough_errand.mp4** - personal memory clip with objects, location changes, and follow-up tasks
+4. **cooking_or_repair_procedure.mp4** - procedural video with step ordering and recipe/tool notes
+5. **document_review_session.mp4** - video that references PDFs, decks, and handwritten annotations
+6. **travel_or_field_visit_clip.mp4** - visually rich outdoor clip with route, weather, and place notes
+7. **classroom_or_tutorial_clip.mp4** - instructional video with transcript-heavy concepts and whiteboard imagery
 
 ## Benchmark Query Distribution
 
