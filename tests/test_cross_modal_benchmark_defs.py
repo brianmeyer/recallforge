@@ -248,6 +248,10 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
             categories,
             {"Vector-only": {"text_to_text": stage_result}},
             [("Vector-only", "vector")],
+            expansion_profile=module._resolve_expansion_profile("caption_only"),
+            smoke_profile="safe",
+            rss_limit_mb=4096,
+            peak_rss_mb=512.4,
             indexed_items=74,
             run_status="partial",
             interrupted=True,
@@ -258,6 +262,12 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
         )
 
         self.assertEqual(payload["version"], "0.2.0")
+        self.assertEqual(payload["configuration"]["expansion_profile"], "caption_only")
+        self.assertEqual(payload["configuration"]["smoke_profile"], "safe")
+        self.assertEqual(payload["configuration"]["rss_limit_mb"], 4096)
+        self.assertFalse(payload["configuration"]["expand_enabled"])
+        self.assertTrue(payload["configuration"]["media_query_probe_enabled"])
+        self.assertEqual(payload["telemetry"]["peak_rss_mb"], 512.4)
         self.assertEqual(payload["run_status"], "partial")
         self.assertTrue(payload["interrupted"])
         self.assertEqual(payload["progress"]["indexed_items"], 74)
@@ -276,6 +286,83 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
         self.assertFalse(
             payload["stages"]["Vector-only"]["text_to_text"]["per_query_results"][0]["asset_level"]["hit_at_1"]
         )
+
+    def test_resolve_expansion_profile_variants(self):
+        module = _load_cross_modal_ablation()
+
+        qwen = module._resolve_expansion_profile("qwen")
+        off = module._resolve_expansion_profile("off")
+
+        self.assertTrue(qwen.expand)
+        self.assertTrue(qwen.allow_generate_text)
+        self.assertFalse(off.expand)
+        self.assertFalse(off.enable_media_query_probe)
+
+        with self.assertRaises(ValueError):
+            module._resolve_expansion_profile("bogus")
+
+    def test_expansion_backend_proxy_can_disable_generate_text(self):
+        module = _load_cross_modal_ablation()
+
+        class _Backend:
+            def __init__(self):
+                self.calls = []
+
+            def generate_text(self, prompt: str, max_tokens: int = 60) -> str:
+                self.calls.append((prompt, max_tokens))
+                return "ok"
+
+        backend = _Backend()
+        disabled = module._ExpansionBackendProxy(backend, allow_generate_text=False)
+        enabled = module._ExpansionBackendProxy(backend, allow_generate_text=True)
+
+        with self.assertRaises(NotImplementedError):
+            disabled.generate_text("prompt")
+
+        self.assertEqual(enabled.generate_text("prompt", max_tokens=12), "ok")
+        self.assertEqual(backend.calls, [("prompt", 12)])
+
+    def test_resolve_output_path_suffixes_non_default_profiles(self):
+        module = _load_cross_modal_ablation()
+
+        default_path = module._resolve_output_path(None, "caption_only")
+        qwen_path = module._resolve_output_path(None, "qwen")
+
+        self.assertTrue(default_path.endswith("cross_modal_ablation_results.json"))
+        self.assertTrue(qwen_path.endswith("cross_modal_ablation_results_qwen.json"))
+
+    def test_apply_smoke_profile_defaults(self):
+        module = _load_cross_modal_ablation()
+
+        stages, max_queries, rss_limit = module._apply_smoke_profile_defaults(
+            "safe",
+            None,
+            None,
+            None,
+        )
+        self.assertEqual(stages, ["rrf"])
+        self.assertEqual(max_queries, 1)
+        self.assertEqual(rss_limit, 6144)
+
+        stages, max_queries, rss_limit = module._apply_smoke_profile_defaults(
+            "safe",
+            ["hybrid"],
+            2,
+            2048,
+        )
+        self.assertEqual(stages, ["hybrid"])
+        self.assertEqual(max_queries, 2)
+        self.assertEqual(rss_limit, 2048)
+
+        stages, max_queries, rss_limit = module._apply_smoke_profile_defaults(
+            "off",
+            None,
+            None,
+            None,
+        )
+        self.assertIsNone(stages)
+        self.assertIsNone(max_queries)
+        self.assertIsNone(rss_limit)
 
 
 if __name__ == "__main__":

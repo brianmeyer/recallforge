@@ -1742,6 +1742,82 @@ STAGES = [
 ]
 
 
+@dataclass(frozen=True)
+class ExpansionProfile:
+    """Benchmark-time query expansion configuration."""
+
+    name: str
+    expand: bool
+    enable_media_query_probe: bool
+    allow_generate_text: bool
+
+
+EXPANSION_PROFILES: Dict[str, ExpansionProfile] = {
+    # Text queries: no expansion.
+    # Media queries: pure vector search with no caption/transcript BM25 probe.
+    "off": ExpansionProfile(
+        name="off",
+        expand=False,
+        enable_media_query_probe=False,
+        allow_generate_text=False,
+    ),
+    # Text queries: no expansion.
+    # Media queries: keep caption/transcript BM25 probe, but do not add expansion branches.
+    "caption_only": ExpansionProfile(
+        name="caption_only",
+        expand=False,
+        enable_media_query_probe=True,
+        allow_generate_text=False,
+    ),
+    # Text/media probe expansion uses heuristic fallback rules only.
+    "heuristic": ExpansionProfile(
+        name="heuristic",
+        expand=True,
+        enable_media_query_probe=True,
+        allow_generate_text=False,
+    ),
+    # Text/media probe expansion uses the backend's generator when available.
+    "qwen": ExpansionProfile(
+        name="qwen",
+        expand=True,
+        enable_media_query_probe=True,
+        allow_generate_text=True,
+    ),
+}
+
+
+class _ExpansionBackendProxy:
+    """Optionally hide generated expansion so benchmarks can force heuristics."""
+
+    def __init__(self, backend, *, allow_generate_text: bool):
+        self._backend = backend
+        self._allow_generate_text = allow_generate_text
+
+    def generate_text(self, prompt: str, max_tokens: int = 60) -> str:
+        if not self._allow_generate_text:
+            raise NotImplementedError(
+                "generate_text disabled for this benchmark expansion profile"
+            )
+        generator = getattr(self._backend, "generate_text", None)
+        if not callable(generator):
+            raise NotImplementedError("Underlying backend does not support generate_text")
+        return generator(prompt, max_tokens=max_tokens)
+
+    def __getattr__(self, name: str):
+        return getattr(self._backend, name)
+
+
+def _resolve_expansion_profile(profile_name: str) -> ExpansionProfile:
+    """Return the named query-expansion benchmark profile."""
+    try:
+        return EXPANSION_PROFILES[profile_name]
+    except KeyError as exc:
+        valid = ", ".join(sorted(EXPANSION_PROFILES))
+        raise ValueError(
+            f"Unknown expansion profile: {profile_name}. Valid choices: {valid}"
+        ) from exc
+
+
 def _group_queries(
     category_filters: Optional[List[str]] = None,
     max_queries_per_category: Optional[int] = None,
@@ -1781,11 +1857,47 @@ def _select_stages(stage_filters: Optional[List[str]] = None) -> List[Tuple[str,
     return selected
 
 
-def _resolve_output_path(output_path: Optional[str]) -> str:
+def _resolve_output_path(output_path: Optional[str], expansion_profile: str) -> str:
     """Return the benchmark output path, falling back to the default results file."""
-    return output_path or str(
-        PROJECT_ROOT / "benchmarks" / "results" / "cross_modal_ablation_results.json"
+    if output_path:
+        return output_path
+
+    suffix = "" if expansion_profile == "caption_only" else f"_{expansion_profile}"
+    return str(
+        PROJECT_ROOT
+        / "benchmarks"
+        / "results"
+        / f"cross_modal_ablation_results{suffix}.json"
     )
+
+
+def _apply_smoke_profile_defaults(
+    smoke_profile: str,
+    stage_filters: Optional[List[str]],
+    max_queries_per_category: Optional[int],
+    rss_limit_mb: Optional[int],
+) -> tuple[Optional[List[str]], Optional[int], Optional[int]]:
+    """Resolve smoke-profile defaults without overriding explicit caller choices."""
+    if smoke_profile != "safe":
+        return stage_filters, max_queries_per_category, rss_limit_mb
+
+    resolved_stage_filters = stage_filters or ["rrf"]
+    resolved_max_queries = max_queries_per_category or 1
+    resolved_rss_limit = rss_limit_mb or 6144
+    return resolved_stage_filters, resolved_max_queries, resolved_rss_limit
+
+
+def _current_rss_mb() -> Optional[float]:
+    """Return current peak RSS in MB when available."""
+    try:
+        import resource
+    except ImportError:
+        return None
+
+    usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == "darwin":
+        return usage / (1024 * 1024)
+    return usage / 1024.0
 
 
 def _build_output_payload(
@@ -1793,6 +1905,10 @@ def _build_output_payload(
     all_results: Dict[str, Dict[str, StageResult]],
     stages: List[Tuple[str, str]],
     *,
+    expansion_profile: ExpansionProfile,
+    smoke_profile: str,
+    rss_limit_mb: Optional[int],
+    peak_rss_mb: Optional[float],
     indexed_items: int,
     run_status: str,
     interrupted: bool,
@@ -1806,6 +1922,14 @@ def _build_output_payload(
         "benchmark": "cross_modal_ablation",
         "version": __version__,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "configuration": {
+            "expansion_profile": expansion_profile.name,
+            "expand_enabled": expansion_profile.expand,
+            "media_query_probe_enabled": expansion_profile.enable_media_query_probe,
+            "generated_query_expansion_enabled": expansion_profile.allow_generate_text,
+            "smoke_profile": smoke_profile,
+            "rss_limit_mb": rss_limit_mb,
+        },
         "run_status": run_status,
         "interrupted": interrupted,
         "progress": {
@@ -1817,6 +1941,9 @@ def _build_output_payload(
             },
             "current_stage": current_stage,
             "current_category": current_category,
+        },
+        "telemetry": {
+            "peak_rss_mb": None if peak_rss_mb is None else round(peak_rss_mb, 1),
         },
         "corpus": {
             "text_docs": len(list((CORPUS_DIR / "text").glob("*.md"))),
@@ -1937,12 +2064,18 @@ def run_search(
     collection: str,
     stage_mode: str,
     limit: int = 10,
+    expansion_profile: str = "caption_only",
 ) -> Tuple[List[Dict], float]:
     """Run a single search query and return results + latency_ms."""
     from recallforge.search import HybridSearcher
 
     t0 = time.perf_counter()
     result_content_type = _result_content_type_for_category(gt.category)
+    profile = _resolve_expansion_profile(expansion_profile)
+    search_backend = _ExpansionBackendProxy(
+        backend,
+        allow_generate_text=profile.allow_generate_text,
+    )
 
     if gt.query_type == "image" and gt.image_query_path:
         image_path = str(CORPUS_DIR / gt.image_query_path)
@@ -1957,16 +2090,18 @@ def run_search(
             )
         elif stage_mode in ("rrf", "hybrid"):
             searcher = HybridSearcher(
-                backend=backend,
+                backend=search_backend,
                 storage=storage,
                 limit=limit,
                 collection=collection,
                 content_type=result_content_type,
+                expand=profile.expand,
+                enable_media_query_probe=profile.enable_media_query_probe,
             )
-            old_mode = backend.get_mode()
-            backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
+            old_mode = search_backend.get_mode()
+            search_backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
             results = searcher.search_image(image_path)
-            backend.set_mode(old_mode)
+            search_backend.set_mode(old_mode)
         elif stage_mode == "bm25":
             results = []
         else:
@@ -1985,16 +2120,18 @@ def run_search(
             )
         elif stage_mode in ("rrf", "hybrid"):
             searcher = HybridSearcher(
-                backend=backend,
+                backend=search_backend,
                 storage=storage,
                 limit=limit,
                 collection=collection,
                 content_type=result_content_type,
+                expand=profile.expand,
+                enable_media_query_probe=profile.enable_media_query_probe,
             )
-            old_mode = backend.get_mode()
-            backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
+            old_mode = search_backend.get_mode()
+            search_backend.set_mode("embed" if stage_mode == "rrf" else "hybrid")
             results = searcher.search_video(video_path)
-            backend.set_mode(old_mode)
+            search_backend.set_mode(old_mode)
         elif stage_mode == "bm25":
             results = []
         else:
@@ -2022,29 +2159,33 @@ def run_search(
         elif stage_mode == "rrf":
             # RRF without reranker (embed mode)
             searcher = HybridSearcher(
-                backend=backend,
+                backend=search_backend,
                 storage=storage,
                 limit=limit,
                 collection=collection,
                 content_type=result_content_type,
+                expand=profile.expand,
+                enable_media_query_probe=profile.enable_media_query_probe,
             )
-            old_mode = backend.get_mode()
-            backend.set_mode("embed")
+            old_mode = search_backend.get_mode()
+            search_backend.set_mode("embed")
             results = searcher.search(gt.query)
-            backend.set_mode(old_mode)
+            search_backend.set_mode(old_mode)
         elif stage_mode == "hybrid":
             # Full hybrid with reranker
             searcher = HybridSearcher(
-                backend=backend,
+                backend=search_backend,
                 storage=storage,
                 limit=limit,
                 collection=collection,
                 content_type=result_content_type,
+                expand=profile.expand,
+                enable_media_query_probe=profile.enable_media_query_probe,
             )
-            old_mode = backend.get_mode()
-            backend.set_mode("hybrid")
+            old_mode = search_backend.get_mode()
+            search_backend.set_mode("hybrid")
             results = searcher.search(gt.query)
-            backend.set_mode(old_mode)
+            search_backend.set_mode(old_mode)
         else:
             raise ValueError(f"Unknown stage mode: {stage_mode}")
 
@@ -2087,8 +2228,18 @@ def run_benchmark(
     category_filters: Optional[List[str]] = None,
     stage_filters: Optional[List[str]] = None,
     max_queries_per_category: Optional[int] = None,
+    expansion_profile: str = "caption_only",
+    smoke_profile: str = "off",
+    rss_limit_mb: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run the full cross-modal ablation benchmark."""
+
+    stage_filters, max_queries_per_category, rss_limit_mb = _apply_smoke_profile_defaults(
+        smoke_profile,
+        stage_filters,
+        max_queries_per_category,
+        rss_limit_mb,
+    )
 
     categories = _group_queries(
         category_filters=category_filters,
@@ -2097,11 +2248,13 @@ def run_benchmark(
     if not categories:
         raise ValueError("No benchmark queries selected")
     stages = _select_stages(stage_filters)
-    save_path = _resolve_output_path(output_path)
+    profile = _resolve_expansion_profile(expansion_profile)
+    save_path = _resolve_output_path(output_path, profile.name)
     indexed = 0
     completed_stages: List[str] = []
     current_stage_name: Optional[str] = None
     current_category_name: Optional[str] = None
+    peak_rss_mb = _current_rss_mb()
 
     def save_checkpoint(
         *,
@@ -2114,6 +2267,10 @@ def run_benchmark(
             categories,
             all_results,
             stages,
+            expansion_profile=profile,
+            smoke_profile=smoke_profile,
+            rss_limit_mb=rss_limit_mb,
+            peak_rss_mb=peak_rss_mb,
             indexed_items=indexed,
             run_status=run_status,
             interrupted=interrupted,
@@ -2130,6 +2287,10 @@ def run_benchmark(
 
     print(f"\nQuery categories: {', '.join(f'{k}({len(v)})' for k, v in categories.items())}")
     print(f"Stages: {', '.join(stage_name for stage_name, _ in stages)}")
+    print(f"Expansion profile: {profile.name}")
+    print(f"Smoke profile: {smoke_profile}")
+    if rss_limit_mb is not None:
+        print(f"RSS limit: {rss_limit_mb} MB")
     print(f"Total queries: {sum(len(v) for v in categories.values())}")
     print(f"Corpus documents: {len(CORPUS_DOCS)}")
 
@@ -2139,6 +2300,11 @@ def run_benchmark(
         # Ingest corpus
         print("\nIndexing corpus...")
         indexed = ingest_corpus(backend, storage, collection, CORPUS_DIR)
+        peak_rss_mb = max(peak_rss_mb or 0.0, _current_rss_mb() or 0.0)
+        if rss_limit_mb is not None and peak_rss_mb and peak_rss_mb > rss_limit_mb:
+            raise RuntimeError(
+                f"RSS limit exceeded during indexing: peak {peak_rss_mb:.1f} MB > limit {rss_limit_mb} MB"
+            )
         print(f"Indexed {indexed} items.\n")
         save_checkpoint(run_status="partial")
 
@@ -2186,6 +2352,7 @@ def run_benchmark(
                         results, latency = run_search(
                             backend, storage, gt,
                             collection, effective_mode,
+                            expansion_profile=profile.name,
                         )
                         eval_detail = evaluate_results_detailed(results, gt, CORPUS_DIR)
                         memory_metrics = eval_detail["memory"]
@@ -2206,6 +2373,11 @@ def run_benchmark(
                         sr.asset_precision_at_5_sum += asset_metrics.precision_at_5
                         sr.asset_precision_at_10_sum += asset_metrics.precision_at_10
                         sr.latencies_ms.append(latency)
+                        peak_rss_mb = max(peak_rss_mb or 0.0, _current_rss_mb() or 0.0)
+                        if rss_limit_mb is not None and peak_rss_mb and peak_rss_mb > rss_limit_mb:
+                            raise RuntimeError(
+                                f"RSS limit exceeded: peak {peak_rss_mb:.1f} MB > limit {rss_limit_mb} MB"
+                            )
 
                         # Track per-difficulty hits
                         if gt.difficulty == "easy":
@@ -2397,19 +2569,51 @@ def main():
         default=None,
         help="Cap how many queries to run from each selected category",
     )
+    parser.add_argument(
+        "--expansion-profile",
+        choices=sorted(EXPANSION_PROFILES),
+        default="caption_only",
+        help=(
+            "Query expansion profile: off (pure vector/media), caption_only "
+            "(current default), heuristic, or qwen"
+        ),
+    )
+    parser.add_argument(
+        "--smoke-profile",
+        choices=["off", "safe"],
+        default="off",
+        help="Optional bounded smoke profile for safer local validation.",
+    )
+    parser.add_argument(
+        "--rss-limit-mb",
+        type=int,
+        default=None,
+        help="Abort the benchmark if peak RSS exceeds this limit in MB.",
+    )
     args = parser.parse_args()
 
     if args.dry_run:
+        resolved_stage_mode, resolved_max_queries, resolved_rss_limit = _apply_smoke_profile_defaults(
+            args.smoke_profile,
+            args.stage_mode,
+            args.max_queries_per_category,
+            args.rss_limit_mb,
+        )
         # Validate query structure
         print(f"\n{'=' * 60}")
         print("DRY RUN - Query Structure Validation")
         print(f"{'=' * 60}")
         categories = _group_queries(
             category_filters=args.category,
-            max_queries_per_category=args.max_queries_per_category,
+            max_queries_per_category=resolved_max_queries,
         )
         print(f"Total queries: {sum(len(v) for v in categories.values())}")
         print(f"Corpus documents: {len(CORPUS_DOCS)}")
+        print(f"Expansion profile: {args.expansion_profile}")
+        print(f"Smoke profile: {args.smoke_profile}")
+        print(f"Resolved stages: {resolved_stage_mode or 'all'}")
+        if resolved_rss_limit is not None:
+            print(f"Resolved RSS limit: {resolved_rss_limit} MB")
 
         print(f"\nQueries by category:")
         for cat, queries in categories.items():
@@ -2467,6 +2671,9 @@ def main():
             category_filters=args.category,
             stage_filters=args.stage_mode,
             max_queries_per_category=args.max_queries_per_category,
+            expansion_profile=args.expansion_profile,
+            smoke_profile=args.smoke_profile,
+            rss_limit_mb=args.rss_limit_mb,
         )
 
     finally:

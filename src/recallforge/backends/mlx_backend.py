@@ -14,8 +14,10 @@ import os
 import logging
 import importlib.util
 import threading
+import tempfile
 import warnings
 import re
+from contextlib import contextmanager
 from typing import List, Dict, Any, Optional
 
 import numpy as np
@@ -75,6 +77,78 @@ class MLXEmbeddingError(RuntimeError):
     """Raised when the MLX embedding pipeline fails."""
 
 
+_HEAVY_OP_GATE_INIT_LOCK = threading.Lock()
+_HEAVY_OP_GATE = None
+_HEAVY_OP_GATE_LIMIT = None
+
+
+class _HeavyOpGate:
+    """Serialize the heaviest MLX operations to avoid local memory pileups."""
+
+    def __init__(self, limit: int, lock_path: Optional[str] = None):
+        self.limit = max(1, int(limit))
+        self.lock_path = lock_path or os.path.join(
+            tempfile.gettempdir(), "recallforge-mlx-heavy-op.lock"
+        )
+        self._semaphore = threading.BoundedSemaphore(self.limit)
+        self._thread_state = threading.local()
+
+    def _acquire_file_lock(self, op_name: str):
+        if self.limit != 1:
+            return None
+        try:
+            import fcntl
+        except ImportError:
+            return None
+
+        handle = open(self.lock_path, "a+", encoding="utf-8")
+        logger.debug(
+            "mlx_heavy_op_wait_host_lock op=%s lock_path=%s",
+            op_name,
+            self.lock_path,
+        )
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        return handle
+
+    def _release_file_lock(self, handle) -> None:
+        if handle is None:
+            return
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        finally:
+            handle.close()
+
+    @contextmanager
+    def hold(self, op_name: str):
+        depth = getattr(self._thread_state, "depth", 0)
+        acquired = False
+        file_handle = None
+        if depth == 0:
+            logger.debug("mlx_heavy_op_wait op=%s limit=%d", op_name, self.limit)
+            self._semaphore.acquire()
+            acquired = True
+            file_handle = self._acquire_file_lock(op_name)
+            logger.debug("mlx_heavy_op_acquired op=%s limit=%d", op_name, self.limit)
+
+        self._thread_state.depth = depth + 1
+        try:
+            yield
+        finally:
+            new_depth = getattr(self._thread_state, "depth", 1) - 1
+            if new_depth <= 0:
+                if hasattr(self._thread_state, "depth"):
+                    delattr(self._thread_state, "depth")
+                self._release_file_lock(file_handle)
+                if acquired:
+                    self._semaphore.release()
+                logger.debug("mlx_heavy_op_release op=%s", op_name)
+            else:
+                self._thread_state.depth = new_depth
+
+
 class MLXBackend(ModelBackend):
     """
     MLX-based model backend for Apple Silicon.
@@ -101,10 +175,16 @@ class MLXBackend(ModelBackend):
         "Given a search query, retrieve relevant candidates that answer the query."
     )
 
-    # Video sampling: 1 fps adapts to video length (30s video = 30 frames,
-    # 5min video = 300 frames). Max cap prevents OOM on very long videos.
+    # Video sampling: 1 fps adapts to video length (30s video = 30 frames).
+    # Keep the default cap conservative for local-agent safety; callers can
+    # raise it explicitly via env vars when they want heavier runs.
     _VIDEO_SAMPLE_FPS = 1.0
-    _VIDEO_MAX_FRAMES = 128
+    _VIDEO_MAX_FRAMES = 32
+    _VIDEO_FALLBACK_MAX_FRAMES = 8
+    _VISION_MIN_PIXELS = 256 * 28 * 28
+    _VISION_MAX_PIXELS = 1024 * 28 * 28
+    _DEFAULT_HEAVY_OP_CONCURRENCY = 1
+    _ENABLE_NATIVE_VIDEO_PROCESSING_DEFAULT = False
     # Captioning descriptors removed — they produced captions too generic for BM25.
     # See REC-129 for dedicated captioning model support.
 
@@ -170,6 +250,171 @@ class MLXBackend(ModelBackend):
         self.CAPTION_MODEL = os.environ.get(
             "RECALLFORGE_CAPTIONER_MODEL", self._DEFAULT_CAPTION_MODEL
         )
+        self._VIDEO_SAMPLE_FPS = self._resolve_positive_float_env(
+            "RECALLFORGE_MLX_VIDEO_SAMPLE_FPS",
+            self._VIDEO_SAMPLE_FPS,
+        )
+        self._VIDEO_MAX_FRAMES = self._resolve_positive_int_env(
+            "RECALLFORGE_MLX_VIDEO_MAX_FRAMES",
+            self._VIDEO_MAX_FRAMES,
+        )
+        self._VIDEO_FALLBACK_MAX_FRAMES = min(
+            self._VIDEO_MAX_FRAMES,
+            self._resolve_positive_int_env(
+                "RECALLFORGE_MLX_VIDEO_FALLBACK_MAX_FRAMES",
+                self._VIDEO_FALLBACK_MAX_FRAMES,
+            ),
+        )
+        self._VISION_MIN_PIXELS = self._resolve_positive_int_env(
+            "RECALLFORGE_MLX_MIN_PIXELS",
+            self._VISION_MIN_PIXELS,
+        )
+        self._VISION_MAX_PIXELS = max(
+            self._VISION_MIN_PIXELS,
+            self._resolve_positive_int_env(
+                "RECALLFORGE_MLX_MAX_PIXELS",
+                self._VISION_MAX_PIXELS,
+            ),
+        )
+
+    def _resolve_heavy_op_concurrency(self) -> int:
+        """Return the configured MLX heavy-op concurrency ceiling."""
+        raw = os.environ.get(
+            "RECALLFORGE_MLX_HEAVY_OP_CONCURRENCY",
+            str(self._DEFAULT_HEAVY_OP_CONCURRENCY),
+        ).strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning(
+                "Invalid RECALLFORGE_MLX_HEAVY_OP_CONCURRENCY=%r; using %d",
+                raw,
+                self._DEFAULT_HEAVY_OP_CONCURRENCY,
+            )
+            return self._DEFAULT_HEAVY_OP_CONCURRENCY
+        return max(1, value)
+
+    def _resolve_positive_int_env(self, name: str, default: int) -> int:
+        """Read a positive integer env var with graceful fallback."""
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            logger.warning("Invalid %s=%r; using %d", name, raw, default)
+            return default
+        return value if value > 0 else default
+
+    def _resolve_positive_float_env(self, name: str, default: float) -> float:
+        """Read a positive float env var with graceful fallback."""
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            logger.warning("Invalid %s=%r; using %.3f", name, raw, default)
+            return default
+        return value if value > 0 else default
+
+    def _resolve_bool_env(self, name: str, default: bool) -> bool:
+        """Read a boolean env var with graceful fallback."""
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        normalized = raw.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        logger.warning("Invalid %s=%r; using %s", name, raw, default)
+        return default
+
+    def _native_video_processing_enabled(self) -> bool:
+        """Return whether MLX should use qwen-vl-utils native video processing."""
+        enabled = self._resolve_bool_env(
+            "RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING",
+            self._ENABLE_NATIVE_VIDEO_PROCESSING_DEFAULT,
+        )
+        if not enabled:
+            if not getattr(self, "_warned_native_video_disabled", False):
+                logger.info(
+                    "MLX native video processing is disabled by default for local safety; "
+                    "using frame/caption fallbacks. Set "
+                    "RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING=1 and prefer "
+                    "FORCE_QWENVL_VIDEO_READER=torchcodec to opt in."
+                )
+                self._warned_native_video_disabled = True
+            return False
+
+        if getattr(self, "_warned_native_video_enabled", False):
+            return True
+
+        reader = (os.environ.get("FORCE_QWENVL_VIDEO_READER") or "").strip().lower()
+        if reader == "torchcodec":
+            logger.info(
+                "MLX native video processing enabled with FORCE_QWENVL_VIDEO_READER=torchcodec."
+            )
+        else:
+            configured = reader or "auto"
+            logger.warning(
+                "MLX native video processing is enabled with FORCE_QWENVL_VIDEO_READER=%s. "
+                "Qwen upstream recommends torchcodec for the most stable video loading.",
+                configured,
+            )
+        self._warned_native_video_enabled = True
+        return True
+
+    def _get_heavy_op_gate(self) -> _HeavyOpGate:
+        """Return the shared gate used to limit overlapping MLX heavy ops."""
+        global _HEAVY_OP_GATE, _HEAVY_OP_GATE_LIMIT
+
+        limit = self._resolve_heavy_op_concurrency()
+        with _HEAVY_OP_GATE_INIT_LOCK:
+            if _HEAVY_OP_GATE is None or _HEAVY_OP_GATE_LIMIT != limit:
+                _HEAVY_OP_GATE = _HeavyOpGate(limit)
+                _HEAVY_OP_GATE_LIMIT = limit
+        return _HEAVY_OP_GATE
+
+    @contextmanager
+    def _hold_heavy_op(self, op_name: str):
+        """Serialize the heaviest MLX operations for local safety."""
+        with self._get_heavy_op_gate().hold(op_name):
+            yield
+
+    def _apply_processor_media_budgets(self, processor: Any) -> None:
+        """Apply conservative vision token budgets to a loaded processor."""
+        targets = [processor]
+        image_processor = getattr(processor, "image_processor", None)
+        if image_processor is not None:
+            targets.append(image_processor)
+
+        for target in targets:
+            for attr_name, value in (
+                ("min_pixels", self._VISION_MIN_PIXELS),
+                ("max_pixels", self._VISION_MAX_PIXELS),
+            ):
+                if hasattr(target, attr_name):
+                    setattr(target, attr_name, value)
+
+        logger.debug(
+            "mlx_media_budgets min_pixels=%d max_pixels=%d",
+            self._VISION_MIN_PIXELS,
+            self._VISION_MAX_PIXELS,
+        )
+
+    def _call_media_processor(self, processor: Any, **kwargs):
+        """Call a media processor without repeating qwen-vl-utils resizing."""
+        proc_kwargs = dict(kwargs)
+        proc_kwargs.setdefault("do_resize", False)
+        try:
+            return processor(**proc_kwargs)
+        except TypeError as exc:
+            if "do_resize" not in str(exc):
+                raise
+            proc_kwargs.pop("do_resize", None)
+            return processor(**proc_kwargs)
 
     # =========================================================================
     # Embedder
@@ -205,6 +450,7 @@ class MLXBackend(ModelBackend):
                     self.EMBEDDER_MODEL,
                     trust_remote_code=True,
                 )
+                self._apply_processor_media_budgets(self._embedder_processor)
             except Exception as exc:
                 raise MLXEmbeddingError(
                     f"Failed to load MLX embedder '{self.EMBEDDER_MODEL}'."
@@ -285,6 +531,45 @@ class MLXBackend(ModelBackend):
             system=system or self._EMBED_SYSTEM,
             text=text,
         )
+
+    def _apply_chat_template(
+        self,
+        processor: Any,
+        messages: List[Dict[str, Any]],
+        *,
+        tokenize: bool = False,
+        add_generation_prompt: bool = True,
+    ) -> Any:
+        """Apply a chat template with fallback to tokenizer templates.
+
+        Some current MLX/Qwen processor objects expose a tokenizer chat template
+        but raise when `processor.apply_chat_template(...)` is called directly.
+        Fall back to the tokenizer so the live MLX path remains compatible.
+        """
+        apply_template = getattr(processor, "apply_chat_template", None)
+        if callable(apply_template):
+            try:
+                return apply_template(
+                    messages,
+                    tokenize=tokenize,
+                    add_generation_prompt=add_generation_prompt,
+                )
+            except ValueError as exc:
+                if "does not have a chat template" not in str(exc):
+                    raise
+            except AttributeError:
+                pass
+
+        tokenizer = getattr(processor, "tokenizer", None)
+        tokenizer_apply = getattr(tokenizer, "apply_chat_template", None)
+        if callable(tokenizer_apply):
+            return tokenizer_apply(
+                messages,
+                tokenize=tokenize,
+                add_generation_prompt=add_generation_prompt,
+            )
+
+        raise ValueError("Processor does not expose a usable chat template.")
 
     def _resolve_max_text_tokens(self) -> int:
         """Resolve a safe tokenizer max length for truncation."""
@@ -531,126 +816,144 @@ class MLXBackend(ModelBackend):
         5) `get_input_embeddings(...)` -> transformer forward with `inputs_embeds`
         6) Last-token pool + L2 normalize + float32 numpy
         """
-        image_paths = self._validate_image_paths(image_paths)
-        if not image_paths:
-            return np.empty((0, self._EMBED_DIM), dtype=np.float32)
+        with self._hold_heavy_op("embed_images"):
+            image_paths = self._validate_image_paths(image_paths)
+            if not image_paths:
+                return np.empty((0, self._EMBED_DIM), dtype=np.float32)
 
-        self._load_embedder()
-        num_layers = self._get_embedder_num_layers()
+            self._load_embedder()
+            num_layers = self._get_embedder_num_layers()
 
-        try:
-            from qwen_vl_utils import process_vision_info
-        except ImportError as exc:
-            raise MLXEmbeddingError(
-                "qwen-vl-utils vision dependencies are missing. "
-                "Install qwen-vl-utils and torchvision for image embeddings."
-            ) from exc
-
-        messages_batch = []
-        for path in image_paths:
-            messages_batch.append([{
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": path},
-                    {"type": "text", "text": "Describe this image."},
-                ],
-            }])
-
-        try:
-            chat_texts = [
-                self._embedder_processor.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True,
-                )
-                for messages in messages_batch
-            ]
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                "Failed to build chat templates for image embedding batch."
-            ) from exc
-
-        try:
-            image_inputs, _ = process_vision_info(messages_batch)
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                "Failed to process vision inputs for image embedding batch."
-            ) from exc
-
-        if not image_inputs:
-            raise MLXEmbeddingError(
-                "Vision pre-processing produced no image inputs."
-            )
-        if len(image_inputs) != len(image_paths):
-            raise MLXEmbeddingError(
-                f"Vision pre-processing count mismatch: expected {len(image_paths)}, got {len(image_inputs)}."
-            )
-
-        try:
-            # Image processor requires PyTorch tensors, convert to MLX after
-            inputs = self._embedder_processor(
-                text=chat_texts, images=image_inputs,
-                return_tensors="pt", padding=True,
-            )
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                "Failed to tokenize image batch with processor."
-            ) from exc
-
-        for required_key in ("input_ids", "pixel_values", "image_grid_thw"):
-            if required_key not in inputs:
+            try:
+                from qwen_vl_utils import process_vision_info
+            except ImportError as exc:
                 raise MLXEmbeddingError(
-                    f"Image processor output is missing '{required_key}'."
+                    "qwen-vl-utils vision dependencies are missing. "
+                    "Install qwen-vl-utils and torchvision for image embeddings."
+                ) from exc
+
+            messages_batch = []
+            for path in image_paths:
+                messages_batch.append([{
+                    "role": "user",
+                    "content": [
+                        self._image_content(path),
+                        {"type": "text", "text": "Describe this image."},
+                    ],
+                }])
+
+            try:
+                chat_texts = [
+                    self._apply_chat_template(
+                        self._embedder_processor,
+                        messages, tokenize=False, add_generation_prompt=True,
+                    )
+                    for messages in messages_batch
+                ]
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    "Failed to build chat templates for image embedding batch."
+                ) from exc
+
+            try:
+                image_inputs, _ = process_vision_info(messages_batch)
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    "Failed to process vision inputs for image embedding batch."
+                ) from exc
+
+            if not image_inputs:
+                raise MLXEmbeddingError(
+                    "Vision pre-processing produced no image inputs."
+                )
+            if len(image_inputs) != len(image_paths):
+                raise MLXEmbeddingError(
+                    f"Vision pre-processing count mismatch: expected {len(image_paths)}, got {len(image_inputs)}."
                 )
 
-        input_ids = self._to_mx_array(inputs["input_ids"], "input_ids")
-        pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
-        image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
+            try:
+                # Image processor requires PyTorch tensors, convert to MLX after
+                inputs = self._call_media_processor(
+                    self._embedder_processor,
+                    text=chat_texts, images=image_inputs,
+                    return_tensors="pt", padding=True,
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    "Failed to tokenize image batch with processor."
+                ) from exc
 
-        # Free PyTorch tensors and vision intermediates now that we have MLX arrays
-        del inputs, image_inputs, chat_texts, messages_batch
-        gc.collect()
+            for required_key in ("input_ids", "pixel_values", "image_grid_thw"):
+                if required_key not in inputs:
+                    raise MLXEmbeddingError(
+                        f"Image processor output is missing '{required_key}'."
+                    )
 
-        try:
-            cache = _make_cache(num_layers)
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                "Failed to initialize KV cache for image embedding batch."
-            ) from exc
+            input_ids = self._to_mx_array(inputs["input_ids"], "input_ids")
+            pixel_values = self._to_mx_array(inputs["pixel_values"], "pixel_values")
+            image_grid_thw = self._to_mx_array(inputs["image_grid_thw"], "image_grid_thw")
 
-        try:
-            h = self._embed_hidden_with_media(
-                input_ids,
-                pixel_values,
-                cache,
-                image_grid_thw=image_grid_thw,
-            )
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                "MLX vision forward pass failed."
-            ) from exc
+            # Free PyTorch tensors and vision intermediates now that we have MLX arrays
+            del inputs, image_inputs, chat_texts, messages_batch
+            gc.collect()
 
-        try:
-            embeddings = self._pool_and_normalize(h)
-        except Exception as exc:
-            raise MLXEmbeddingError(
-                "Failed to pool and normalize image embeddings."
-            ) from exc
+            try:
+                cache = _make_cache(num_layers)
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    "Failed to initialize KV cache for image embedding batch."
+                ) from exc
 
-        if embeddings.shape[0] != len(image_paths):
-            raise MLXEmbeddingError(
-                f"Image embedding batch size mismatch: expected {len(image_paths)}, got {embeddings.shape[0]}."
-            )
+            try:
+                h = self._embed_hidden_with_media(
+                    input_ids,
+                    pixel_values,
+                    cache,
+                    image_grid_thw=image_grid_thw,
+                )
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    "MLX vision forward pass failed."
+                ) from exc
 
-        return embeddings
+            try:
+                embeddings = self._pool_and_normalize(h)
+            except Exception as exc:
+                raise MLXEmbeddingError(
+                    "Failed to pool and normalize image embeddings."
+                ) from exc
+
+            if embeddings.shape[0] != len(image_paths):
+                raise MLXEmbeddingError(
+                    f"Image embedding batch size mismatch: expected {len(image_paths)}, got {embeddings.shape[0]}."
+                )
+
+            return embeddings
+
+    def _image_content(self, path: str) -> dict:
+        """Build an image content block with conservative qwen-vl-utils budgets."""
+        return {
+            "type": "image",
+            "image": path,
+            "min_pixels": self._VISION_MIN_PIXELS,
+            "max_pixels": self._VISION_MAX_PIXELS,
+        }
 
     def _video_content(self, path: str) -> dict:
         """Build a video content dict with adaptive frame sampling.
 
         Uses fps-based sampling (1 frame/sec) so longer videos get more frames.
         Caps at _VIDEO_MAX_FRAMES to bound memory on very long videos.
-        A 30s video → 30 frames. A 10min video → 128 frames (capped).
+        A 30s video → up to 30 frames. Longer videos clamp to the configured cap.
         """
-        return {"type": "video", "video": path, "fps": self._VIDEO_SAMPLE_FPS,
-                "max_frames": self._VIDEO_MAX_FRAMES}
+        return {
+            "type": "video",
+            "video": path,
+            "fps": self._VIDEO_SAMPLE_FPS,
+            "max_frames": self._VIDEO_MAX_FRAMES,
+            "min_pixels": self._VISION_MIN_PIXELS,
+            "max_pixels": self._VISION_MAX_PIXELS,
+        }
 
     def embed_video(self, video_path: str) -> np.ndarray:
         """Embed a single video."""
@@ -674,6 +977,7 @@ class MLXBackend(ModelBackend):
             self._captioner_model, self._captioner_processor = vlm_load(
                 self.CAPTION_MODEL
             )
+            self._apply_processor_media_budgets(self._captioner_processor)
 
     def _unload_captioner(self) -> None:
         """Free captioner memory when no longer needed."""
@@ -696,7 +1000,8 @@ class MLXBackend(ModelBackend):
             ]}
         ]
         try:
-            return self._captioner_processor.apply_chat_template(
+            return self._apply_chat_template(
+                self._captioner_processor,
                 messages, tokenize=False, add_generation_prompt=True
             )
         finally:
@@ -710,34 +1015,35 @@ class MLXBackend(ModelBackend):
         for the duration of the ingest batch.  Call _unload_captioner() after
         batch completion to reclaim ~0.9 GB.
         """
-        try:
-            self._load_captioner()
-            from mlx_vlm import generate as vlm_generate
-
-            prompt = self._format_caption_prompt(image_path)
-            output = vlm_generate(
-                self._captioner_model,
-                self._captioner_processor,
-                prompt=prompt,
-                image=[image_path],
-                max_tokens=self._CAPTION_MAX_TOKENS,
-            )
-            text = output.text if hasattr(output, "text") else str(output)
-            caption = re.sub(r"\s+", " ", text).strip()
-            logger.debug(
-                "caption_image path=%s caption_len=%d caption=%s",
-                image_path, len(caption), caption[:100],
-            )
-            return caption[:512]  # Safety cap for BM25 field length
-        except Exception as exc:
-            logger.warning("caption_image failed for %s: %s", image_path, exc)
-            return ""
-        finally:
+        with self._hold_heavy_op("caption_image"):
             try:
-                del prompt, output, text, caption
-            except Exception:
-                pass
-            gc.collect()
+                self._load_captioner()
+                from mlx_vlm import generate as vlm_generate
+
+                prompt = self._format_caption_prompt(image_path)
+                output = vlm_generate(
+                    self._captioner_model,
+                    self._captioner_processor,
+                    prompt=prompt,
+                    image=[image_path],
+                    max_tokens=self._CAPTION_MAX_TOKENS,
+                )
+                text = output.text if hasattr(output, "text") else str(output)
+                caption = re.sub(r"\s+", " ", text).strip()
+                logger.debug(
+                    "caption_image path=%s caption_len=%d caption=%s",
+                    image_path, len(caption), caption[:100],
+                )
+                return caption[:512]  # Safety cap for BM25 field length
+            except Exception as exc:
+                logger.warning("caption_image failed for %s: %s", image_path, exc)
+                return ""
+            finally:
+                try:
+                    del prompt, output, text, caption
+                except Exception:
+                    pass
+                gc.collect()
 
     def describe_image(self, image_path: str) -> str:
         """Backward-compatible alias for caption_image."""
@@ -769,33 +1075,35 @@ class MLXBackend(ModelBackend):
         Used for query expansion and other lightweight generation tasks.
         Text-only — no image input.
         """
-        try:
-            self._load_captioner()
-            from mlx_vlm import generate as vlm_generate
-
-            messages = [{"role": "user", "content": [
-                {"type": "text", "text": prompt},
-            ]}]
-            formatted = self._captioner_processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            output = vlm_generate(
-                self._captioner_model,
-                self._captioner_processor,
-                prompt=formatted,
-                max_tokens=max_tokens,
-            )
-            text = output.text if hasattr(output, "text") else str(output)
-            return text.strip()
-        except Exception as exc:
-            logger.warning("generate_text failed: %s", exc)
-            return ""
-        finally:
+        with self._hold_heavy_op("generate_text"):
             try:
-                del messages, formatted, output, text
-            except Exception:
-                pass
-            gc.collect()
+                self._load_captioner()
+                from mlx_vlm import generate as vlm_generate
+
+                messages = [{"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                ]}]
+                formatted = self._apply_chat_template(
+                    self._captioner_processor,
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+                output = vlm_generate(
+                    self._captioner_model,
+                    self._captioner_processor,
+                    prompt=formatted,
+                    max_tokens=max_tokens,
+                )
+                text = output.text if hasattr(output, "text") else str(output)
+                return text.strip()
+            except Exception as exc:
+                logger.warning("generate_text failed: %s", exc)
+                return ""
+            finally:
+                try:
+                    del messages, formatted, output, text
+                except Exception:
+                    pass
+                gc.collect()
 
     def embed_videos(self, video_paths: List[str]) -> np.ndarray:
         """
@@ -804,13 +1112,35 @@ class MLXBackend(ModelBackend):
         Qwen3-VL's video processor currently expects per-video sampling kwargs,
         so we process each video independently and stack the resulting vectors.
         """
-        video_paths = self._validate_video_paths(video_paths)
-        if not video_paths:
-            return np.empty((0, self._EMBED_DIM), dtype=np.float32)
+        with self._hold_heavy_op("embed_videos"):
+            video_paths = self._validate_video_paths(video_paths)
+            if not video_paths:
+                return np.empty((0, self._EMBED_DIM), dtype=np.float32)
 
-        self._load_embedder()
-        num_layers = self._get_embedder_num_layers()
+            self._load_embedder()
+            num_layers = self._get_embedder_num_layers()
 
+            embeddings: List[np.ndarray] = []
+            for path in video_paths:
+                if not self._native_video_processing_enabled():
+                    embedding = self._embed_video_via_frames(path)
+                else:
+                    try:
+                        embedding = self._embed_video_native(path, num_layers)
+                    except Exception as exc:
+                        logger.warning(
+                            "native_video_embedding failed for %s: %s; falling back to frame embeddings",
+                            path,
+                            exc,
+                        )
+                        embedding = self._embed_video_via_frames(path)
+
+                embeddings.append(embedding)
+
+            return np.stack(embeddings).astype(np.float32)
+
+    def _embed_video_native(self, path: str, num_layers: int) -> np.ndarray:
+        """Embed a video via qwen-vl-utils native video preprocessing."""
         try:
             from qwen_vl_utils import process_vision_info
         except ImportError as exc:
@@ -819,104 +1149,132 @@ class MLXBackend(ModelBackend):
                 "Install qwen-vl-utils and torchvision for video embeddings."
             ) from exc
 
-        embeddings: List[np.ndarray] = []
-        for path in video_paths:
-            messages = [{
-                "role": "user",
-                "content": [
-                    self._video_content(path),
-                    {"type": "text", "text": "Describe this video."},
-                ],
-            }]
+        messages = [{
+            "role": "user",
+            "content": [
+                self._video_content(path),
+                {"type": "text", "text": "Describe this video."},
+            ],
+        }]
 
-            try:
-                chat_text = self._embedder_processor.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True,
+        try:
+            chat_text = self._apply_chat_template(
+                self._embedder_processor,
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception as exc:
+            raise MLXEmbeddingError(
+                f"Failed to build chat template for video '{path}'."
+            ) from exc
+
+        try:
+            _, video_inputs, video_kwargs = process_vision_info(
+                [messages],
+                return_video_kwargs=True,
+            )
+        except Exception as exc:
+            raise MLXEmbeddingError(
+                f"Failed to process video inputs for '{path}'."
+            ) from exc
+
+        if not video_inputs:
+            raise MLXEmbeddingError(
+                f"Video pre-processing produced no video inputs for '{path}'."
+            )
+
+        normalized_video_kwargs = dict(video_kwargs or {})
+        fps_value = normalized_video_kwargs.get("fps")
+        if isinstance(fps_value, list):
+            normalized_video_kwargs["fps"] = fps_value[0] if fps_value else None
+
+        try:
+            inputs = self._call_media_processor(
+                self._embedder_processor,
+                text=[chat_text],
+                videos=video_inputs,
+                return_tensors="pt",
+                padding=True,
+                **normalized_video_kwargs,
+            )
+        except Exception as exc:
+            raise MLXEmbeddingError(
+                f"Failed to tokenize video '{path}' with processor."
+            ) from exc
+
+        for required_key in ("input_ids", "pixel_values_videos", "video_grid_thw"):
+            if required_key not in inputs:
+                raise MLXEmbeddingError(
+                    f"Video processor output is missing '{required_key}' for '{path}'."
                 )
-            except Exception as exc:
-                raise MLXEmbeddingError(
-                    f"Failed to build chat template for video '{path}'."
-                ) from exc
 
-            try:
-                _, video_inputs, video_kwargs = process_vision_info(
-                    [messages],
-                    return_video_kwargs=True,
-                )
-            except Exception as exc:
-                raise MLXEmbeddingError(
-                    f"Failed to process video inputs for '{path}'."
-                ) from exc
+        input_ids = self._to_mx_array(inputs["input_ids"], "input_ids")
+        pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
+        video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
 
-            if not video_inputs:
-                raise MLXEmbeddingError(
-                    f"Video pre-processing produced no video inputs for '{path}'."
-                )
+        del inputs, video_inputs, messages, chat_text, normalized_video_kwargs, video_kwargs
+        gc.collect()
 
-            normalized_video_kwargs = dict(video_kwargs or {})
-            fps_value = normalized_video_kwargs.get("fps")
-            if isinstance(fps_value, list):
-                normalized_video_kwargs["fps"] = fps_value[0] if fps_value else None
+        try:
+            cache = _make_cache(num_layers)
+        except Exception as exc:
+            raise MLXEmbeddingError(
+                f"Failed to initialize KV cache for video '{path}'."
+            ) from exc
 
-            try:
-                inputs = self._embedder_processor(
-                    text=[chat_text],
-                    videos=video_inputs,
-                    return_tensors="pt",
-                    padding=True,
-                    **normalized_video_kwargs,
-                )
-            except Exception as exc:
-                raise MLXEmbeddingError(
-                    f"Failed to tokenize video '{path}' with processor."
-                ) from exc
+        try:
+            h = self._embed_hidden_with_media(
+                input_ids,
+                pixel_values,
+                cache,
+                video_grid_thw=video_grid_thw,
+            )
+        except Exception as exc:
+            raise MLXEmbeddingError(
+                f"MLX video forward pass failed for '{path}'."
+            ) from exc
 
-            for required_key in ("input_ids", "pixel_values_videos", "video_grid_thw"):
-                if required_key not in inputs:
-                    raise MLXEmbeddingError(
-                        f"Video processor output is missing '{required_key}' for '{path}'."
-                    )
-
-            input_ids = self._to_mx_array(inputs["input_ids"], "input_ids")
-            pixel_values = self._to_mx_array(inputs["pixel_values_videos"], "pixel_values_videos")
-            video_grid_thw = self._to_mx_array(inputs["video_grid_thw"], "video_grid_thw")
-
-            # Free PyTorch tensors and intermediates now that we have MLX arrays
-            del inputs, video_inputs, messages, chat_text, normalized_video_kwargs, video_kwargs
-            gc.collect()
-
-            try:
-                cache = _make_cache(num_layers)
-            except Exception as exc:
-                raise MLXEmbeddingError(
-                    f"Failed to initialize KV cache for video '{path}'."
-                ) from exc
-
-            try:
-                h = self._embed_hidden_with_media(
-                    input_ids,
-                    pixel_values,
-                    cache,
-                    video_grid_thw=video_grid_thw,
-                )
-            except Exception as exc:
-                raise MLXEmbeddingError(
-                    f"MLX video forward pass failed for '{path}'."
-                ) from exc
-
-            try:
-                embedding = self._pool_and_normalize(h)
-            except Exception as exc:
-                raise MLXEmbeddingError(
-                    f"Failed to pool and normalize video embedding for '{path}'."
-                ) from exc
-
-            # Free MLX intermediates before next video
+        try:
+            embedding = self._pool_and_normalize(h)
+        except Exception as exc:
+            raise MLXEmbeddingError(
+                f"Failed to pool and normalize video embedding for '{path}'."
+            ) from exc
+        finally:
             del input_ids, pixel_values, video_grid_thw, cache, h
 
-            embeddings.append(embedding[0])
+        return embedding[0]
 
-        return np.stack(embeddings).astype(np.float32)
+    def _embed_video_via_frames(self, path: str) -> np.ndarray:
+        """Fallback raw-video embedding by averaging ffmpeg-extracted frame vectors."""
+        from ..video import extract_video_frames
+
+        with tempfile.TemporaryDirectory(prefix="recallforge_video_query_") as temp_dir:
+            frames, _ = extract_video_frames(
+                path,
+                temp_dir,
+                logical_path=os.path.basename(path),
+                frame_interval_seconds=5.0,
+                max_frames=self._VIDEO_FALLBACK_MAX_FRAMES,
+            )
+            frame_paths = [frame.image_path for frame in frames]
+            if not frame_paths:
+                raise MLXEmbeddingError(
+                    f"Video fallback produced no frames for '{path}'. Ensure ffmpeg/ffprobe are installed."
+                )
+
+            frame_embeddings = self.embed_images(frame_paths)
+            if frame_embeddings.size == 0:
+                raise MLXEmbeddingError(
+                    f"Video fallback frame embeddings were empty for '{path}'."
+                )
+
+            pooled = frame_embeddings.mean(axis=0)
+            norm = float(np.linalg.norm(pooled))
+            if norm > 0:
+                pooled = pooled / norm
+            return pooled.astype(np.float32)
 
     # =========================================================================
     # Reranker
@@ -1092,7 +1450,8 @@ class MLXBackend(ModelBackend):
         """Render reranker chat messages to text and report whether vision tokens survived."""
         try:
             return (
-                self._reranker_processor.apply_chat_template(
+                self._apply_chat_template(
+                    self._reranker_processor,
                     messages,
                     tokenize=False,
                     add_generation_prompt=True,
@@ -1165,7 +1524,7 @@ class MLXBackend(ModelBackend):
         """Build the multimodal chat messages used for reranker prompting."""
         query_content: list = [{"type": "text", "text": "<Query>:"}]
         if query_image_path:
-            query_content.append({"type": "image", "image": self._as_file_uri(query_image_path)})
+            query_content.append(self._image_content(self._as_file_uri(query_image_path)))
             if query:
                 query_content.append({"type": "text", "text": query})
         elif query_video_path:
@@ -1177,7 +1536,7 @@ class MLXBackend(ModelBackend):
 
         doc_content: list = [{"type": "text", "text": "\n<Document>:"}]
         if image_path:
-            doc_content.append({"type": "image", "image": self._as_file_uri(image_path)})
+            doc_content.append(self._image_content(self._as_file_uri(image_path)))
             if document:
                 doc_content.append({"type": "text", "text": document})
         elif video_path:
@@ -1202,6 +1561,23 @@ class MLXBackend(ModelBackend):
             },
         ]
 
+    def _drop_video_blocks(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Remove video blocks so callers can degrade to text/image-only processing."""
+        filtered_messages: List[Dict[str, Any]] = []
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                filtered_messages.append(dict(message))
+                continue
+            filtered_message = dict(message)
+            filtered_message["content"] = [
+                block
+                for block in content
+                if not (isinstance(block, dict) and block.get("type") == "video")
+            ]
+            filtered_messages.append(filtered_message)
+        return filtered_messages
+
     def _build_reranker_processor_inputs(
         self,
         prompt: str,
@@ -1215,6 +1591,17 @@ class MLXBackend(ModelBackend):
         content_blocks = []
         for message in user_messages:
             content_blocks.extend(message.get("content", []))
+
+        has_video = any(
+            block.get("type") == "video"
+            for block in content_blocks
+            if isinstance(block, dict)
+        )
+        if has_video and not self._native_video_processing_enabled():
+            user_messages = self._drop_video_blocks(user_messages)
+            content_blocks = []
+            for message in user_messages:
+                content_blocks.extend(message.get("content", []))
 
         has_vision = any(
             block.get("type") in {"image", "video"}
@@ -1242,7 +1629,7 @@ class MLXBackend(ModelBackend):
             proc_kwargs["videos"] = video_inputs
             proc_kwargs.update(normalized_video_kwargs)
 
-        pt_inputs = self._reranker_processor(**proc_kwargs)
+        pt_inputs = self._call_media_processor(self._reranker_processor, **proc_kwargs)
         return {
             key: value.numpy() if hasattr(value, "numpy") else value
             for key, value in pt_inputs.items()
@@ -1474,6 +1861,7 @@ class MLXBackend(ModelBackend):
                             self.RERANKER_MODEL,
                             trust_remote_code=True,
                         )
+                        self._apply_processor_media_budgets(self._reranker_processor)
                     finally:
                         if hf_logging is not None and prev_hf_verbosity is not None:
                             hf_logging.set_verbosity(prev_hf_verbosity)
@@ -1509,55 +1897,59 @@ class MLXBackend(ModelBackend):
 
         Returns list of scores. Scoring path information is logged via logger.debug.
         """
-        if not documents:
-            return []
+        with self._hold_heavy_op("rerank"):
+            if not documents:
+                return []
 
-        if not self.needs_reranker():
-            return [0.5] * len(documents)
+            if not self.needs_reranker():
+                return [0.5] * len(documents)
 
-        try:
-            self._load_reranker()
-            num_layers = self._reranker_model.language_model.model.num_hidden_layers
-        except Exception as e:
-            logger.error(f"[MLXBackend] Failed to initialize reranker: {e}")
-            return [0.5] * len(documents)
-
-        instruction = self._RERANK_DEFAULT_INSTRUCTION
-        scores: List[float] = []
-        for idx, doc in enumerate(documents):
             try:
-                text = doc.get("text", "") or doc.get("text_body", "") or ""
-                doc_image_path = doc.get("image_path")
-                doc_video_path = doc.get("video_path")
-                messages = self._build_reranker_messages(
-                    query,
-                    text,
-                    instruction,
-                    image_path=doc_image_path, video_path=doc_video_path,
-                    query_image_path=query_image_path,
-                    query_video_path=query_video_path,
-                )
-                prompt, template_ok = self._render_reranker_prompt(
-                    messages,
-                    query,
-                    text,
-                    instruction,
-                )
-                score, scoring_path, raw_score = self._score_reranker_prompt(
-                    prompt, num_layers,
-                    messages=messages if template_ok else None,
-                )
-                scores.append(score)
-                # Log per-document reranker path tracing
-                logger.debug("reranker_doc idx=%d path=%s raw_score=%.4f final_score=%.4f content_type=%s",
-                             idx, scoring_path, raw_score, score, doc.get("content_type", "unknown"))
+                self._load_reranker()
+                num_layers = self._reranker_model.language_model.model.num_hidden_layers
             except Exception as e:
-                logger.error(f"[MLXBackend] Rerank error at doc {idx}: {e}")
-                scores.append(0.5)
-                logger.debug("reranker_doc idx=%d path=error_fallback raw_score=0.0 final_score=0.5 content_type=%s",
-                             idx, doc.get("content_type", "unknown"))
+                logger.error(f"[MLXBackend] Failed to initialize reranker: {e}")
+                return [0.5] * len(documents)
 
-        return scores
+            instruction = self._RERANK_DEFAULT_INSTRUCTION
+            scores: List[float] = []
+            for idx, doc in enumerate(documents):
+                try:
+                    text = doc.get("text", "") or doc.get("text_body", "") or ""
+                    doc_image_path = doc.get("image_path")
+                    doc_video_path = doc.get("video_path")
+                    messages = self._build_reranker_messages(
+                        query,
+                        text,
+                        instruction,
+                        image_path=doc_image_path, video_path=doc_video_path,
+                        query_image_path=query_image_path,
+                        query_video_path=query_video_path,
+                    )
+                    prompt, template_ok = self._render_reranker_prompt(
+                        messages,
+                        query,
+                        text,
+                        instruction,
+                    )
+                    score, scoring_path, raw_score = self._score_reranker_prompt(
+                        prompt, num_layers,
+                        messages=messages if template_ok else None,
+                    )
+                    scores.append(score)
+                    logger.debug(
+                        "reranker_doc idx=%d path=%s raw_score=%.4f final_score=%.4f content_type=%s",
+                        idx, scoring_path, raw_score, score, doc.get("content_type", "unknown")
+                    )
+                except Exception as e:
+                    logger.error(f"[MLXBackend] Rerank error at doc {idx}: {e}")
+                    scores.append(0.5)
+                    logger.debug(
+                        "reranker_doc idx=%d path=error_fallback raw_score=0.0 final_score=0.5 content_type=%s",
+                        idx, doc.get("content_type", "unknown")
+                    )
+
+            return scores
 
     # =========================================================================
     # Warm-up and Status
@@ -1567,20 +1959,21 @@ class MLXBackend(ModelBackend):
         """Preload models and run a dummy embed pass to prime MLX compilation."""
         import time
 
-        logger.info(f"[MLXBackend] Warming up (mode={self._mode}, quant={self._quantization})...")
-        start = time.time()
+        with self._hold_heavy_op("warm_up"):
+            logger.info(f"[MLXBackend] Warming up (mode={self._mode}, quant={self._quantization})...")
+            start = time.time()
 
-        self._load_embedder()
-        self._warm_embed()
-        t1 = time.time()
-        logger.info(f"[MLXBackend]   Embedder+compile: {t1 - start:.1f}s")
+            self._load_embedder()
+            self._warm_embed()
+            t1 = time.time()
+            logger.info(f"[MLXBackend]   Embedder+compile: {t1 - start:.1f}s")
 
-        if self.needs_reranker():
-            self._load_reranker()
-            t2 = time.time()
-            logger.info(f"[MLXBackend]   Reranker: {t2 - t1:.1f}s")
+            if self.needs_reranker():
+                self._load_reranker()
+                t2 = time.time()
+                logger.info(f"[MLXBackend]   Reranker: {t2 - t1:.1f}s")
 
-        logger.info(f"[MLXBackend] Ready in {time.time() - start:.1f}s")
+            logger.info(f"[MLXBackend] Ready in {time.time() - start:.1f}s")
 
     def get_info(self) -> BackendInfo:
         """Return backend information."""
