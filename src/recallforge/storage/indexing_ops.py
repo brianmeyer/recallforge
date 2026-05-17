@@ -311,6 +311,8 @@ class IndexingOps:
         _skip_delete: bool = False,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        _active: int = 1,
+        _index_batch_id: Optional[str] = None,
     ) -> str:
         """Create or update a text memory, replacing old vectors for this path.
 
@@ -383,6 +385,8 @@ class IndexingOps:
             profile=profile,
             memory_role=memory_role,
             memory_root_path=memory_root_path,
+            active=_active,
+            index_batch_id=_index_batch_id,
         )
 
         chunks = chunk_document(text)
@@ -408,6 +412,8 @@ class IndexingOps:
                 importance=importance,
                 ttl_seconds=ttl_seconds,
                 tags=tags,
+                active=_active,
+                index_batch_id=_index_batch_id,
 
             )
 
@@ -471,77 +477,87 @@ class IndexingOps:
             profile=profile,
         )
 
-        self._delete_path_entries(
-            collection=collection,
-            logical_path=normalized_path,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            include_children=True,
-        )
-
         root_hash = ""
         child_hashes: List[str] = []
-        with self._backend.bulk_mode():
-            root_hash = self.upsert_memory(
-                path=normalized_path,
-                text=root_text,
+        batch_id = self._backend.begin_index_batch()
+        try:
+            with self._backend.bulk_mode():
+                root_hash = self.upsert_memory(
+                    path=normalized_path,
+                    text=root_text,
+                    collection=collection,
+                    embed_func=embed_func,
+                    model=model,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                    importance=importance,
+                    ttl_seconds=ttl_seconds,
+                    tags=root_tags,
+                    _skip_delete=True,
+                    memory_role="root",
+                    memory_root_path=normalized_path,
+                    _active=0,
+                    _index_batch_id=batch_id,
+                )
+
+                total_turns = len(normalized_turns)
+                for index, turn in enumerate(normalized_turns, start=1):
+                    turn_tags: List[str] = []
+                    for raw_tag in root_tags + [
+                        "conversation_turn",
+                        f"turn:{index:04d}",
+                        f"role:{turn.role}",
+                    ]:
+                        tag = str(raw_tag or "").strip().lower()
+                        if tag and tag not in turn_tags:
+                            turn_tags.append(tag)
+                    if turn.speaker:
+                        speaker_tag = f"participant:{turn.speaker.lower()}"
+                        if speaker_tag not in turn_tags:
+                            turn_tags.append(speaker_tag)
+                    turn_text = build_conversation_turn_text(
+                        title=resolved_title,
+                        turn=turn,
+                        index=index,
+                        total=total_turns,
+                    )
+                    child_hashes.append(
+                        self.upsert_memory(
+                            path=conversation_turn_path(normalized_path, index),
+                            text=turn_text,
+                            collection=collection,
+                            embed_func=embed_func,
+                            model=model,
+                            user_id=user_id,
+                            session_id=session_id,
+                            project_id=project_id,
+                            profile=profile,
+                            importance=importance,
+                            ttl_seconds=ttl_seconds,
+                            tags=turn_tags,
+                            _skip_delete=True,
+                            memory_role="child",
+                            memory_root_path=normalized_path,
+                            _active=0,
+                            _index_batch_id=batch_id,
+                        )
+                    )
+            self._backend._fts.schedule_fts_rebuild()
+            self._backend.promote_index_batch(
+                batch_id=batch_id,
                 collection=collection,
-                embed_func=embed_func,
-                model=model,
+                logical_path=normalized_path,
                 user_id=user_id,
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
-                importance=importance,
-                ttl_seconds=ttl_seconds,
-                tags=root_tags,
-                _skip_delete=True,
-                memory_role="root",
-                memory_root_path=normalized_path,
+                include_children=True,
             )
-
-            total_turns = len(normalized_turns)
-            for index, turn in enumerate(normalized_turns, start=1):
-                turn_tags: List[str] = []
-                for raw_tag in root_tags + [
-                    "conversation_turn",
-                    f"turn:{index:04d}",
-                    f"role:{turn.role}",
-                ]:
-                    tag = str(raw_tag or "").strip().lower()
-                    if tag and tag not in turn_tags:
-                        turn_tags.append(tag)
-                if turn.speaker:
-                    speaker_tag = f"participant:{turn.speaker.lower()}"
-                    if speaker_tag not in turn_tags:
-                        turn_tags.append(speaker_tag)
-                turn_text = build_conversation_turn_text(
-                    title=resolved_title,
-                    turn=turn,
-                    index=index,
-                    total=total_turns,
-                )
-                child_hashes.append(
-                    self.upsert_memory(
-                        path=conversation_turn_path(normalized_path, index),
-                        text=turn_text,
-                        collection=collection,
-                        embed_func=embed_func,
-                        model=model,
-                        user_id=user_id,
-                        session_id=session_id,
-                        project_id=project_id,
-                        profile=profile,
-                        importance=importance,
-                        ttl_seconds=ttl_seconds,
-                        tags=turn_tags,
-                        _skip_delete=True,
-                        memory_role="child",
-                        memory_root_path=normalized_path,
-                    )
-                )
+        except Exception:
+            self._backend.delete_index_batch(batch_id)
+            raise
 
         trace_log(
             "index_conversation_done",
@@ -1292,6 +1308,9 @@ class IndexingOps:
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
         inherited_tags: Optional[List[str]] = None,
+        _skip_delete: bool = False,
+        _active: int = 1,
+        _index_batch_id: Optional[str] = None,
     ) -> str:
         """
         Index an image file.
@@ -1331,15 +1350,16 @@ class IndexingOps:
 
         # Remove previous image vectors for this logical document path.
         # Deleting only by hash_seq misses changed-content reindex cases.
-        self._delete_path_entries(
-            collection=collection,
-            logical_path=logical_path,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            content_type="image",
-        )
+        if not _skip_delete:
+            self._delete_path_entries(
+                collection=collection,
+                logical_path=logical_path,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                content_type="image",
+            )
 
         self._backend.insert_content(content_hash, actual_path, content_type="image")
         self._backend.insert_document(
@@ -1356,6 +1376,8 @@ class IndexingOps:
             profile=profile,
             memory_role=memory_role,
             memory_root_path=memory_root_path,
+            active=_active,
+            index_batch_id=_index_batch_id,
         )
 
         vector = embed_func(actual_path)
@@ -1383,6 +1405,8 @@ class IndexingOps:
             memory_role=memory_role,
             memory_root_path=memory_root_path,
             tags=image_tags or None,
+            active=_active,
+            index_batch_id=_index_batch_id,
         )
 
         # Schedule debounced FTS rebuild
@@ -1413,20 +1437,11 @@ class IndexingOps:
         logical_path = stored_path or actual_path
         resolved_title = os.path.splitext(os.path.basename(logical_path))[0]
         video_embed = embed_video_func or embed_image_func
+        batch_id = self._backend.begin_index_batch()
 
         artifact_root = Path(self._backend._store_path or DEFAULT_INDEX_DIR) / "video_frames"
         digest = hashlib.sha1(logical_path.encode("utf-8")).hexdigest()[:16]
         output_dir = artifact_root / digest
-
-        self._delete_path_entries(
-            collection=collection,
-            logical_path=logical_path,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            include_children=True,
-        )
 
         artifacts = extract_video_artifacts(
             video_path=actual_path,
@@ -1476,22 +1491,28 @@ class IndexingOps:
             modified_at = int(time.time() * 1000)
             created_at = modified_at
 
-        self._backend.insert_content(content_hash, actual_path, content_type="video")
-        self._backend.insert_document(
-            collection=collection,
-            file_path=logical_path,
-            title=resolved_title,
-            content_hash=content_hash,
-            content_type="video",
-            created_at=created_at,
-            modified_at=modified_at,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            memory_role="root",
-            memory_root_path=logical_path,
-        )
+        try:
+            self._backend.insert_content(content_hash, actual_path, content_type="video")
+            self._backend.insert_document(
+                collection=collection,
+                file_path=logical_path,
+                title=resolved_title,
+                content_hash=content_hash,
+                content_type="video",
+                created_at=created_at,
+                modified_at=modified_at,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                memory_role="root",
+                memory_root_path=logical_path,
+                active=0,
+                index_batch_id=batch_id,
+            )
+        except Exception:
+            self._backend.delete_index_batch(batch_id)
+            raise
 
         indexed_video_embeddings = 0
         try:
@@ -1514,6 +1535,8 @@ class IndexingOps:
                 memory_role="root",
                 memory_root_path=logical_path,
                 tags=video_tags or None,
+                active=0,
+                index_batch_id=batch_id,
             )
             indexed_video_embeddings = 1
         except Exception as e:
@@ -1543,6 +1566,8 @@ class IndexingOps:
                         memory_role="root",
                         memory_root_path=logical_path,
                         tags=video_tags or None,
+                        active=0,
+                        index_batch_id=batch_id,
                     )
                     indexed_video_embeddings = 1
                 except Exception as summary_exc:
@@ -1555,41 +1580,63 @@ class IndexingOps:
         indexed_frames = 0
         indexed_transcripts = 0
 
-        for frame in artifacts.frames:
-            self.index_image(
-                path=frame.image_path,
-                collection=collection,
-                embed_func=embed_image_func,
-                model=model,
-                stored_path=frame.logical_path,
-                title=frame.title,
-                user_id=user_id,
-                session_id=session_id,
-                project_id=project_id,
-                profile=profile,
-                caption_media=caption_media,
-                memory_role="child",
-                memory_root_path=logical_path,
-                inherited_tags=video_tags or None,
-            )
-            indexed_frames += 1
+        try:
+            for frame in artifacts.frames:
+                self.index_image(
+                    path=frame.image_path,
+                    collection=collection,
+                    embed_func=embed_image_func,
+                    model=model,
+                    stored_path=frame.logical_path,
+                    title=frame.title,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                    caption_media=caption_media,
+                    memory_role="child",
+                    memory_root_path=logical_path,
+                    inherited_tags=video_tags or None,
+                    _skip_delete=True,
+                    _active=0,
+                    _index_batch_id=batch_id,
+                )
+                indexed_frames += 1
 
-        for segment in artifacts.transcripts:
-            self.upsert_memory(
-                path=segment.logical_path,
-                text=segment.text,
+            for segment in artifacts.transcripts:
+                self.upsert_memory(
+                    path=segment.logical_path,
+                    text=segment.text,
+                    collection=collection,
+                    embed_func=embed_text_func,
+                    model=model,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                    _skip_delete=True,
+                    memory_role="child",
+                    memory_root_path=logical_path,
+                    tags=video_tags or None,
+                    _active=0,
+                    _index_batch_id=batch_id,
+                )
+                indexed_transcripts += 1
+
+            self._backend._fts.schedule_fts_rebuild()
+            self._backend.promote_index_batch(
+                batch_id=batch_id,
                 collection=collection,
-                embed_func=embed_text_func,
-                model=model,
+                logical_path=logical_path,
                 user_id=user_id,
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
-                memory_role="child",
-                memory_root_path=logical_path,
-                tags=video_tags or None,
+                include_children=True,
             )
-            indexed_transcripts += 1
+        except Exception:
+            self._backend.delete_index_batch(batch_id)
+            raise
 
         return {
             "success": True,
@@ -1628,15 +1675,7 @@ class IndexingOps:
                 "or .transcript.json sidecar next to the audio file."
             )
 
-        self._delete_path_entries(
-            collection=collection,
-            logical_path=logical_path,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            include_children=True,
-        )
+        batch_id = self._backend.begin_index_batch()
 
         try:
             content_hash = hash_file_bytes(actual_path)
@@ -1650,22 +1689,28 @@ class IndexingOps:
             modified_at = int(time.time() * 1000)
             created_at = modified_at
 
-        self._backend.insert_content(content_hash, actual_path, content_type="audio")
-        self._backend.insert_document(
-            collection=collection,
-            file_path=logical_path,
-            title=resolved_title,
-            content_hash=content_hash,
-            content_type="audio",
-            created_at=created_at,
-            modified_at=modified_at,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            memory_role="root",
-            memory_root_path=logical_path,
-        )
+        try:
+            self._backend.insert_content(content_hash, actual_path, content_type="audio")
+            self._backend.insert_document(
+                collection=collection,
+                file_path=logical_path,
+                title=resolved_title,
+                content_hash=content_hash,
+                content_type="audio",
+                created_at=created_at,
+                modified_at=modified_at,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                memory_role="root",
+                memory_root_path=logical_path,
+                active=0,
+                index_batch_id=batch_id,
+            )
+        except Exception:
+            self._backend.delete_index_batch(batch_id)
+            raise
 
         transcript_summary = self._build_parent_summary(
             [segment.text for segment in transcripts],
@@ -1691,6 +1736,8 @@ class IndexingOps:
                     profile=profile,
                     memory_role="root",
                     memory_root_path=logical_path,
+                    active=0,
+                    index_batch_id=batch_id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -1700,22 +1747,40 @@ class IndexingOps:
                 )
 
         indexed_transcripts = 0
-        for segment in transcripts:
-            self.upsert_memory(
-                path=segment.logical_path,
-                text=segment.text,
+        try:
+            for segment in transcripts:
+                self.upsert_memory(
+                    path=segment.logical_path,
+                    text=segment.text,
+                    collection=collection,
+                    embed_func=embed_text_func,
+                    model=model,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                    _skip_delete=True,
+                    memory_role="child",
+                    memory_root_path=logical_path,
+                    _active=0,
+                    _index_batch_id=batch_id,
+                )
+                indexed_transcripts += 1
+
+            self._backend._fts.schedule_fts_rebuild()
+            self._backend.promote_index_batch(
+                batch_id=batch_id,
                 collection=collection,
-                embed_func=embed_text_func,
-                model=model,
+                logical_path=logical_path,
                 user_id=user_id,
                 session_id=session_id,
                 project_id=project_id,
                 profile=profile,
-                _skip_delete=True,
-                memory_role="child",
-                memory_root_path=logical_path,
+                include_children=True,
             )
-            indexed_transcripts += 1
+        except Exception:
+            self._backend.delete_index_batch(batch_id)
+            raise
 
         return {
             "success": True,
@@ -1743,15 +1808,7 @@ class IndexingOps:
         actual_path = str(Path(path).expanduser().resolve())
         logical_path = stored_path or actual_path
 
-        self._delete_path_entries(
-            collection=collection,
-            logical_path=logical_path,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            include_children=True,
-        )
+        batch_id = self._backend.begin_index_batch()
 
         artifacts = extract_document_artifacts(actual_path, logical_path)
         indexed_sections = 0
@@ -1770,22 +1827,28 @@ class IndexingOps:
             modified_at = int(time.time() * 1000)
             created_at = modified_at
 
-        self._backend.insert_content(document_hash, actual_path, content_type=artifacts.document_type)
-        self._backend.insert_document(
-            collection=collection,
-            file_path=logical_path,
-            title=document_title,
-            content_hash=document_hash,
-            content_type=artifacts.document_type,
-            created_at=created_at,
-            modified_at=modified_at,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile,
-            memory_role="root",
-            memory_root_path=logical_path,
-        )
+        try:
+            self._backend.insert_content(document_hash, actual_path, content_type=artifacts.document_type)
+            self._backend.insert_document(
+                collection=collection,
+                file_path=logical_path,
+                title=document_title,
+                content_hash=document_hash,
+                content_type=artifacts.document_type,
+                created_at=created_at,
+                modified_at=modified_at,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                memory_role="root",
+                memory_root_path=logical_path,
+                active=0,
+                index_batch_id=batch_id,
+            )
+        except Exception:
+            self._backend.delete_index_batch(batch_id)
+            raise
 
         document_summary = self._build_parent_summary(
             [section.text for section in artifacts.sections],
@@ -1811,6 +1874,8 @@ class IndexingOps:
                     profile=profile,
                     memory_role="root",
                     memory_root_path=logical_path,
+                    active=0,
+                    index_batch_id=batch_id,
                 )
             except Exception as exc:
                 logger.warning(
@@ -1836,36 +1901,67 @@ class IndexingOps:
                         "Pass embed_image_func for proper vision embedding.",
                         section.image_path,
                     )
-                self.index_image(
-                    path=section.image_path,
-                    collection=collection,
-                    embed_func=image_embed,
-                    model=model,
-                    stored_path=section.logical_path,
-                    title=section.title,
-                    user_id=user_id,
-                    session_id=session_id,
-                    project_id=project_id,
-                    profile=profile,
-                    memory_role="child",
-                    memory_root_path=logical_path,
-                )
-                # Override content entry to reference source PDF, not temp image.
-                # Temp images are cleaned up after this loop; the embedding vector
-                # persists and is the primary retrieval artifact.
-                from recallforge.storage.lancedb_shared import hash_content
-                content_hash = hash_content(f"pdf_page_image:{actual_path}:page:{section.index}")
-                self._backend.insert_content(content_hash, actual_path, content_type="pdf_page_image")
-                indexed_images += 1
+                try:
+                    self.index_image(
+                        path=section.image_path,
+                        collection=collection,
+                        embed_func=image_embed,
+                        model=model,
+                        stored_path=section.logical_path,
+                        title=section.title,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                        memory_role="child",
+                        memory_root_path=logical_path,
+                        _skip_delete=True,
+                        _active=0,
+                        _index_batch_id=batch_id,
+                    )
+                    # Override content entry to reference source PDF, not temp image.
+                    # Temp images are cleaned up after this loop; the embedding vector
+                    # persists and is the primary retrieval artifact.
+                    from recallforge.storage.lancedb_shared import hash_content
+                    content_hash = hash_content(f"pdf_page_image:{actual_path}:page:{section.index}")
+                    self._backend.insert_content(content_hash, actual_path, content_type="pdf_page_image")
+                    indexed_images += 1
+                except Exception:
+                    self._backend.delete_index_batch(batch_id)
+                    raise
 
                 # Preserve OCR text for scanned/image-only pages as a sibling
                 # text child so BM25 and file-as-query can use it without
                 # dropping the visual page representation.
                 ocr_text = (section.text or "").strip()
                 if ocr_text:
+                    try:
+                        self.upsert_memory(
+                            path=f"{section.logical_path}::ocr",
+                            text=ocr_text,
+                            collection=collection,
+                            embed_func=embed_func,
+                            model=model,
+                            user_id=user_id,
+                            session_id=session_id,
+                            project_id=project_id,
+                            profile=profile,
+                            _skip_delete=True,
+                            memory_role="child",
+                            memory_root_path=logical_path,
+                            _active=0,
+                            _index_batch_id=batch_id,
+                        )
+                    except Exception:
+                        self._backend.delete_index_batch(batch_id)
+                        raise
+                    indexed_sections += 1
+            else:
+                # Use text embedding for text sections
+                try:
                     self.upsert_memory(
-                        path=f"{section.logical_path}::ocr",
-                        text=ocr_text,
+                        path=section.logical_path,
+                        text=section.text,
                         collection=collection,
                         embed_func=embed_func,
                         model=model,
@@ -1876,24 +1972,12 @@ class IndexingOps:
                         _skip_delete=True,
                         memory_role="child",
                         memory_root_path=logical_path,
+                        _active=0,
+                        _index_batch_id=batch_id,
                     )
-                    indexed_sections += 1
-            else:
-                # Use text embedding for text sections
-                self.upsert_memory(
-                    path=section.logical_path,
-                    text=section.text,
-                    collection=collection,
-                    embed_func=embed_func,
-                    model=model,
-                    user_id=user_id,
-                    session_id=session_id,
-                    project_id=project_id,
-                    profile=profile,
-                    _skip_delete=True,
-                    memory_role="child",
-                    memory_root_path=logical_path,
-                )
+                except Exception:
+                    self._backend.delete_index_batch(batch_id)
+                    raise
                 indexed_sections += 1
 
         # Clean up temp dirs from PDF page-to-image rendering
@@ -1902,10 +1986,21 @@ class IndexingOps:
             if temp_dir and "recallforge_pdf_" in temp_dir:
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
-        # Ensure FTS rebuild is scheduled even when no sections were indexed,
-        # since _delete_path_entries above may have removed stale entries.
-        if indexed_sections == 0 and indexed_images == 0:
-            self._backend._fts.schedule_fts_rebuild()
+        self._backend._fts.schedule_fts_rebuild()
+        try:
+            self._backend.promote_index_batch(
+                batch_id=batch_id,
+                collection=collection,
+                logical_path=logical_path,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                include_children=True,
+            )
+        except Exception:
+            self._backend.delete_index_batch(batch_id)
+            raise
 
         return {
             "success": True,

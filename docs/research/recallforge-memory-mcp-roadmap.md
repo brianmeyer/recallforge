@@ -67,9 +67,7 @@ Why it comes before advanced ranking:
 Goal:
 - Make RecallForge feel like memory retrieval, not generic search.
 
-Current Linear fit:
-- `REC-84`
-- `REC-83`
+Shipped Linear work:
 - `REC-75`
 - `REC-78`
 
@@ -87,7 +85,7 @@ Why it comes here:
 Goal:
 - Push more intelligence into ingest-time structure instead of query-time cost.
 
-Current Linear fit:
+Shipped Linear work:
 - `REC-76`
 
 Likely follow-ons:

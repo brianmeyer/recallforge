@@ -8,7 +8,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from .base import SearchResult
-from .lancedb_shared import _safe_filter, get_docid, logger, resolve_memory_identity, trace_log
+from .lancedb_shared import active_row_filter, _safe_filter, get_docid, logger, resolve_memory_identity, trace_log
 
 if TYPE_CHECKING:
     from .lancedb_backend import LanceDBBackend
@@ -33,7 +33,7 @@ class SearchOps:
     ) -> List[SearchResult]:
         """In-memory BM25 fallback when FTS index fails."""
         try:
-            filter_parts = [self._get_ttl_filter()]
+            filter_parts = [active_row_filter(), self._get_ttl_filter()]
             if collection:
                 filter_parts.append(_safe_filter("collection", collection))
             if content_type:
@@ -136,7 +136,7 @@ class SearchOps:
         self._backend._fts.ensure_fts_index()
 
         # Build filter including TTL and namespace fields
-        filter_parts = [self._get_ttl_filter()]
+        filter_parts = [active_row_filter(), self._get_ttl_filter()]
 
         if collection:
             filter_parts.append(_safe_filter("collection", collection))
@@ -212,7 +212,7 @@ class SearchOps:
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
 
         # Build filter including TTL and namespace fields
-        filter_parts = [self._get_ttl_filter()]
+        filter_parts = [active_row_filter(), self._get_ttl_filter()]
 
         if collection:
             filter_parts.append(_safe_filter("collection", collection))
@@ -397,7 +397,7 @@ class SearchOps:
             return []
 
         try:
-            filter_parts: List[str] = []
+            filter_parts: List[str] = [active_row_filter()]
             if user_id is not None:
                 filter_parts.append(_safe_filter("user_id", user_id))
             if session_id is not None:
@@ -431,7 +431,7 @@ class SearchOps:
             return []
 
         try:
-            filter_parts: List[str] = []
+            filter_parts: List[str] = [active_row_filter()]
             if collection is not None:
                 filter_parts.append(_safe_filter("collection", collection))
 
