@@ -47,3 +47,9 @@ Raw audio transcription and dedicated audio encoders are not part of the shipped
 ## Conversations
 
 Use `memory_add_conversation` when an agent or app wants to persist a thread. RecallForge stores the parent at the supplied `path` and stores each turn at `path::turn:0001`, `path::turn:0002`, and so on. All turns share the parent `memory_id`, so if several turns match a query, search and explanation output roll them up into the parent conversation with evidence paths.
+
+## Memory Graph
+
+Every indexed text-bearing evidence unit can also produce lightweight entity mentions and co-mention relation edges. That includes normal text memories, OCR/document sections, transcripts, captions, and conversation turns. Graph rows store `memory_id`, `memory_root_path`, `file_path`, and a short evidence snippet, so same-entity navigation remains traceable to the source memory.
+
+Use `memory_graph_entities` to inspect entities for a memory, path, or entity key. Use `memory_graph_related` to find other memories that share extracted entities with a seed memory or entity. This graph enrichment is intentionally local and deterministic: it adds navigation and grouping without introducing an external NLP service.

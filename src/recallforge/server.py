@@ -4,7 +4,8 @@ server.py - MCP Server for RecallForge.
 MCP protocol server with stdio or HTTP/SSE transport.
 Tools: search, search_fts, search_vec, explain_results, search_batch, ingest,
 index_document, index_image, index_audio, memory_add, memory_update, memory_delete,
-memory_add_conversation, memory_get, list_memories, status, rebuild_fts, list_collections,
+memory_add_conversation, memory_get, list_memories, memory_graph_entities,
+memory_graph_related, status, rebuild_fts, list_collections,
 list_namespaces, rename_collection, delete_collection, batch, get_config,
 set_config. Resources expose canonical memories via memory:// URIs.
 
@@ -231,6 +232,20 @@ def _get_memory_from_storage(storage, memory_id: Optional[str] = None, **kwargs)
     if memory_id is None:
         return get_memory(**kwargs)
     return get_memory(memory_id, **kwargs)
+
+
+def _list_memory_entities_from_storage(storage, **kwargs) -> list[dict]:
+    list_memory_entities = getattr(storage, "list_memory_entities", None)
+    if not callable(list_memory_entities):
+        return []
+    return list_memory_entities(**kwargs)
+
+
+def _find_related_memories_from_storage(storage, **kwargs) -> list[dict]:
+    find_related_memories = getattr(storage, "find_related_memories", None)
+    if not callable(find_related_memories):
+        return []
+    return find_related_memories(**kwargs)
 
 
 def _signal_handler(signum, frame):
@@ -559,6 +574,42 @@ async def create_server(
                 },
             ),
             Tool(
+                name="memory_graph_entities",
+                description="List extracted entity mentions for a memory, path, or entity key with source evidence",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {"type": "string", "description": "Stable memory identifier to inspect"},
+                        "path": {"type": "string", "description": "Memory root path or child path to inspect"},
+                        "entity": {"type": "string", "description": "Optional entity name/key to navigate across memories"},
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                        "limit": {"type": "integer", "description": "Maximum entity mentions to return", "default": 100},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
+                    },
+                },
+            ),
+            Tool(
+                name="memory_graph_related",
+                description="Find memories related by shared extracted entities, with supporting evidence",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {"type": "string", "description": "Stable memory identifier to use as the seed"},
+                        "path": {"type": "string", "description": "Memory root path or child path to use as the seed"},
+                        "entity": {"type": "string", "description": "Entity name/key to use as the seed"},
+                        "collection": {"type": "string", "description": "Optional collection filter"},
+                        "limit": {"type": "integer", "description": "Maximum related memories to return", "default": 20},
+                        "user_id": {"type": "string", "description": "Optional user namespace filter"},
+                        "session_id": {"type": "string", "description": "Optional session namespace filter"},
+                        "project_id": {"type": "string", "description": "Optional project namespace filter"},
+                        "profile": {"type": "string", "description": "Optional profile namespace filter"},
+                    },
+                },
+            ),
+            Tool(
                 name="list_memories",
                 description="List canonical root memories for a collection or namespace",
                 inputSchema={
@@ -833,6 +884,10 @@ async def _dispatch_tool(
         return await _handle_memory_delete(arguments, storage)
     elif name == "memory_get":
         return await _handle_memory_get(arguments, storage)
+    elif name == "memory_graph_entities":
+        return await _handle_memory_graph_entities(arguments, storage)
+    elif name == "memory_graph_related":
+        return await _handle_memory_graph_related(arguments, storage)
     elif name == "list_memories":
         return await _handle_list_memories(arguments, storage)
     elif name == "status":
@@ -1745,6 +1800,102 @@ async def _handle_memory_get(arguments: dict, storage) -> list[TextContent]:
         return _error_response("NOT_FOUND", "Memory not found", details)
 
     return [TextContent(type="text", text=json.dumps(memory, indent=2))]
+
+
+async def _handle_memory_graph_entities(arguments: dict, storage) -> list[TextContent]:
+    """Handle entity mention lookup for the memory graph."""
+    memory_id = arguments.get("memory_id")
+    path = arguments.get("path")
+    entity = arguments.get("entity")
+    collection = arguments.get("collection")
+    limit = arguments.get("limit", 100)
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    if not memory_id and not path and not entity:
+        return _error_response("INVALID_INPUT", "memory_id, path, or entity is required")
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return _error_response("INVALID_INPUT", "limit must be an integer")
+
+    if not callable(getattr(storage, "list_memory_entities", None)):
+        return _error_response("BACKEND_ERROR", "Storage backend does not support memory graph entities")
+
+    entities = await _run_blocking(
+        _list_memory_entities_from_storage,
+        storage,
+        memory_id=memory_id,
+        path=path,
+        entity=entity,
+        collection=collection,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+        limit=limit,
+    )
+
+    output = {
+        "success": True,
+        "count": len(entities),
+        "entities": entities,
+        "memory_id": memory_id,
+        "path": path,
+        "entity": entity,
+        "collection": collection,
+    }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_memory_graph_related(arguments: dict, storage) -> list[TextContent]:
+    """Handle related-memory lookup through shared graph entities."""
+    memory_id = arguments.get("memory_id")
+    path = arguments.get("path")
+    entity = arguments.get("entity")
+    collection = arguments.get("collection")
+    limit = arguments.get("limit", 20)
+    user_id = arguments.get("user_id")
+    session_id = arguments.get("session_id")
+    project_id = arguments.get("project_id")
+    profile = arguments.get("profile")
+
+    if not memory_id and not path and not entity:
+        return _error_response("INVALID_INPUT", "memory_id, path, or entity is required")
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return _error_response("INVALID_INPUT", "limit must be an integer")
+
+    if not callable(getattr(storage, "find_related_memories", None)):
+        return _error_response("BACKEND_ERROR", "Storage backend does not support related memory graph lookup")
+
+    related = await _run_blocking(
+        _find_related_memories_from_storage,
+        storage,
+        memory_id=memory_id,
+        path=path,
+        entity=entity,
+        collection=collection,
+        user_id=user_id,
+        session_id=session_id,
+        project_id=project_id,
+        profile=profile,
+        limit=limit,
+    )
+
+    output = {
+        "success": True,
+        "count": len(related),
+        "related_memories": related,
+        "memory_id": memory_id,
+        "path": path,
+        "entity": entity,
+        "collection": collection,
+    }
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 
 async def _handle_get_config(backend, storage, mutable_config: dict) -> list[TextContent]:

@@ -23,6 +23,8 @@ from recallforge.server import (
     _handle_memory_add_conversation,
     _handle_memory_delete,
     _handle_memory_get,
+    _handle_memory_graph_entities,
+    _handle_memory_graph_related,
     _handle_memory_update,
     _handle_rebuild_fts,
     _handle_search,
@@ -132,6 +134,12 @@ class _DummyStorage:
             "children": [],
             "snippets": [],
         }
+
+    def list_memory_entities(self, **_kwargs):
+        return [{"entity_key": "acme_robotics", "name": "Acme Robotics", "evidence": "Acme Robotics note"}]
+
+    def find_related_memories(self, **_kwargs):
+        return [{"memory_id": "mem-2", "path": "mem/2", "shared_entities": [{"entity_key": "acme_robotics"}]}]
 
 
 class _FakeSearchResult:
@@ -276,6 +284,14 @@ class TestMCPJsonCompliance(unittest.IsolatedAsyncioTestCase):
                     (
                         lambda: _handle_memory_get({"memory_id": "mem-1"}, self.storage),
                         lambda: _handle_memory_get({"path": "missing"}, self.storage),
+                    ),
+                    (
+                        lambda: _handle_memory_graph_entities({"path": "mem/1"}, self.storage),
+                        lambda: _handle_memory_graph_entities({}, self.storage),
+                    ),
+                    (
+                        lambda: _handle_memory_graph_related({"entity": "Acme Robotics"}, self.storage),
+                        lambda: _handle_memory_graph_related({}, self.storage),
                     ),
                 ]
 

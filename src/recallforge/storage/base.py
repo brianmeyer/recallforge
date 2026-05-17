@@ -299,6 +299,40 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
+    def list_memory_entities(
+        self,
+        *,
+        memory_id: Optional[str] = None,
+        path: Optional[str] = None,
+        entity: Optional[str] = None,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List extracted entity mentions with source evidence."""
+        pass
+
+    @abstractmethod
+    def find_related_memories(
+        self,
+        *,
+        memory_id: Optional[str] = None,
+        path: Optional[str] = None,
+        entity: Optional[str] = None,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Find memories related by shared extracted entities."""
+        pass
+
+    @abstractmethod
     def delete_memory(
         self,
         path: str,

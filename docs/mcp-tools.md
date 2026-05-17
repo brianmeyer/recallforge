@@ -55,6 +55,8 @@ Example MCP client config (Claude Desktop):
 - `memory_update`
 - `memory_delete`
 - `memory_get`
+- `memory_graph_entities`
+- `memory_graph_related`
 - `list_memories`
 
 ### Admin / Introspection
@@ -853,6 +855,124 @@ Turn objects accept:
 
 ---
 
+## memory_graph_entities
+
+**Description:** List entity mentions extracted from indexed memory text, OCR text, transcripts, captions, and conversation turns. Each mention includes the source memory/path and evidence snippet that produced it.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| memory_id | string | Conditionally* | — | Stable memory identifier |
+| path | string | Conditionally* | — | Root or child memory path |
+| entity | string | Conditionally* | — | Entity name or normalized entity key |
+| collection | string | No | server default collection | Collection filter |
+| limit | integer | No | 100 | Max entity mentions |
+| user_id | string | No | — | User namespace |
+| session_id | string | No | — | Session namespace |
+| project_id | string | No | — | Project namespace |
+| profile | string | No | — | Profile namespace |
+
+\* Provide at least one of `memory_id`, `path`, or `entity`.
+
+**Example Request:**
+```json
+{
+  "path": "threads/customer-renewal",
+  "collection": "default"
+}
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "count": 2,
+  "entities": [
+    {
+      "entity_key": "acme_robotics",
+      "name": "Acme Robotics",
+      "entity_type": "proper_noun",
+      "memory_id": "b4f7...",
+      "memory_root_path": "threads/customer-renewal",
+      "file_path": "threads/customer-renewal::turn:0002",
+      "evidence": "Acme Robotics asked to review the renewal timeline..."
+    }
+  ]
+}
+```
+
+**Errors:**
+- `INVALID_INPUT`: when no seed (`memory_id`, `path`, or `entity`) is provided.
+- `BACKEND_ERROR`: when the storage backend does not support graph entities.
+- `INTERNAL_ERROR`: uncaught exceptions.
+
+**Notes:** Entity keys are normalized for lookup. Evidence snippets are stored beside the graph rows so related-memory navigation can be traced back to source memories.
+
+---
+
+## memory_graph_related
+
+**Description:** Find memories related by shared extracted entities. This is useful when two memories mention the same person, project, organization, ticket, URL, or topic even if ordinary lexical search would not rank them together.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| memory_id | string | Conditionally* | — | Stable memory identifier to use as the seed |
+| path | string | Conditionally* | — | Root or child memory path to use as the seed |
+| entity | string | Conditionally* | — | Entity name or normalized entity key to use as the seed |
+| collection | string | No | server default collection | Collection filter |
+| limit | integer | No | 20 | Max related memories |
+| user_id | string | No | — | User namespace |
+| session_id | string | No | — | Session namespace |
+| project_id | string | No | — | Project namespace |
+| profile | string | No | — | Profile namespace |
+
+\* Provide at least one of `memory_id`, `path`, or `entity`.
+
+**Example Request:**
+```json
+{
+  "entity": "Acme Robotics",
+  "collection": "default",
+  "limit": 5
+}
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "count": 1,
+  "related_memories": [
+    {
+      "memory_id": "af31...",
+      "collection": "default",
+      "path": "notes/acme-budget",
+      "score": 11,
+      "shared_entities": [
+        { "entity_key": "acme_robotics", "name": "Acme Robotics", "entity_type": "proper_noun" }
+      ],
+      "evidence": [
+        {
+          "path": "notes/acme-budget",
+          "entity": "Acme Robotics",
+          "text": "The budget memo says Acme Robotics approved new sensors."
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Errors:**
+- `INVALID_INPUT`: when no seed (`memory_id`, `path`, or `entity`) is provided.
+- `BACKEND_ERROR`: when the storage backend does not support related memory graph lookup.
+- `INTERNAL_ERROR`: uncaught exceptions.
+
+**Notes:** Relatedness is based on shared graph entity keys and includes evidence from the related memories. The score is intentionally simple: more distinct shared entities and mentions rank higher.
+
+---
+
 ## list_memories
 
 **Description:** List canonical root memories for a collection or namespace.
@@ -1185,7 +1305,12 @@ Operation object schema:
 2. Query with `search` or `explain_results`; matching turns roll up to the parent `memory_id`.
 3. Inspect the full memory with `memory_get` when the agent needs turn evidence.
 
-### 4) Configure mode, then ingest
+### 4) Navigate the memory graph
+1. Call `memory_graph_entities` for a `memory_id`, `path`, or entity name to inspect extracted entities and evidence.
+2. Call `memory_graph_related` with the same seed to find memories that share those entities.
+3. Use the returned evidence paths with `memory_get` or `search` when a client needs the full memory context.
+
+### 5) Configure mode, then ingest
 1. Inspect config using `get_config`.
 2. Set desired runtime defaults with `set_config` (for mode, default collection, max file size).
 3. Run `ingest` without repeating shared defaults.

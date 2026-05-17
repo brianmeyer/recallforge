@@ -279,6 +279,7 @@ class TestBatchInServer(unittest.IsolatedAsyncioTestCase):
             "search", "search_fts", "search_vec", "ingest",
             "index_document", "index_image",
             "memory_add", "memory_add_conversation", "memory_update", "memory_delete",
+            "memory_graph_entities", "memory_graph_related",
             "status", "rebuild_fts", "batch",
         }
         self.assertTrue(expected.issubset(set(names)), f"Missing tools: {expected - set(names)}")
