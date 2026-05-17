@@ -114,6 +114,18 @@ id | collection | file_path | title | content_hash | content_type | active
 created_at | updated_at
 ```
 
+**entities** (memory graph mentions)
+```
+id | collection | entity_key | name | entity_type | memory_id | memory_root_path
+file_path | content_hash | hash_seq | seq | evidence | namespace fields | created_at
+```
+
+**relations** (lightweight graph edges)
+```
+id | collection | subject_key | subject_name | object_key | object_name | relation_type
+memory_id | memory_root_path | file_path | content_hash | hash_seq | evidence | namespace fields
+```
+
 Conversation memories use the same parent/child layout as media-derived memories:
 
 ```
@@ -122,7 +134,7 @@ conversation root path
      └──> turn child memories (`path::turn:0001`, `path::turn:0002`, ...)
 ```
 
-All turn children share the root `memory_id` and `memory_root_path`, so matching turns strengthen the parent conversation result through the standard memory rollup path.
+All turn children share the root `memory_id` and `memory_root_path`, so matching turns strengthen the parent conversation result through the standard memory rollup path. Entity and relation rows keep the same IDs and evidence paths, which lets MCP clients navigate same-entity memories without relying only on lexical overlap.
 
 **content** (bodies, content-addressed)
 ```
@@ -193,7 +205,7 @@ backend = recallforge.get_backend()
 ### 5. MCP Server (`src/recallforge/server.py`)
 
 ```
-Tools: 24 MCP tools across search, ingest, memory, collection admin, batch, and runtime config
+Tools: 26 MCP tools across search, ingest, memory, memory graph, collection admin, batch, and runtime config
 Transport: stdio (default) or HTTP/SSE (`/health`, `/sse`, `/messages/`)
 Startup: backend.warm_up() for predictable latency
 Signals: SIGTERM/SIGINT graceful shutdown

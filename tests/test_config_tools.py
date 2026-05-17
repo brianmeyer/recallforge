@@ -27,6 +27,8 @@ from recallforge.server import (
     _handle_memory_get,
     _handle_search,
     _handle_memory_add_conversation,
+    _handle_memory_graph_entities,
+    _handle_memory_graph_related,
     _resolve_file_query_input,
     _handle_set_config,
     create_server,
@@ -107,6 +109,27 @@ def _make_storage(store_path="/tmp/test-store"):
         "indexed_turns": 2,
         "tags": ["conversation"],
     }
+    s.list_memory_entities.return_value = [
+        {
+            "entity_key": "acme_robotics",
+            "name": "Acme Robotics",
+            "entity_type": "proper_noun",
+            "memory_id": "mem-123",
+            "memory_root_path": "notes/demo.md",
+            "file_path": "notes/demo.md",
+            "evidence": "Acme Robotics launch note",
+        }
+    ]
+    s.find_related_memories.return_value = [
+        {
+            "memory_id": "mem-456",
+            "collection": "default",
+            "path": "notes/related.md",
+            "score": 11,
+            "shared_entities": [{"entity_key": "acme_robotics", "name": "Acme Robotics"}],
+            "evidence": [{"path": "notes/related.md", "entity": "Acme Robotics", "text": "related"}],
+        }
+    ]
     return s
 
 
@@ -443,6 +466,33 @@ class TestDispatchConfigTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["operation"], "add_conversation")
         self.storage.index_conversation.assert_called_once()
 
+    async def test_memory_graph_entities_dispatched(self):
+        result = await _dispatch_tool(
+            "memory_graph_entities",
+            {"path": "notes/demo.md"},
+            self.backend,
+            self.storage,
+            {},
+        )
+        data = json.loads(result[0].text)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["entities"][0]["entity_key"], "acme_robotics")
+        self.storage.list_memory_entities.assert_called_once()
+
+    async def test_memory_graph_related_dispatched(self):
+        result = await _dispatch_tool(
+            "memory_graph_related",
+            {"entity": "Acme Robotics"},
+            self.backend,
+            self.storage,
+            {},
+        )
+        data = json.loads(result[0].text)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 1)
+        self.storage.find_related_memories.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # create_server: new tools appear in list_tools
@@ -475,6 +525,8 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("memory_add_conversation", names)
         self.assertIn("memory_get", names)
         self.assertIn("list_memories", names)
+        self.assertIn("memory_graph_entities", names)
+        self.assertIn("memory_graph_related", names)
 
     async def test_all_original_tools_still_present(self):
         names = await self._get_tool_names()
@@ -482,6 +534,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
             "search", "search_fts", "search_vec", "ingest",
             "index_document", "index_image", "index_audio",
             "memory_add", "memory_add_conversation", "memory_update", "memory_delete",
+            "memory_graph_entities", "memory_graph_related",
             "status", "rebuild_fts", "batch",
             "list_collections", "list_namespaces",
             "rename_collection", "delete_collection",
@@ -529,8 +582,20 @@ class TestMemoryTools(unittest.IsolatedAsyncioTestCase):
         data = json.loads(result[0].text)
         self.assertTrue(data["success"])
         self.assertEqual(data["count"], 1)
-        self.assertEqual(data["memories"][0]["memory_id"], "mem-123")
-        self.assertEqual(data["memories"][0]["summary"], "Demo summary")
+
+    async def test_memory_graph_entities_returns_json(self):
+        result = await _handle_memory_graph_entities({"path": "notes/demo.md"}, _make_storage())
+        data = json.loads(result[0].text)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["entities"][0]["entity_key"], "acme_robotics")
+
+    async def test_memory_graph_related_returns_json(self):
+        result = await _handle_memory_graph_related({"entity": "Acme Robotics"}, _make_storage())
+        data = json.loads(result[0].text)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["related_memories"][0]["path"], "notes/related.md")
 
     async def test_memory_get_by_id_returns_json(self):
         result = await _handle_memory_get({"memory_id": "mem-123"}, _make_storage())

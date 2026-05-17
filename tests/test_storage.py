@@ -399,6 +399,60 @@ class TestInlineMemoryOperations(unittest.TestCase):
         self.assertEqual(len(hashes), 1)
         self.assertGreater(len(rows), 0)
 
+    def test_memory_graph_entities_and_related_memories_track_evidence(self):
+        self.backend.upsert_memory(
+            path="notes/acme-review.md",
+            text="Mira from Acme Robotics tracks the launch review for Project Atlas.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        self.backend.upsert_memory(
+            path="notes/acme-budget.md",
+            text="The budget memo says Acme Robotics approved new sensors.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        entities = self.backend.list_memory_entities(path="notes/acme-review.md", collection="test")
+        entity_keys = {row["entity_key"] for row in entities}
+        self.assertIn("acme_robotics", entity_keys)
+        self.assertTrue(any(row["evidence"] and "Acme Robotics" in row["evidence"] for row in entities))
+
+        related = self.backend.find_related_memories(path="notes/acme-review.md", collection="test")
+        self.assertTrue(related)
+        self.assertEqual(related[0]["path"], "notes/acme-budget.md")
+        self.assertIn("acme_robotics", {item["entity_key"] for item in related[0]["shared_entities"]})
+        self.assertTrue(related[0]["evidence"])
+
+    def test_memory_graph_rows_are_replaced_on_memory_update(self):
+        self.backend.upsert_memory(
+            path="notes/company.md",
+            text="Mira from Acme Robotics owns the launch checklist.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        self.assertTrue(
+            self.backend.list_memory_entities(path="notes/company.md", entity="Acme Robotics", collection="test")
+        )
+
+        self.backend.upsert_memory(
+            path="notes/company.md",
+            text="Mira from Globex Labs owns the launch checklist.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        self.assertFalse(
+            self.backend.list_memory_entities(path="notes/company.md", entity="Acme Robotics", collection="test")
+        )
+        self.assertTrue(
+            self.backend.list_memory_entities(path="notes/company.md", entity="Globex Labs", collection="test")
+        )
+
     def test_delete_memory_deactivates_doc_and_removes_embeddings(self):
         self.backend.upsert_memory(
             path="notes/delete-me.md",

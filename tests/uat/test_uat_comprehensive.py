@@ -460,6 +460,7 @@ class TestServerCreation:
             "search", "search_fts", "search_vec", "ingest",
             "index_document", "index_image",
             "memory_add", "memory_add_conversation", "memory_update", "memory_delete",
+            "memory_graph_entities", "memory_graph_related",
             "status", "rebuild_fts", "get_config", "set_config",
             "list_collections", "list_namespaces",
             "rename_collection", "delete_collection",

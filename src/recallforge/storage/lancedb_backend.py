@@ -23,6 +23,7 @@ import numpy as np
 import pyarrow as pa
 import lancedb
 
+from ..entities import extract_entities, extract_relations, normalize_entity_key, stable_graph_id
 from .base import StorageBackend, Document
 from .chunking import (
     BREAK_PATTERNS,
@@ -102,6 +103,8 @@ class LanceDBBackend(StorageBackend):
         self._documents_table = None
         self._content_table = None
         self._cache_table = None
+        self._entities_table = None
+        self._relations_table = None
         
         # FTS rebuild debouncing state
         self._fts_rebuild_pending = 0
@@ -195,6 +198,34 @@ class LanceDBBackend(StorageBackend):
                     self._cache_table = self._conn.open_table("cache")
                 else:
                     raise
+
+        if "entities" in existing:
+            self._entities_table = self._conn.open_table("entities")
+        else:
+            try:
+                self._entities_table = self._conn.create_table(
+                    "entities",
+                    schema=self._build_entities_schema()
+                )
+            except ValueError as e:
+                if "already exists" in str(e):
+                    self._entities_table = self._conn.open_table("entities")
+                else:
+                    raise
+
+        if "relations" in existing:
+            self._relations_table = self._conn.open_table("relations")
+        else:
+            try:
+                self._relations_table = self._conn.create_table(
+                    "relations",
+                    schema=self._build_relations_schema()
+                )
+            except ValueError as e:
+                if "already exists" in str(e):
+                    self._relations_table = self._conn.open_table("relations")
+                else:
+                    raise
         
         self._ensure_indices()
         self._migrate_schema()
@@ -224,6 +255,8 @@ class LanceDBBackend(StorageBackend):
         tables_and_schemas = [
             (self._embeddings_table, "embeddings", self._build_embeddings_schema()),
             (self._documents_table,  "documents",  self._build_documents_schema()),
+            (self._entities_table,   "entities",   self._build_entities_schema()),
+            (self._relations_table,  "relations",  self._build_relations_schema()),
         ]
 
         for table, table_name, target_schema in tables_and_schemas:
@@ -280,6 +313,8 @@ class LanceDBBackend(StorageBackend):
         self._documents_table = None
         self._content_table = None
         self._cache_table = None
+        self._entities_table = None
+        self._relations_table = None
     
     # =========================================================================
     # Schema Definitions
@@ -353,6 +388,52 @@ class LanceDBBackend(StorageBackend):
             pa.field("value", pa.string(), nullable=False),
             pa.field("created_at", pa.int64(), nullable=False),
         ])
+
+    def _build_entities_schema(self) -> pa.Schema:
+        """Schema for extracted entity mentions."""
+        return pa.schema([
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("collection", pa.string(), nullable=False),
+            pa.field("entity_key", pa.string(), nullable=False),
+            pa.field("name", pa.string(), nullable=False),
+            pa.field("entity_type", pa.string(), nullable=False),
+            pa.field("memory_id", pa.string(), nullable=True),
+            pa.field("memory_root_path", pa.string(), nullable=True),
+            pa.field("file_path", pa.string(), nullable=False),
+            pa.field("content_hash", pa.string(), nullable=False),
+            pa.field("hash_seq", pa.string(), nullable=False),
+            pa.field("seq", pa.int32(), nullable=False),
+            pa.field("evidence", pa.string(), nullable=True),
+            pa.field("user_id", pa.string(), nullable=True),
+            pa.field("session_id", pa.string(), nullable=True),
+            pa.field("project_id", pa.string(), nullable=True),
+            pa.field("profile", pa.string(), nullable=True),
+            pa.field("created_at", pa.int64(), nullable=False),
+        ])
+
+    def _build_relations_schema(self) -> pa.Schema:
+        """Schema for lightweight relation edges between entity mentions."""
+        return pa.schema([
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("collection", pa.string(), nullable=False),
+            pa.field("subject_key", pa.string(), nullable=False),
+            pa.field("subject_name", pa.string(), nullable=False),
+            pa.field("object_key", pa.string(), nullable=False),
+            pa.field("object_name", pa.string(), nullable=False),
+            pa.field("relation_type", pa.string(), nullable=False),
+            pa.field("memory_id", pa.string(), nullable=True),
+            pa.field("memory_root_path", pa.string(), nullable=True),
+            pa.field("file_path", pa.string(), nullable=False),
+            pa.field("content_hash", pa.string(), nullable=False),
+            pa.field("hash_seq", pa.string(), nullable=False),
+            pa.field("seq", pa.int32(), nullable=False),
+            pa.field("evidence", pa.string(), nullable=True),
+            pa.field("user_id", pa.string(), nullable=True),
+            pa.field("session_id", pa.string(), nullable=True),
+            pa.field("project_id", pa.string(), nullable=True),
+            pa.field("profile", pa.string(), nullable=True),
+            pa.field("created_at", pa.int64(), nullable=False),
+        ])
     
     def _has_scalar_index(self, table, column: str) -> bool:
         """Return True if a scalar index already exists for a column."""
@@ -410,6 +491,32 @@ class LanceDBBackend(StorageBackend):
             )
         except Exception as e:
             logger.warning(f"_ensure_indices: failed to create cache index: {e}")
+
+        try:
+            self._create_scalar_index_safe(
+                self._entities_table, "entity_key", "entity_key_scalar", "entities"
+            )
+            self._create_scalar_index_safe(
+                self._entities_table, "memory_id", "memory_id_scalar", "entities"
+            )
+            self._create_scalar_index_safe(
+                self._entities_table, "memory_root_path", "memory_root_path_scalar", "entities"
+            )
+        except Exception as e:
+            logger.warning(f"_ensure_indices: failed to create entity indices: {e}")
+
+        try:
+            self._create_scalar_index_safe(
+                self._relations_table, "subject_key", "subject_key_scalar", "relations"
+            )
+            self._create_scalar_index_safe(
+                self._relations_table, "object_key", "object_key_scalar", "relations"
+            )
+            self._create_scalar_index_safe(
+                self._relations_table, "memory_id", "memory_id_scalar", "relations"
+            )
+        except Exception as e:
+            logger.warning(f"_ensure_indices: failed to create relation indices: {e}")
     
     def _ensure_bulk_buffers(self) -> None:
         """Initialize bulk-write buffers for tests that construct via __new__."""
@@ -730,6 +837,7 @@ class LanceDBBackend(StorageBackend):
                 self._embeddings_table.delete(_safe_filter("hash_seq", hash_seq))
             except Exception as e:
                 logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
+        self.delete_graph_entries(hash_seq=hash_seq)
 
         trace_log("insert_embedding", hash_seq=hash_seq, collection=collection, file_path=file_path, seq=seq,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
@@ -766,6 +874,120 @@ class LanceDBBackend(StorageBackend):
             self._flush_pending_writes(force=False)
         else:
             self._embeddings_table.add(pa.Table.from_pylist([row], schema=self._build_embeddings_schema()))
+
+        self._index_graph_rows_for_embedding(
+            collection=collection,
+            file_path=file_path,
+            content_hash=content_hash,
+            hash_seq=hash_seq,
+            seq=seq,
+            text_body=text_body,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            memory_id=normalized_memory_id,
+            memory_root_path=normalized_memory_root_path,
+            created_at=now,
+        )
+
+    def _index_graph_rows_for_embedding(
+        self,
+        *,
+        collection: str,
+        file_path: str,
+        content_hash: str,
+        hash_seq: str,
+        seq: int,
+        text_body: str,
+        user_id: Optional[str],
+        session_id: Optional[str],
+        project_id: Optional[str],
+        profile: Optional[str],
+        memory_id: Optional[str],
+        memory_root_path: Optional[str],
+        created_at: int,
+    ) -> None:
+        """Persist deterministic entity/relation rows for one indexed evidence unit."""
+        if getattr(self, "_entities_table", None) is None or not isinstance(text_body, str) or not text_body.strip():
+            return
+
+        entities = extract_entities(text_body)
+        if not entities:
+            return
+
+        root_path = memory_root_path or file_path
+        entity_rows = [
+            {
+                "id": stable_graph_id("entity", hash_seq, entity.entity_key),
+                "collection": collection,
+                "entity_key": entity.entity_key,
+                "name": entity.name,
+                "entity_type": entity.entity_type,
+                "memory_id": memory_id,
+                "memory_root_path": root_path,
+                "file_path": file_path,
+                "content_hash": content_hash,
+                "hash_seq": hash_seq,
+                "seq": seq,
+                "evidence": entity.evidence,
+                "user_id": user_id,
+                "session_id": session_id,
+                "project_id": project_id,
+                "profile": profile,
+                "created_at": created_at,
+            }
+            for entity in entities
+        ]
+
+        try:
+            self._entities_table.add(pa.Table.from_pylist(entity_rows, schema=self._build_entities_schema()))
+        except Exception as exc:
+            logger.warning("insert_embedding: failed to index entity graph rows for %s: %s", hash_seq, exc)
+            return
+
+        if getattr(self, "_relations_table", None) is None:
+            return
+
+        relations = extract_relations(entities)
+        if not relations:
+            return
+
+        relation_rows = [
+            {
+                "id": stable_graph_id(
+                    "relation",
+                    hash_seq,
+                    relation.subject_key,
+                    relation.object_key,
+                    relation.relation_type,
+                ),
+                "collection": collection,
+                "subject_key": relation.subject_key,
+                "subject_name": relation.subject_name,
+                "object_key": relation.object_key,
+                "object_name": relation.object_name,
+                "relation_type": relation.relation_type,
+                "memory_id": memory_id,
+                "memory_root_path": root_path,
+                "file_path": file_path,
+                "content_hash": content_hash,
+                "hash_seq": hash_seq,
+                "seq": seq,
+                "evidence": relation.evidence,
+                "user_id": user_id,
+                "session_id": session_id,
+                "project_id": project_id,
+                "profile": profile,
+                "created_at": created_at,
+            }
+            for relation in relations
+        ]
+
+        try:
+            self._relations_table.add(pa.Table.from_pylist(relation_rows, schema=self._build_relations_schema()))
+        except Exception as exc:
+            logger.warning("insert_embedding: failed to index relation graph rows for %s: %s", hash_seq, exc)
     
     def has_vectors(self) -> bool:
         """Check if index has any vectors."""
@@ -862,7 +1084,15 @@ class LanceDBBackend(StorageBackend):
         if not old_name or not new_name:
             raise ValueError("old_name and new_name are required")
         if old_name == new_name:
-            return {"success": True, "old_name": old_name, "new_name": new_name, "embeddings_updated": 0, "documents_updated": 0}
+            return {
+                "success": True,
+                "old_name": old_name,
+                "new_name": new_name,
+                "embeddings_updated": 0,
+                "documents_updated": 0,
+                "entities_updated": 0,
+                "relations_updated": 0,
+            }
 
         # Check if target collection already exists
         existing_collections = self.list_collections()
@@ -930,6 +1160,44 @@ class LanceDBBackend(StorageBackend):
             logger.error(f"rename_collection: failed to update documents: {e}")
             raise
 
+        entities_updated = 0
+        if self._entities_table is not None:
+            try:
+                all_entity_rows = list(
+                    self._entities_table.search()
+                    .where(_safe_filter("collection", old_name))
+                    .limit(10_000_000)
+                    .to_list()
+                )
+                entities_updated = len(all_entity_rows)
+                if all_entity_rows:
+                    self._entities_table.delete(_safe_filter("collection", old_name))
+                    for row in all_entity_rows:
+                        row["collection"] = new_name
+                    self._entities_table.add(pa.Table.from_pylist(all_entity_rows, schema=self._build_entities_schema()))
+            except Exception as e:
+                logger.error(f"rename_collection: failed to update entities: {e}")
+                raise
+
+        relations_updated = 0
+        if self._relations_table is not None:
+            try:
+                all_relation_rows = list(
+                    self._relations_table.search()
+                    .where(_safe_filter("collection", old_name))
+                    .limit(10_000_000)
+                    .to_list()
+                )
+                relations_updated = len(all_relation_rows)
+                if all_relation_rows:
+                    self._relations_table.delete(_safe_filter("collection", old_name))
+                    for row in all_relation_rows:
+                        row["collection"] = new_name
+                    self._relations_table.add(pa.Table.from_pylist(all_relation_rows, schema=self._build_relations_schema()))
+            except Exception as e:
+                logger.error(f"rename_collection: failed to update relations: {e}")
+                raise
+
         # Schedule FTS rebuild since we modified embeddings
         self._schedule_fts_rebuild()
 
@@ -939,6 +1207,8 @@ class LanceDBBackend(StorageBackend):
             "new_name": new_name,
             "embeddings_updated": embeddings_updated,
             "documents_updated": documents_updated,
+            "entities_updated": entities_updated,
+            "relations_updated": relations_updated,
         }
 
     def delete_collection(
@@ -1000,6 +1270,38 @@ class LanceDBBackend(StorageBackend):
             logger.error(f"delete_collection: failed to delete documents: {e}")
             raise
 
+        entities_deleted = 0
+        if self._entities_table is not None:
+            try:
+                entities_filter = _safe_filter("collection", name)
+                entities_deleted = len(
+                    self._entities_table.search()
+                    .where(entities_filter)
+                    .select(["id"])
+                    .limit(10_000_000)
+                    .to_list()
+                )
+                self._entities_table.delete(entities_filter)
+            except Exception as e:
+                logger.error(f"delete_collection: failed to delete entities: {e}")
+                raise
+
+        relations_deleted = 0
+        if self._relations_table is not None:
+            try:
+                relations_filter = _safe_filter("collection", name)
+                relations_deleted = len(
+                    self._relations_table.search()
+                    .where(relations_filter)
+                    .select(["id"])
+                    .limit(10_000_000)
+                    .to_list()
+                )
+                self._relations_table.delete(relations_filter)
+            except Exception as e:
+                logger.error(f"delete_collection: failed to delete relations: {e}")
+                raise
+
         # Clean up orphaned content entries
         orphans_cleaned = 0
         if content_hashes_to_check:
@@ -1030,6 +1332,8 @@ class LanceDBBackend(StorageBackend):
             "name": name,
             "embeddings_deleted": embeddings_deleted,
             "documents_deleted": documents_deleted,
+            "entities_deleted": entities_deleted,
+            "relations_deleted": relations_deleted,
             "orphans_cleaned": orphans_cleaned,
         }
 
@@ -1077,6 +1381,270 @@ class LanceDBBackend(StorageBackend):
             f"OR memory_root_path = '{escaped_path}' "
             f"OR file_path LIKE '{escaped_path}::%')"
         )
+
+    def _graph_namespace_filters(
+        self,
+        *,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> List[str]:
+        filters: List[str] = []
+        if collection:
+            filters.append(_safe_filter("collection", collection))
+        if user_id is not None:
+            filters.append(_safe_filter("user_id", user_id))
+        if session_id is not None:
+            filters.append(_safe_filter("session_id", session_id))
+        if project_id is not None:
+            filters.append(_safe_filter("project_id", project_id))
+        if profile is not None:
+            filters.append(_safe_filter("profile", profile))
+        return filters
+
+    def delete_graph_entries(
+        self,
+        *,
+        collection: Optional[str] = None,
+        logical_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        include_children: bool = False,
+        hash_seq: Optional[str] = None,
+    ) -> int:
+        """Delete entity/relation rows for an indexed chunk or logical memory path."""
+        filters = self._graph_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+        if hash_seq:
+            filters.append(_safe_filter("hash_seq", hash_seq))
+        if logical_path:
+            if include_children:
+                filters.append(self._memory_path_clause(logical_path))
+            else:
+                validated_path = _validate_identifier(logical_path, "logical_path")
+                escaped_path = validated_path.replace("'", "''")
+                filters.append(f"file_path = '{escaped_path}'")
+        if not filters:
+            return 0
+
+        filter_clause = " AND ".join(filters)
+        removed = 0
+        for table, label in (
+            (getattr(self, "_entities_table", None), "entities"),
+            (getattr(self, "_relations_table", None), "relations"),
+        ):
+            if table is None:
+                continue
+            try:
+                removed += len(table.search().where(filter_clause).select(["id"]).limit(10_000_000).to_list())
+            except Exception as exc:
+                logger.debug("delete_graph_entries: failed to count %s rows: %s", label, exc)
+            try:
+                table.delete(filter_clause)
+            except Exception as exc:
+                logger.debug("delete_graph_entries: failed to delete %s rows: %s", label, exc)
+        return removed
+
+    def list_memory_entities(
+        self,
+        *,
+        memory_id: Optional[str] = None,
+        path: Optional[str] = None,
+        entity: Optional[str] = None,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List entity mentions with evidence for a memory, path, or entity key."""
+        if getattr(self, "_entities_table", None) is None:
+            return []
+
+        filters = self._graph_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+        if memory_id:
+            filters.append(_safe_filter("memory_id", memory_id))
+        if path:
+            filters.append(self._memory_path_clause(path))
+        if entity:
+            normalized_entity = normalize_entity_key(entity)
+            if normalized_entity:
+                filters.append(_safe_filter("entity_key", normalized_entity))
+
+        query = self._entities_table.search()
+        if filters:
+            query = query.where(" AND ".join(filters))
+        try:
+            rows = list(
+                query.select([
+                    "entity_key", "name", "entity_type", "memory_id", "memory_root_path",
+                    "file_path", "content_hash", "hash_seq", "seq", "evidence",
+                    "collection", "user_id", "session_id", "project_id", "profile",
+                    "created_at",
+                ])
+                .limit(max(1, min(int(limit or 100), 5000)))
+                .to_list()
+            )
+        except Exception as exc:
+            logger.warning("list_memory_entities: graph lookup failed: %s", exc)
+            return []
+
+        rows.sort(
+            key=lambda row: (
+                str(row.get("name", "")).lower(),
+                row.get("memory_root_path") or row.get("file_path") or "",
+                row.get("seq", 0) or 0,
+            )
+        )
+        return rows
+
+    def find_related_memories(
+        self,
+        *,
+        memory_id: Optional[str] = None,
+        path: Optional[str] = None,
+        entity: Optional[str] = None,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Find memories that share graph entities with a seed memory/path/entity."""
+        if getattr(self, "_entities_table", None) is None:
+            return []
+
+        if entity:
+            seed_rows = []
+            seed_keys = {normalize_entity_key(entity)}
+        else:
+            seed_rows = self.list_memory_entities(
+                memory_id=memory_id,
+                path=path,
+                collection=collection,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                limit=250,
+            )
+            seed_keys = {row.get("entity_key") for row in seed_rows if row.get("entity_key")}
+
+        seed_keys = {key for key in seed_keys if key}
+        if not seed_keys:
+            return []
+
+        seed_memory_ids = {row.get("memory_id") for row in seed_rows if row.get("memory_id")}
+        seed_paths = {
+            row.get("memory_root_path") or row.get("file_path")
+            for row in seed_rows
+            if row.get("memory_root_path") or row.get("file_path")
+        }
+        if memory_id:
+            seed_memory_ids.add(memory_id)
+        if path:
+            seed_paths.add(path)
+
+        filters = self._graph_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+        filters.append("(" + " OR ".join(_safe_filter("entity_key", key) for key in sorted(seed_keys)) + ")")
+        try:
+            rows = list(
+                self._entities_table.search()
+                .where(" AND ".join(filters))
+                .select([
+                    "entity_key", "name", "entity_type", "memory_id", "memory_root_path",
+                    "file_path", "evidence", "collection", "seq",
+                    "user_id", "session_id", "project_id", "profile",
+                ])
+                .limit(max(500, min(10_000, int(limit or 20) * 250)))
+                .to_list()
+            )
+        except Exception as exc:
+            logger.warning("find_related_memories: graph lookup failed: %s", exc)
+            return []
+
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            root_path = row.get("memory_root_path") or row.get("file_path")
+            row_memory_id = row.get("memory_id")
+            if (row_memory_id and row_memory_id in seed_memory_ids) or (root_path and root_path in seed_paths):
+                continue
+            if not root_path:
+                continue
+            related_id = row_memory_id or build_memory_id(
+                row.get("collection", collection or ""),
+                root_path,
+                user_id=row.get("user_id"),
+                session_id=row.get("session_id"),
+                project_id=row.get("project_id"),
+                profile=row.get("profile"),
+            )
+            bucket = grouped.setdefault(
+                related_id,
+                {
+                    "memory_id": related_id,
+                    "collection": row.get("collection"),
+                    "path": root_path,
+                    "score": 0,
+                    "_entities": {},
+                    "evidence": [],
+                    "_mentions": 0,
+                },
+            )
+            entity_key = row.get("entity_key")
+            if entity_key and entity_key not in bucket["_entities"]:
+                bucket["_entities"][entity_key] = {
+                    "entity_key": entity_key,
+                    "name": row.get("name"),
+                    "entity_type": row.get("entity_type"),
+                }
+            bucket["_mentions"] += 1
+            if len(bucket["evidence"]) < 5:
+                bucket["evidence"].append(
+                    {
+                        "path": row.get("file_path"),
+                        "entity_key": entity_key,
+                        "entity": row.get("name"),
+                        "text": row.get("evidence"),
+                    }
+                )
+
+        related = []
+        for bucket in grouped.values():
+            shared_entities = list(bucket.pop("_entities").values())
+            mentions = bucket.pop("_mentions")
+            bucket["shared_entities"] = sorted(
+                shared_entities,
+                key=lambda item: str(item.get("name") or item.get("entity_key") or "").lower(),
+            )
+            bucket["score"] = len(shared_entities) * 10 + mentions
+            related.append(bucket)
+
+        related.sort(key=lambda item: (-item["score"], item.get("path") or ""))
+        return related[: max(1, min(int(limit or 20), 200))]
 
     def _memory_root_key(self, row: Dict[str, Any]) -> Optional[str]:
         """Return the canonical root path for a memory or derived asset row."""
@@ -1643,7 +2211,10 @@ class LanceDBBackend(StorageBackend):
             ttl_seconds=ttl_seconds,
             tags=tags,
         )
-    
+
+    # list_memory_entities and find_related_memories are implemented directly
+    # above because they query graph side tables rather than the indexing service.
+
     def delete_path(
         self,
         path: str,

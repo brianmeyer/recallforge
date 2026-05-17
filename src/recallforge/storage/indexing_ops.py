@@ -362,6 +362,17 @@ class IndexingOps:
                 self._backend._embeddings_table.delete(del_filter)
             except Exception as e:
                 logger.warning(f"upsert_memory: failed to delete old vectors for {collection}/{normalized_path}: {e}")
+            try:
+                self._backend.delete_graph_entries(
+                    collection=collection,
+                    logical_path=normalized_path,
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                )
+            except Exception as e:
+                logger.warning(f"upsert_memory: failed to delete old graph rows for {collection}/{normalized_path}: {e}")
 
         self._backend.insert_content(content_hash, text, "text")
         self._backend.insert_document(
@@ -599,6 +610,17 @@ class IndexingOps:
             self._backend._embeddings_table.delete(del_filter)
         except Exception as e:
             logger.error(f"delete_memory: failed to delete embeddings for {collection}/{normalized_path}: {e}")
+        try:
+            self._backend.delete_graph_entries(
+                collection=collection,
+                logical_path=normalized_path,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+            )
+        except Exception as e:
+            logger.error(f"delete_memory: failed to delete graph rows for {collection}/{normalized_path}: {e}")
 
         self._backend.deactivate_document(collection, normalized_path)
 
@@ -801,6 +823,18 @@ class IndexingOps:
             self._backend._embeddings_table.delete(filter_clause)
         except Exception as e:
             logger.debug(f"_delete_path_entries: failed to delete embeddings for {logical_path}: {e}")
+        try:
+            self._backend.delete_graph_entries(
+                collection=collection,
+                logical_path=logical_path,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                include_children=include_children,
+            )
+        except Exception as e:
+            logger.debug(f"_delete_path_entries: failed to delete graph rows for {logical_path}: {e}")
 
         doc_filters = self._namespace_filters(
             collection=collection,
