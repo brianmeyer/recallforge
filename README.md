@@ -4,7 +4,7 @@
 
 **Every modality, one search. Local first.**
 
-![RecallForge — Your Files → One Search](docs/hero-banner.png)
+![RecallForge — Your Files → One Search](https://raw.githubusercontent.com/brianmeyer/recallforge/master/docs/hero-banner.png)
 
 Standard RAG only works on text. Drop a PDF with charts, a photo of a whiteboard, a video recording, or a transcript-backed audio note — and your AI agent goes blind. RecallForge gives agents **eyes and ears over your local filesystem**. Text, images, documents, video, and audio transcripts all live in one unified search space, and nothing ever leaves your machine.
 
@@ -293,7 +293,7 @@ pytest tests/ -m live -v       # Integration tests (requires models)
 
 CI in `.github/workflows/ci.yml` runs the test matrix, builds distributions, runs `twine check`, smoke-tests wheel installation, and smoke-tests the HTTP server extra from the built wheel. Tagged pushes matching `v*` trigger `.github/workflows/publish.yml`, which publishes to PyPI with trusted publishing.
 
-Before tagging a release, run the repo test suite plus the install/CLI UAT scripts, and if you are on a capable host, run the live integration slice and expanded benchmark. The full checklist lives in [docs/RELEASE.md](docs/RELEASE.md).
+Before tagging a release, run the repo test suite plus the install/CLI UAT scripts, and if you are on a capable host, run the live integration slice and expanded benchmark. The full checklist lives in [docs/RELEASE.md](docs/RELEASE.md), and routine branch/worktree cleanup lives in [docs/GIT_HYGIENE.md](docs/GIT_HYGIENE.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full development guidelines.
 

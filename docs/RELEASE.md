@@ -109,10 +109,16 @@ When you omit `--output`, the benchmark now keeps profile-specific filenames for
 
 ```bash
 git tag vX.Y.Z
-git push origin vX.Y.Z
+git push recallforge vX.Y.Z
 ```
 
-3. Watch the `Publish to PyPI` workflow complete successfully.
+If your checkout uses a conventional `origin` remote instead of `recallforge`, push the tag to `origin`.
+
+3. Watch the `Publish to PyPI` workflow complete successfully:
+
+```bash
+gh run list --repo brianmeyer/recallforge --workflow publish.yml --limit 5
+```
 
 ## 5. Post-release smoke check
 
@@ -125,3 +131,7 @@ recallforge serve --http --mode embed --host 127.0.0.1 --port 7433
 ```
 
 Then hit `http://127.0.0.1:7433/health` and confirm the process reports healthy model state.
+
+## 6. Git cleanup
+
+After the release PR is merged and the tag is published, follow the routine in [`docs/GIT_HYGIENE.md`](GIT_HYGIENE.md) to prune remote-tracking refs, remove local merged branches, and clear generated build artifacts.
