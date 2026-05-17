@@ -62,6 +62,18 @@ This is the canonical reference for all `RECALLFORGE_*` environment variables us
 - `RECALLFORGE_ENABLE_MEDIA_RERANKING`
   Enable multimodal reranking for image/video-involved searches. Disabled by default.
 
+- `RECALLFORGE_MEDIA_QUERY_RERANK_TOP_K`
+  Strict cap for opt-in reranking when the query itself is an image or video. Defaults to `min(RECALLFORGE_RERANK_TOP_K, 5)`.
+
+- `RECALLFORGE_MEDIA_RESULT_RERANK_TOP_K`
+  Strict cap for opt-in reranking when text queries retrieve image/video candidates. Defaults to `min(RECALLFORGE_RERANK_TOP_K, 10)`.
+
+- `RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY`
+  Keep opt-in media reranking gated to ambiguous RRF results. Enabled by default; set to `0` to rerank the capped media set whenever media reranking is enabled.
+
+- `RECALLFORGE_MEDIA_RERANK_MIN_RRF_MARGIN`
+  Relative RRF margin for skipping expensive media reranking when the cheap stage has a clear winner. Default: `0.25`.
+
 - `RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING`
   Enable raw video query embedding. On MLX, RecallForge now defaults to safer caption/transcript-first retrieval unless you explicitly enable this.
 

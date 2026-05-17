@@ -62,6 +62,8 @@ RECALLFORGE_ENV_VARS = {
     "RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING": "Enable raw video query embedding; MLX defaults to safer caption/transcript-first retrieval unless explicitly enabled.",
     "RECALLFORGE_MEDIA_QUERY_RERANK_TOP_K": "Rerank cap for query-side image/video searches.",
     "RECALLFORGE_MEDIA_RESULT_RERANK_TOP_K": "Rerank cap when text queries retrieve image/video candidates.",
+    "RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY": "Skip opt-in media reranking unless the cheap RRF stage is ambiguous.",
+    "RECALLFORGE_MEDIA_RERANK_MIN_RRF_MARGIN": "Relative RRF margin used to skip expensive media reranking when the cheap stage has a clear winner.",
     "RECALLFORGE_DISABLE_MLX": "Force-disable MLX backend detection (1=true).",
     "RECALLFORGE_BM25_FALLBACK_MAX_ROWS": "Row limit for BM25 fallback recovery path.",
     "RECALLFORGE_BULK_FLUSH_DOCS": "Batch flush threshold for document table writes.",

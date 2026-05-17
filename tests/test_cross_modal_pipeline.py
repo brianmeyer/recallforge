@@ -231,7 +231,10 @@ class TestRerankerReceivesNonEmptyContent(unittest.TestCase):
     def setUp(self):
         self.env_patch = patch.dict(
             os.environ,
-            {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"},
+            {
+                "RECALLFORGE_ENABLE_MEDIA_RERANKING": "1",
+                "RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY": "0",
+            },
         )
         self.env_patch.start()
         self.backend = StubBackend(mode="hybrid")
@@ -334,7 +337,10 @@ class TestMixedModalityHandling(unittest.TestCase):
     def setUp(self):
         self.env_patch = patch.dict(
             os.environ,
-            {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"},
+            {
+                "RECALLFORGE_ENABLE_MEDIA_RERANKING": "1",
+                "RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY": "0",
+            },
         )
         self.env_patch.start()
         self.backend = StubBackend(mode="hybrid")
@@ -660,7 +666,10 @@ class TestCrossModalRegressionScenarios(unittest.TestCase):
     def setUp(self):
         self.env_patch = patch.dict(
             os.environ,
-            {"RECALLFORGE_ENABLE_MEDIA_RERANKING": "1"},
+            {
+                "RECALLFORGE_ENABLE_MEDIA_RERANKING": "1",
+                "RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY": "0",
+            },
         )
         self.env_patch.start()
         self.backend = StubBackend(mode="hybrid")

@@ -479,9 +479,16 @@ class HybridSearcher:
                 min(env_rerank_top_k, 10),
             )
         )
+        env_media_rerank_min_rrf_margin = float(
+            os.environ.get("RECALLFORGE_MEDIA_RERANK_MIN_RRF_MARGIN", "0.25")
+        )
         self.enable_media_reranking = _env_flag(
             "RECALLFORGE_ENABLE_MEDIA_RERANKING",
             False,
+        )
+        self.media_rerank_require_ambiguity = _env_flag(
+            "RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY",
+            True,
         )
         self.enable_raw_video_query_embedding = _env_flag(
             "RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING",
@@ -499,6 +506,7 @@ class HybridSearcher:
             0,
             min(self.rerank_top_k, env_media_result_rerank_top_k),
         )
+        self.media_rerank_min_rrf_margin = max(0.0, env_media_rerank_min_rrf_margin)
         self.cache: EmbeddingCache = cache if cache is not None else EmbeddingCache()
         self.intent = intent
         self.expand = expand
@@ -1016,6 +1024,44 @@ class HybridSearcher:
                 elif result.content_type == "video":
                     chunk['video_path'] = str(p)
         return chunk
+
+    def _chunk_has_rerank_content(self, chunk: Dict[str, Any]) -> bool:
+        """Return whether a candidate has enough content for expensive reranking."""
+        text = str(chunk.get("text") or chunk.get("text_body") or "").strip()
+        return bool(text or chunk.get("image_path") or chunk.get("video_path"))
+
+    def _media_rerank_skip_reason(
+        self,
+        candidates_by_rrf: List[SearchResult],
+        *,
+        has_query_media: bool,
+        has_media_candidates: bool,
+    ) -> Optional[str]:
+        """Return a media rerank skip reason when the cheap stage is decisive."""
+        if not (has_query_media or has_media_candidates):
+            return None
+        if not self.media_rerank_require_ambiguity:
+            return None
+        if len(candidates_by_rrf) < 2:
+            return None
+
+        top_score = float(getattr(candidates_by_rrf[0], "score", 0.0) or 0.0)
+        second_score = float(getattr(candidates_by_rrf[1], "score", 0.0) or 0.0)
+        if top_score <= 0:
+            return None
+
+        relative_margin = (top_score - second_score) / max(abs(top_score), 1e-9)
+        if relative_margin >= self.media_rerank_min_rrf_margin:
+            logger.debug(
+                "reranker_path path=media_confident_skip reason=rrf_margin "
+                "relative_margin=%.4f threshold=%.4f top_score=%.6f second_score=%.6f",
+                relative_margin,
+                self.media_rerank_min_rrf_margin,
+                top_score,
+                second_score,
+            )
+            return "media_confident_skip"
+        return None
     
     def _rerank_candidates(
         self,
@@ -1078,8 +1124,45 @@ class HybridSearcher:
         if rerank_limit <= 0:
             return {c.filepath: 0.5 for c in candidates}, "skipped"
 
-        rerank_candidates = candidates_by_rrf[:rerank_limit]
-        chunks = [self._select_best_chunk(c) for c in rerank_candidates]
+        media_skip_reason = self._media_rerank_skip_reason(
+            candidates_by_rrf[:rerank_limit],
+            has_query_media=has_query_media,
+            has_media_candidates=has_media_candidates,
+        )
+        if media_skip_reason:
+            _log_stage_metrics(
+                "reranker",
+                candidates,
+                start_time=t0,
+                extra={"path": media_skip_reason, "rerank_top_k": rerank_limit},
+            )
+            return {c.filepath: 0.5 for c in candidates}, media_skip_reason
+
+        rerank_candidates: List[SearchResult] = []
+        chunks: List[Dict[str, Any]] = []
+        for candidate in candidates_by_rrf[:rerank_limit]:
+            chunk = self._select_best_chunk(candidate)
+            if self._chunk_has_rerank_content(chunk):
+                rerank_candidates.append(candidate)
+                chunks.append(chunk)
+            else:
+                logger.debug(
+                    "reranker_prefilter skip=empty_candidate filepath=%s content_type=%s",
+                    getattr(candidate, "filepath", ""),
+                    getattr(candidate, "content_type", "unknown"),
+                )
+
+        if not rerank_candidates:
+            path = "media_no_rerankable_candidates" if (has_query_media or has_media_candidates) else "no_rerankable_candidates"
+            logger.debug("reranker_path path=%s reason=empty_prefilter", path)
+            _log_stage_metrics(
+                "reranker",
+                candidates,
+                start_time=t0,
+                extra={"path": path, "rerank_top_k": rerank_limit},
+            )
+            return {c.filepath: 0.5 for c in candidates}, path
+
         effective_query = query or ""
 
         # Determine expected reranker scoring path for telemetry
@@ -1104,14 +1187,24 @@ class HybridSearcher:
                 query_video_path=query_video_path,
             )
             logger.debug(
-                "reranker_path path=%s candidate_count=%d base_candidate_count=%d",
+                "reranker_path path=%s candidate_count=%d base_candidate_count=%d rerank_top_k=%d",
                 path,
                 len(rerank_candidates),
                 len(candidates_by_rrf),
+                rerank_limit,
             )
             rerank_scores = {c.filepath: 0.5 for c in candidates}
             rerank_scores.update({c.filepath: s for c, s in zip(rerank_candidates, scores)})
-            _log_stage_metrics("reranker", candidates, start_time=t0, extra={"path": path})
+            _log_stage_metrics(
+                "reranker",
+                candidates,
+                start_time=t0,
+                extra={
+                    "path": path,
+                    "rerank_top_k": rerank_limit,
+                    "reranked_count": len(rerank_candidates),
+                },
+            )
             return rerank_scores, path
         except Exception as e:
             logger.error("Reranking failed: %s", e)
