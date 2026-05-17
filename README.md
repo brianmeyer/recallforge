@@ -62,7 +62,7 @@ The reranker delivers **+20.7% R@1 over RRF fusion** and pushes R@10 to 97.8%. E
 
 *Benchmark categories: text_only (30 queries), image_only (30 queries), long_query (12 queries), typo_query (20 queries). See `benchmarks/results/pipeline_ablation_modality_results.json` for full breakdown.*
 
-For release validation, use `benchmarks/cross_modal_ablation.py`. It now checkpoints JSON output as it runs, so long MLX benchmark sessions still leave behind a partial artifact if interrupted.
+For release validation, use `benchmarks/cross_modal_ablation.py`. It checkpoints JSON output as it runs, so long MLX benchmark sessions still leave behind a partial artifact if interrupted. To turn that artifact into a ranked fix list, run `benchmarks/cross_modal_diagnostics.py`; the current report is in [docs/research/cross-modal-diagnostics.md](docs/research/cross-modal-diagnostics.md).
 
 ### Latency & resource usage
 

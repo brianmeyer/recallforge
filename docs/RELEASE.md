@@ -45,6 +45,14 @@ Then run the expanded benchmark:
 
 The benchmark now checkpoints to JSON as it runs. If the run is interrupted, the output file still contains partial results plus progress metadata.
 
+After a complete or partial benchmark run, generate the cross-modal diagnosis report:
+
+```bash
+.venv/bin/python benchmarks/cross_modal_diagnostics.py --input benchmarks/results/cross_modal_ablation_results.json
+```
+
+This writes `benchmarks/results/cross_modal_diagnostics.json` and `docs/research/cross-modal-diagnostics.md`, ranking weak or under-sampled categories and separating raw embedding, derived-text, reranker, parent-memory, and benchmark-artifact signals.
+
 For safer local validation after the MLX hardening work, prefer the bounded smoke lane first:
 
 ```bash
