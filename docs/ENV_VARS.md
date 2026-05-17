@@ -2,6 +2,8 @@
 
 This is the canonical reference for all `RECALLFORGE_*` environment variables used in the codebase.
 
+Run `recallforge flags` to inspect the feature flags that are especially relevant to alpha/beta testers and experimental local workflows.
+
 ## Runtime selection
 
 - `RECALLFORGE_BACKEND`
@@ -76,6 +78,20 @@ This is the canonical reference for all `RECALLFORGE_*` environment variables us
 
 - `RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING`
   Enable raw video query embedding. On MLX, RecallForge now defaults to safer caption/transcript-first retrieval unless you explicitly enable this.
+
+## Feature flag surfaces
+
+These variables are intentionally visible through `recallforge flags`:
+
+- `RECALLFORGE_ENABLE_MEDIA_RERANKING`
+- `RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING`
+- `RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING`
+- `RECALLFORGE_MEDIA_RERANK_REQUIRE_AMBIGUITY`
+- `RECALLFORGE_MLX_HEAVY_OP_CONCURRENCY`
+- `RECALLFORGE_MCP_MAX_CONCURRENCY`
+- `RECALLFORGE_TRACE`
+
+Alpha/beta users should keep risky media and native-video flags disabled unless they are specifically testing that behavior.
 
 ## Server behavior
 

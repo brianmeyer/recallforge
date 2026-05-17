@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Alpha and beta feedback
+    url: https://github.com/brianmeyer/recallforge/discussions
+    about: Use Discussions for workflow reports, install notes, and non-blocking product feedback.
+  - name: Release and testing guide
+    url: https://github.com/brianmeyer/recallforge/blob/master/docs/ALPHA_BETA_TESTING.md
+    about: Read the alpha/beta checklist and opt-in crash-report policy before filing feedback.

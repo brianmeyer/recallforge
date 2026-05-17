@@ -1,0 +1,46 @@
+title: "[Alpha]: "
+labels: ["alpha", "feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing RecallForge early. Please avoid sharing private indexed content. Summaries and redacted snippets are enough.
+  - type: input
+    id: tester_profile
+    attributes:
+      label: Tester profile
+      description: Machine/backend/MCP client, for example "M3 Pro, MLX, Claude Desktop".
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow tested
+      description: What did you ingest and what did you ask RecallForge to recall?
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: Installed RecallForge and captured `recallforge --version`.
+        - label: Started the MCP server in a real client.
+        - label: Ingested at least one text item and one media/document item.
+        - label: Re-ran an ingest or update and checked that stale memories did not show up.
+  - type: textarea
+    id: quality
+    attributes:
+      label: Retrieval quality notes
+      description: What worked, what missed, and what result surprised you?
+  - type: textarea
+    id: friction
+    attributes:
+      label: Friction and docs gaps
+      description: Where did setup, terminology, or the workflow feel confusing?
+  - type: textarea
+    id: crash_report
+    attributes:
+      label: Optional opt-in crash report
+      description: Attach or paste reviewed output from `recallforge crash-report` only if useful.
+      render: json
