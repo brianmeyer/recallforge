@@ -187,6 +187,38 @@ class TestCacheOperations(unittest.TestCase):
         val = self.backend.get_cached("mykey")
         self.assertEqual(val, '{"foo": "bar"}')
 
+    def test_index_version_bumps_only_for_visible_updates(self):
+        initial = int(self.backend.get_index_version())
+        self.backend.upsert_memory(
+            path="notes/versioned.md",
+            text="Visible Acme Robotics memory.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        after_visible = int(self.backend.get_index_version())
+        self.assertGreater(after_visible, initial)
+
+        batch_id = self.backend.begin_index_batch()
+        self.backend.upsert_memory(
+            path="notes/versioned.md",
+            text="Hidden Globex Labs replacement.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            _skip_delete=True,
+            _active=0,
+            _index_batch_id=batch_id,
+        )
+        self.assertEqual(int(self.backend.get_index_version()), after_visible)
+
+        self.backend.promote_index_batch(
+            batch_id=batch_id,
+            collection="test",
+            logical_path="notes/versioned.md",
+        )
+        self.assertGreater(int(self.backend.get_index_version()), after_visible)
+
 
 class TestIndexAndSearch(unittest.TestCase):
     """Tests for index_document and search_fts / search_vec."""

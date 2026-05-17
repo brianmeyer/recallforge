@@ -512,6 +512,50 @@ class HybridSearcher:
         self.expand = expand
         self.enable_media_query_probe = enable_media_query_probe
 
+    def _cache_model_id(self) -> str:
+        """Return a stable model/backend identity for cache key separation."""
+        for attr in ("model_name", "model_id", "model", "_model_name"):
+            value = getattr(self.backend, attr, None)
+            if isinstance(value, str) and value:
+                return value
+        return type(self.backend).__name__
+
+    def _cache_index_version(self) -> str:
+        """Return the storage index version used to invalidate query caches."""
+        get_index_version = getattr(self.storage, "get_index_version", None)
+        if callable(get_index_version):
+            try:
+                version = get_index_version()
+                if isinstance(version, (str, int, float)):
+                    return str(version)
+            except Exception as exc:
+                logger.debug("index_version lookup failed; using static cache version: %s", exc)
+        return "0"
+
+    def _make_query_cache_key(self, input_type: str, input_data: str) -> str:
+        """Build a model- and index-version-aware query cache key."""
+        return self.cache.make_key(
+            input_type,
+            input_data,
+            model=self._cache_model_id(),
+            index_version=self._cache_index_version(),
+        )
+
+    def _expand_query_cached(self, query: str, expand: bool) -> List[str]:
+        """Expand a text query with an index-version-aware cache."""
+        if not expand or not query or not query.strip():
+            return [query] if query else []
+
+        cache_key = self._make_query_cache_key("expansion", query)
+        cached = self.cache.get(cache_key)
+        if isinstance(cached, list):
+            logger.debug("Expansion cache hit for text query (key=%s…)", cache_key[:8])
+            return list(cached)
+
+        variants = expand_query(query, self.backend, expand=True)
+        self.cache.put(cache_key, list(variants))
+        return variants
+
     def _vector_results_to_hybrid(self, results: List[SearchResult]) -> List[HybridResult]:
         """Convert raw vector results into HybridResult objects."""
         hybrid_results: List[HybridResult] = []
@@ -558,7 +602,7 @@ class HybridSearcher:
     def _vector_search(self, query: str) -> List[SearchResult]:
         """Run vector search."""
         t0 = time.perf_counter()
-        cache_key = self.cache.make_key("text", query)
+        cache_key = self._make_query_cache_key("text", query)
         vector = self.cache.get(cache_key)
         if vector is not None:
             logger.debug("Embedding cache hit for text query (key=%s…)", cache_key[:8])
@@ -590,13 +634,34 @@ class HybridSearcher:
         except OSError:
             file_hash = image_path  # fall back to path string if unreadable
 
-        cache_key = self.cache.make_key("image", file_hash)
+        cache_key = self._make_query_cache_key("image", file_hash)
         vector = self.cache.get(cache_key)
         if vector is not None:
             logger.debug("Embedding cache hit for image (key=%s…)", cache_key[:8])
             return vector
 
         vector = self.backend.embed_image(image_path)
+        self.cache.put(cache_key, vector)
+        return vector
+
+    def _embed_video_cached(self, video_path: str, embed_video):
+        """Embed a video with cache lookup keyed by content hash."""
+        try:
+            h = sha256()
+            with open(video_path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(chunk)
+            file_hash = h.hexdigest()
+        except OSError:
+            file_hash = video_path
+
+        cache_key = self._make_query_cache_key("video", file_hash)
+        vector = self.cache.get(cache_key)
+        if vector is not None:
+            logger.debug("Embedding cache hit for video (key=%s…)", cache_key[:8])
+            return vector
+
+        vector = embed_video(video_path)
         self.cache.put(cache_key, vector)
         return vector
 
@@ -691,7 +756,7 @@ class HybridSearcher:
         if not self.expand or not query_text.strip():
             return
 
-        query_variants = expand_query(query_text, self.backend, expand=True)
+        query_variants = self._expand_query_cached(query_text, expand=True)
         if len(query_variants) <= 1:
             return
 
@@ -758,10 +823,10 @@ class HybridSearcher:
                 raise NotImplementedError(
                     f"Backend {type(self.backend).__name__} does not support raw video queries. "
                     "Install a backend with video support (e.g. recallforge[mlx] or recallforge[torch])."
-                )
+            )
             query_video_path_for_rerank = video_path
             try:
-                vector = embed_video(video_path)
+                vector = self._embed_video_cached(video_path, embed_video)
                 all_results["original_vec"] = self.storage.search_vec(
                     vector.tolist() if hasattr(vector, 'tolist') else list(vector),
                     limit=self.fts_probe_limit,
@@ -825,7 +890,7 @@ class HybridSearcher:
 
         # Original vector - use cache like _vector_search() does
         try:
-            cache_key = self.cache.make_key("text", query)
+            cache_key = self._make_query_cache_key("text", query)
             vector = self.cache.get(cache_key)
             if vector is not None:
                 logger.debug("Embedding cache hit for text query in parallel search (key=%s…)", cache_key[:8])
@@ -1487,7 +1552,7 @@ class HybridSearcher:
                      self.limit, self.candidate_limit, self.expand)
 
         # Step 1: Expand query if enabled
-        query_variants = expand_query(query, self.backend, expand=self.expand)
+        query_variants = self._expand_query_cached(query, expand=self.expand)
         logger.debug("query_expansion enabled=%s variants=%d", self.expand, len(query_variants))
 
         # Step 2: BM25 probe (only on original query to avoid noise)

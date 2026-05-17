@@ -274,7 +274,7 @@ src/recallforge/
 │   └── torch_backend.py  # PyTorch (CUDA/MPS/CPU)
 ├── storage/
 │   └── lancedb_backend.py # LanceDB + Tantivy FTS
-├── cache.py              # LRU embedding cache
+├── cache.py              # LRU query cache with index-version invalidation
 ├── search.py             # Hybrid search pipeline (BM25 + vector + RRF)
 ├── server.py             # MCP server (26 tools, stdio + HTTP/SSE)
 ├── documents.py          # PDF/DOCX/PPTX extraction

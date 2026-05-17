@@ -94,6 +94,8 @@ class LanceDBBackend(StorageBackend):
     def search_vec(self, vector, limit, ...) -> List[SearchResult]: ...
     def get_cached(self, key) -> Optional[str]: ...
     def set_cached(self, key, value) -> None: ...
+    def get_index_version(self) -> str: ...
+    def bump_index_version(self, reason: str = "") -> str: ...
 ```
 
 #### LanceDB Tables
@@ -148,6 +150,8 @@ hash | doc | content_type | created_at
 ```
 key | value | created_at
 ```
+
+The cache table stores durable metadata such as the global storage `index_version`. Query embeddings and generated query-expansion variants are cached in memory with keys that include backend model identity plus this index version, so repeat queries avoid redundant model calls without crossing a changed index boundary.
 
 ### 3. HybridSearcher (`src/recallforge/search.py`)
 
@@ -298,6 +302,7 @@ This keeps audio searchable without introducing an unbounded local transcription
 
 - **N+1 Lookup Elimination**: Search result construction prefers `text_body` from the embeddings table row (already fetched via LanceDB query) over calling `get_content()` which requires a separate lookup to the content table. Falls back to `get_content()` only when `text_body` is empty.
 - **Lazy Content Loading**: Full document body is only fetched when explicitly needed for final output. The reranker input path uses chunk text (`text_body`) for candidate scoring, avoiding unnecessary content lookups during the scoring phase.
+- **Versioned Query Cache**: Text, image, and video query embeddings plus generated expansion branches use model-aware, index-version-aware cache keys. Visible storage mutations bump the index version; hidden staged rows do not invalidate caches until promotion.
 - **Output Contract**: The MCP `search` tool output remains stable - results include all fields (`filepath`, `score`, `body`, etc.) with the same shape as before. Only internal lookup patterns have changed.
 
 ## Stage Roadmap

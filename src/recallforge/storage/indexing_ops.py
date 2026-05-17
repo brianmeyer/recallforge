@@ -642,6 +642,7 @@ class IndexingOps:
 
         # Schedule debounced FTS rebuild
         self._backend._fts.schedule_fts_rebuild()
+        self._backend.bump_index_version("delete_memory")
 
         trace_log("delete_memory_done", path=normalized_path, removed_vectors=removed_vectors)
         return {
@@ -706,6 +707,7 @@ class IndexingOps:
         if include_children:
             self._delete_video_frame_artifacts(normalized_path)
         self._backend._fts.schedule_fts_rebuild()
+        self._backend.bump_index_version("delete_path")
         return {
             "success": True,
             "path": normalized_path,
