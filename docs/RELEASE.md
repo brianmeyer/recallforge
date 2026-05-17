@@ -2,8 +2,8 @@
 
 RecallForge already has two release-facing GitHub Actions workflows:
 
-- `ci.yml`: test matrix, distribution build, `twine check`, wheel smoke test, macOS import/backend checks, and HTTP server extra smoke coverage
-- `publish.yml`: tag-triggered PyPI publish via trusted publishing (`v*`)
+- `ci.yml`: test matrix, distribution build, `twine check`, wheel smoke test, macOS import/backend checks, HTTP server extra smoke coverage, and current Node 24 action pins
+- `publish.yml`: tag-triggered PyPI publish via trusted publishing (`v*`) with current Node 24 action pins
 
 Use this checklist before cutting a version.
 
@@ -88,12 +88,19 @@ When you omit `--output`, the benchmark now keeps profile-specific filenames for
 - On MLX, raw video query embedding is no longer the default hot path. RecallForge prefers caption/transcript-first retrieval unless `RECALLFORGE_ENABLE_RAW_VIDEO_QUERY_EMBEDDING=1` is set.
 - On MLX, qwen-vl-utils native video decoding is now also opt-in. RecallForge defaults to frame/caption fallbacks unless `RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING=1` is set.
 - If you do opt back into native MLX video decoding, prefer `FORCE_QWENVL_VIDEO_READER=torchcodec` per Qwen's upstream guidance.
+- Direct image/video indexing and query expansion now schedule an MLX captioner idle unload. Tune with `RECALLFORGE_CAPTIONER_IDLE_SECONDS`; batch ingest still unloads the captioner immediately after the batch.
 - The raw-video path now has explicit frame and pixel budget knobs:
   - `RECALLFORGE_MLX_VIDEO_SAMPLE_FPS`
   - `RECALLFORGE_MLX_VIDEO_MAX_FRAMES`
   - `RECALLFORGE_MLX_VIDEO_FALLBACK_MAX_FRAMES`
   - `RECALLFORGE_MLX_MIN_PIXELS`
   - `RECALLFORGE_MLX_MAX_PIXELS`
+
+### Audio release notes
+
+- Audio ingest is transcript-first. A `.wav`, `.mp3`, `.m4a`, `.flac`, `.ogg`, `.opus`, or similar audio file must have a sibling `.srt`, `.vtt`, `.txt`, or `.transcript.json` sidecar.
+- `ingest`, `index_audio`, watch-folder indexing, CLI indexing, and `content_type="audio"` filters cover the shipped audio path.
+- Dedicated raw-audio embeddings or transcription are still future work; release checks should verify sidecar transcript retrieval rather than microphone/audio decoding.
 
 ## 4. Tag and publish
 

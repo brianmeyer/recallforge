@@ -698,6 +698,41 @@ class TestMemoryMetadata(unittest.TestCase):
         self.assertIsNone(rows[0]["tags"])
         self.assertIsNone(rows[0]["expires_at"])
 
+    def test_importance_boost_affects_vector_search_order(self):
+        vector = mock_embed("same semantic vector")
+        self.backend.insert_content("low-hash", "Low priority memory", "text")
+        self.backend.insert_content("high-hash", "High priority memory", "text")
+        self.backend.insert_embedding(
+            content_hash="low-hash",
+            seq=0,
+            pos=0,
+            vector=vector,
+            model="mock-embedder",
+            collection="test",
+            file_path="notes/low.md",
+            title="Low",
+            text_body="same semantic vector",
+            content_type="text",
+            importance=0.0,
+        )
+        self.backend.insert_embedding(
+            content_hash="high-hash",
+            seq=0,
+            pos=0,
+            vector=vector,
+            model="mock-embedder",
+            collection="test",
+            file_path="notes/high.md",
+            title="High",
+            text_body="same semantic vector",
+            content_type="text",
+            importance=1.0,
+        )
+
+        results = self.backend.search_vec(vector, limit=2, collection="test")
+        self.assertEqual(results[0].display_path, "test/notes/high.md")
+        self.assertAlmostEqual(results[0].importance, 1.0, places=2)
+
 
 class TestMemoryLookupCompatibility(unittest.TestCase):
     """Regression tests for canonical memory lookup compatibility."""
@@ -1634,6 +1669,92 @@ class TestIngestCaptioning(unittest.TestCase):
         rows = self.backend._embeddings_table.search().where("content_type = 'image'").to_list()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].get("text_body"), "")
+
+
+class TestAudioIngest(unittest.TestCase):
+    """Tests for transcript-first audio memories."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp(prefix="recallforge-test-audio-")
+        self.backend = LanceDBBackend(self.temp_dir)
+        self.backend.initialize(self.temp_dir)
+
+    def tearDown(self):
+        self.backend.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_index_audio_creates_root_memory_and_transcript_children(self):
+        audio_path = Path(self.temp_dir) / "planning.wav"
+        audio_path.write_bytes(b"fake audio bytes")
+        audio_path.with_suffix("").with_name("planning.transcript.json").write_text(
+            json.dumps(
+                {
+                    "segments": [
+                        {"start": 0.0, "end": 2.0, "text": "The team reviews the roadmap decisions."},
+                        {"start": 2.0, "end": 5.0, "text": "They assign latency budget follow ups."},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        logical_path = str(audio_path.expanduser().resolve())
+        summary = self.backend.index_audio(
+            path=str(audio_path),
+            collection="test",
+            embed_text_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        self.assertTrue(summary["success"])
+        self.assertEqual(summary["indexed_transcripts"], 2)
+
+        root_doc = self.backend.find_document("test", logical_path)
+        self.assertIsNotNone(root_doc)
+        self.assertEqual(root_doc.content_type, "audio")
+        self.assertEqual(root_doc.memory_role, "root")
+        self.assertEqual(root_doc.memory_root_path, logical_path)
+
+        child_rows = self.backend._embeddings_table.search().where(
+            f"collection = 'test' AND file_path LIKE '{logical_path}::transcript:%'"
+        ).to_list()
+        self.assertEqual(len(child_rows), 2)
+        for row in child_rows:
+            self.assertEqual(row.get("memory_role"), "child")
+            self.assertEqual(row.get("memory_root_path"), logical_path)
+
+        self.backend.rebuild_fts_index()
+        audio_results = self.backend.search_fts(
+            "roadmap decisions",
+            limit=5,
+            collection="test",
+            content_type="audio",
+        )
+        self.assertTrue(any(result.display_path == f"test/{logical_path}" for result in audio_results))
+
+        transcript_results = self.backend.search_fts(
+            "latency budget",
+            limit=5,
+            collection="test",
+            content_type="text",
+        )
+        self.assertTrue(any("::transcript:" in result.display_path for result in transcript_results))
+
+        memories = self.backend.list_memories(collection="test", limit=10)
+        self.assertEqual(len(memories), 1)
+        self.assertEqual(memories[0]["content_type"], "audio")
+
+    def test_index_audio_requires_transcript_sidecar(self):
+        audio_path = Path(self.temp_dir) / "silent.wav"
+        audio_path.write_bytes(b"fake audio bytes")
+
+        with self.assertRaisesRegex(ValueError, "transcript-first"):
+            self.backend.index_audio(
+                path=str(audio_path),
+                collection="test",
+                embed_text_func=mock_embed,
+                model="mock-embedder",
+            )
 
 
 if __name__ == "__main__":

@@ -103,6 +103,9 @@ class LanceDBBackend(StorageBackend):
 hash_seq       | content_hash | collection | file_path | content_type
 title          | text_body    | seq        | pos        | model
 embedded_at    | vector[2048]
+user/session/project/profile namespace fields
+memory_id      | memory_role | memory_root_path
+importance     | ttl_seconds | tags       | expires_at
 ```
 
 **documents** (registry)
@@ -148,6 +151,7 @@ Query
 - Expanded query branches inherit their parent weight at `0.5x`
 - Intent-specific weights (`exact_lookup`, `semantic`, `broad`) override the defaults when explicitly requested
 - Media compensation only applies for explicit image/video target searches, and only when a media result never appeared in any BM25/FTS list
+- Storage search applies a small memory-policy multiplier before fusion: higher `importance` can add up to a 15% retrieval boost, recent memories receive a modest freshness boost, and expired TTL rows are filtered out before scoring.
 
 #### Score Blending
 
@@ -179,7 +183,7 @@ backend = recallforge.get_backend()
 ### 5. MCP Server (`src/recallforge/server.py`)
 
 ```
-Tools: 20 MCP tools across search, ingest, memory, collection admin, batch, and runtime config
+Tools: 21 MCP tools across search, ingest, memory, collection admin, batch, and runtime config
 Transport: stdio (default) or HTTP/SSE (`/health`, `/sse`, `/messages/`)
 Startup: backend.warm_up() for predictable latency
 Signals: SIGTERM/SIGINT graceful shutdown
@@ -225,6 +229,20 @@ path + text
                ▼
          ensure_fts_index()  ──> Tantivy index rebuild
 ```
+
+## Data Flow: Audio
+
+Audio is transcript-first in this release. The storage layer accepts common audio extensions only when a sibling `.srt`, `.vtt`, `.txt`, or `.transcript.json` sidecar exists.
+
+```
+audio file + transcript sidecar
+     │
+     ├──> root memory document (`content_type="audio"`)
+     ├──> transcript summary embedding for audio-level retrieval
+     └──> timestamped transcript child memories (`content_type="text"`)
+```
+
+This keeps audio searchable without introducing an unbounded local transcription or raw-audio embedding dependency. Dedicated audio encoders remain a future expansion path.
 
 ## Performance
 

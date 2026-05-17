@@ -39,6 +39,9 @@ This is the canonical reference for all `RECALLFORGE_*` environment variables us
 - `RECALLFORGE_ENABLE_MLX_NATIVE_VIDEO_PROCESSING`
   Enable qwen-vl-utils native video decoding on MLX. Disabled by default for local safety; if you opt in, prefer `FORCE_QWENVL_VIDEO_READER=torchcodec`.
 
+- `RECALLFORGE_CAPTIONER_IDLE_SECONDS`
+  Seconds to keep the MLX captioner/generator loaded after direct image/video indexing or query expansion. Default is `30`; batch ingest still unloads immediately when the batch completes.
+
 - `RECALLFORGE_STORAGE`
   Storage backend selector (currently `lancedb`).
 

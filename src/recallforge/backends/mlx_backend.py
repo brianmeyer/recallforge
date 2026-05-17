@@ -213,7 +213,7 @@ class MLXBackend(ModelBackend):
 
         self._mode = mode
         self._quantization = quantization
-        self._model_lock = threading.Lock()
+        self._model_lock = threading.RLock()
 
         # Lazy-loaded models
         self._embedder_model = None
@@ -231,6 +231,7 @@ class MLXBackend(ModelBackend):
         self._embed_warmed = False
         self._captioner_model = None
         self._captioner_processor = None
+        self._captioner_idle_timer = None
 
         # Model IDs - configurable via env vars (REC-116)
         # Priority: env var > default
@@ -249,6 +250,10 @@ class MLXBackend(ModelBackend):
         )
         self.CAPTION_MODEL = os.environ.get(
             "RECALLFORGE_CAPTIONER_MODEL", self._DEFAULT_CAPTION_MODEL
+        )
+        self._captioner_idle_seconds = self._resolve_positive_float_env(
+            "RECALLFORGE_CAPTIONER_IDLE_SECONDS",
+            30.0,
         )
         self._VIDEO_SAMPLE_FPS = self._resolve_positive_float_env(
             "RECALLFORGE_MLX_VIDEO_SAMPLE_FPS",
@@ -965,9 +970,8 @@ class MLXBackend(ModelBackend):
 
     def _load_captioner(self) -> None:
         """Lazily load the captioning model (Qwen3.5-0.8B)."""
-        if getattr(self, "_captioner_model", None) is not None:
-            return
         with self._model_lock:
+            self._cancel_captioner_idle_timer()
             # Double-check after acquiring lock
             if getattr(self, "_captioner_model", None) is not None:
                 return
@@ -979,15 +983,38 @@ class MLXBackend(ModelBackend):
             )
             self._apply_processor_media_budgets(self._captioner_processor)
 
+    def _cancel_captioner_idle_timer(self) -> None:
+        """Cancel a pending idle unload timer, if one exists."""
+        timer = getattr(self, "_captioner_idle_timer", None)
+        if timer is not None:
+            timer.cancel()
+            self._captioner_idle_timer = None
+
+    def _schedule_captioner_idle_unload(self) -> None:
+        """Schedule captioner unload after a short idle window."""
+        idle_seconds = getattr(self, "_captioner_idle_seconds", 30.0)
+        if idle_seconds <= 0:
+            return
+        with self._model_lock:
+            if getattr(self, "_captioner_model", None) is None:
+                return
+            self._cancel_captioner_idle_timer()
+            timer = threading.Timer(idle_seconds, self._unload_captioner)
+            timer.daemon = True
+            self._captioner_idle_timer = timer
+            timer.start()
+
     def _unload_captioner(self) -> None:
         """Free captioner memory when no longer needed."""
-        if getattr(self, "_captioner_model", None) is not None:
-            del self._captioner_model
-            del self._captioner_processor
-            self._captioner_model = None
-            self._captioner_processor = None
-            import gc
-            gc.collect()
+        with self._model_lock:
+            self._cancel_captioner_idle_timer()
+            if getattr(self, "_captioner_model", None) is not None:
+                del self._captioner_model
+                del self._captioner_processor
+                self._captioner_model = None
+                self._captioner_processor = None
+                import gc
+                gc.collect()
 
     def _format_caption_prompt(self, image_path: str) -> str:
         """Build a chat-template prompt with vision tokens for captioning."""
@@ -1011,9 +1038,8 @@ class MLXBackend(ModelBackend):
     def caption_image(self, image_path: str) -> str:
         """Generate a one-sentence image caption using Qwen3.5-0.8B.
 
-        The captioning model is loaded lazily on first use and kept in memory
-        for the duration of the ingest batch.  Call _unload_captioner() after
-        batch completion to reclaim ~0.9 GB.
+        The captioning model is loaded lazily on first use and unloaded after a
+        short idle window, unless an ingest batch unloads it first.
         """
         with self._hold_heavy_op("caption_image"):
             try:
@@ -1044,6 +1070,7 @@ class MLXBackend(ModelBackend):
                 except Exception:
                     pass
                 gc.collect()
+                self._schedule_captioner_idle_unload()
 
     def describe_image(self, image_path: str) -> str:
         """Backward-compatible alias for caption_image."""
@@ -1104,6 +1131,7 @@ class MLXBackend(ModelBackend):
                 except Exception:
                     pass
                 gc.collect()
+                self._schedule_captioner_idle_unload()
 
     def embed_videos(self, video_paths: List[str]) -> np.ndarray:
         """

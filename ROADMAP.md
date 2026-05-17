@@ -2,14 +2,14 @@
 
 *Local multimodal memory for AI agents — where retrieval meets intelligence.*
 
-**Current version:** v0.2.0  
+**Current version:** v0.3.0
 **Status:** Active development (solo/small team)
 
 This roadmap is honest about where RecallForge is, where it's going, and what's explicitly not planned. We prioritize depth over breadth, local-first over cloud-everything, and correctness over speed.
 
 ---
 
-## Near-term (v0.2.x)
+## Near-term (v0.3.x)
 
 *Immediate gaps and quick wins that build on existing foundations.*
 
@@ -31,6 +31,13 @@ This roadmap is honest about where RecallForge is, where it's going, and what's 
 - **PyPI package polish** — Better metadata, type stubs, and documented API surface.
 - **Claude plugin marketplace** — List RecallForge as an MCP plugin once HTTP transport is stable.
 
+## Shipped in v0.3.0
+
+- **Transcript-first audio ingest** — Audio files with `.srt`, `.vtt`, `.txt`, or `.transcript.json` sidecars are indexed as root audio memories with timestamped transcript children.
+- **Memory-aware ranking** — `importance`, TTL expiration, tags, recency, and namespace metadata are now part of the retrieval policy instead of being storage-only metadata.
+- **Captioner lifecycle hardening** — Direct image/video indexing and Qwen-backed query expansion schedule an idle unload for the MLX captioner, closing the direct-index memory retention gap.
+- **Release automation refresh** — CI and PyPI publish workflows use current Node 24 generation GitHub Actions.
+
 ---
 
 ## Mid-term (v0.3.x - v0.5.x)
@@ -42,7 +49,7 @@ This roadmap is honest about where RecallForge is, where it's going, and what's 
 - **REST API** — Language-agnostic HTTP interface for polyglot environments.
 
 ### Multimodal Expansion
-- **Audio modality** — Ingest and retrieve audio via embeddings ( Whisper-style or dedicated audio encoders).
+- **Dedicated audio modality** — Add local transcription and/or raw-audio embeddings beyond the shipped transcript-first path.
 - **OCR pipeline** — Native scanned document support using a lightweight OCR stage before embedding extraction.
 
 ### Data Model
@@ -116,4 +123,4 @@ Questions? Open an issue or reach out.
 
 ---
 
-*Last updated: 2026-03-13*
+*Last updated: 2026-05-17*

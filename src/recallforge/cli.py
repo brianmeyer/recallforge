@@ -16,6 +16,7 @@ import sys
 import threading
 
 from . import __version__
+from .audio import is_audio_file
 from .documents import is_document_file
 from .video import is_video_file
 
@@ -153,7 +154,7 @@ def main():
     )
     search_parser.add_argument(
         "--content-type",
-        choices=["text", "image", "video"],
+        choices=["text", "image", "video", "audio"],
         default=None,
         help="Filter by content type",
     )
@@ -391,6 +392,14 @@ def cmd_index(args):
                     embed_image_func=backend.embed_image,
                     embed_video_func=getattr(backend, "embed_video", None),
                 )
+            elif _is_audio_file(path):
+                print(f"Indexing audio: {path}")
+                storage.index_audio(
+                    path=path,
+                    collection=args.collection,
+                    embed_text_func=backend.embed_text,
+                    model="Qwen3-VL-Embedding-2B",
+                )
             elif _is_document_file(path):
                 print(f"Indexing document: {path}")
                 storage.index_document_file(
@@ -439,6 +448,14 @@ def cmd_index(args):
                                 embed_image_func=backend.embed_image,
                                 embed_video_func=getattr(backend, "embed_video", None),
                             )
+                        elif _is_audio_file(fp):
+                            print(f"Indexing audio: {fp}")
+                            storage.index_audio(
+                                path=fp,
+                                collection=args.collection,
+                                embed_text_func=backend.embed_text,
+                                model="Qwen3-VL-Embedding-2B",
+                            )
                         elif _is_document_file(fp):
                             print(f"Indexing document: {fp}")
                             storage.index_document_file(
@@ -475,6 +492,11 @@ def _is_image_file(path: str) -> bool:
 def _is_video_file(path: str) -> bool:
     """Check if file is a video."""
     return is_video_file(path)
+
+
+def _is_audio_file(path: str) -> bool:
+    """Check if file is a supported audio file."""
+    return is_audio_file(path)
 
 
 def _is_document_file(path: str) -> bool:

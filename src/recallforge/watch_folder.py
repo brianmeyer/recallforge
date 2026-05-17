@@ -20,6 +20,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Dict, List, Optional, Tuple
 
+from .audio import is_audio_file
 from .documents import is_document_file
 from .video import is_video_file
 
@@ -107,6 +108,9 @@ class WatchFolderDaemon:
     def _is_video_file(self, path: Path) -> bool:
         return is_video_file(path)
 
+    def _is_audio_file(self, path: Path) -> bool:
+        return is_audio_file(path)
+
     def _is_document_file(self, path: Path) -> bool:
         return is_document_file(path)
 
@@ -155,6 +159,7 @@ class WatchFolderDaemon:
             self._is_text_file(path)
             or self._is_image_file(path)
             or self._is_video_file(path)
+            or self._is_audio_file(path)
             or self._is_document_file(path)
         )
 
@@ -282,7 +287,7 @@ class WatchFolderDaemon:
             return
 
         if event_type == "deleted":
-            include_children = self._is_video_file(path) or self._is_document_file(path)
+            include_children = self._is_video_file(path) or self._is_audio_file(path) or self._is_document_file(path)
             if hasattr(self.storage, "delete_path"):
                 self.storage.delete_path(rel_path, config.collection, include_children=include_children)
             else:
@@ -309,6 +314,16 @@ class WatchFolderDaemon:
                 embed_text_func=self.backend.embed_text,
                 embed_image_func=self.backend.embed_image,
                 embed_video_func=getattr(self.backend, "embed_video", None),
+                model="Qwen3-VL-Embedding-2B",
+                stored_path=rel_path,
+            )
+            return
+
+        if self._is_audio_file(path) and hasattr(self.storage, "index_audio"):
+            self.storage.index_audio(
+                path=str(path),
+                collection=config.collection,
+                embed_text_func=self.backend.embed_text,
                 model="Qwen3-VL-Embedding-2B",
                 stored_path=rel_path,
             )

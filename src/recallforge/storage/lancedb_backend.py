@@ -1706,6 +1706,31 @@ class LanceDBBackend(StorageBackend):
             project_id=project_id,
             profile=profile,
         )
+
+    def index_audio(
+        self,
+        path: str,
+        collection: str,
+        embed_text_func,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Index an audio file through transcript sidecars."""
+        return self._indexer.index_audio(
+            path=path,
+            collection=collection,
+            embed_text_func=embed_text_func,
+            model=model,
+            stored_path=stored_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
     
     def index_image(
         self,

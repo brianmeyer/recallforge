@@ -9,6 +9,7 @@ class FakeStorage:
         self.upserts = []
         self.image_indexes = []
         self.video_indexes = []
+        self.audio_indexes = []
         self.document_indexes = []
         self.deletes = []
 
@@ -20,6 +21,9 @@ class FakeStorage:
 
     def index_video(self, **kwargs):
         self.video_indexes.append(kwargs)
+
+    def index_audio(self, **kwargs):
+        self.audio_indexes.append(kwargs)
 
     def index_document_file(self, **kwargs):
         self.document_indexes.append(kwargs)
@@ -193,3 +197,33 @@ def test_watch_folder_document_uses_logical_path_and_child_cleanup(tmp_path):
     assert storage.document_indexes
     assert storage.document_indexes[0]["stored_path"] == "notes.docx"
     assert ("notes.docx", "default", True) in storage.deletes
+
+
+def test_watch_folder_audio_uses_logical_path_and_child_cleanup(tmp_path):
+    storage = FakeStorage()
+    backend = FakeBackend()
+    daemon = WatchFolderDaemon(storage, backend, store_path=str(tmp_path / ".store"))
+
+    watched = tmp_path / "watched"
+    watched.mkdir()
+
+    config = WatchConfig(
+        folder_path=str(watched),
+        include_globs=["**/*.wav", "*.wav"],
+        debounce_seconds=0.1,
+        scan_interval=0.1,
+    )
+
+    watch_id = daemon.start_watch(config)
+
+    audio_path = watched / "meeting.wav"
+    audio_path.write_bytes(b"placeholder")
+    assert _wait_until(lambda: bool(storage.audio_indexes))
+    audio_path.unlink()
+    assert _wait_until(lambda: ("meeting.wav", "default", True) in storage.deletes)
+
+    daemon.stop_watch(watch_id)
+
+    assert storage.audio_indexes
+    assert storage.audio_indexes[0]["stored_path"] == "meeting.wav"
+    assert ("meeting.wav", "default", True) in storage.deletes
