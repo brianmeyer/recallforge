@@ -4,6 +4,10 @@ All notable changes to RecallForge will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-17
+
+RecallForge 0.3.1 is the final project closeout release for the Memory MCP launch push. It publishes the post-0.3.0 Linear work that landed after the original 0.3.0 tag.
+
 - Added staged background reindex promotion so document, video, audio, and conversation replacements stay hidden until their parent/child memory batches are complete.
 - Added index-version-aware query caching for repeated text/media embeddings and generated expansion branches.
 - Added MCP progress notifications for long-running search, ingest, batch, memory write, and FTS rebuild tool calls when clients provide a progress token.

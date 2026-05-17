@@ -7,6 +7,8 @@ import sys
 import unittest
 from pathlib import Path
 
+from recallforge import __version__
+
 
 def _load_cross_modal_ablation():
     repo_root = Path(__file__).resolve().parent.parent
@@ -298,7 +300,7 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
             error="Interrupted by user",
         )
 
-        self.assertEqual(payload["version"], "0.3.0")
+        self.assertEqual(payload["version"], __version__)
         self.assertEqual(payload["configuration"]["expansion_profile"], "caption_only")
         self.assertEqual(payload["configuration"]["smoke_profile"], "safe")
         self.assertEqual(payload["configuration"]["rss_limit_mb"], 4096)
