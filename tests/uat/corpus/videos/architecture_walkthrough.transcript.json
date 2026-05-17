@@ -1,19 +1,43 @@
 {
   "video": "architecture_walkthrough.mp4",
-  "description": "Architecture walkthrough sliding between diagrams and blueprints.",
-  "duration_seconds": 4,
-  "resolution": "320x240",
-  "fps": 15,
+  "memory_type": "episodic_video_fixture",
+  "scenario": "Hybrid office walkthrough connecting a floor plan to system architecture decisions.",
+  "description": "Office and system-architecture walkthrough with floor plan, whiteboard, model diagram, and milestone narration.",
+  "notes": "Useful for queries about architecture walkthroughs, floor plans, system design, model diagrams, and project planning documents.",
+  "related_images": [
+    "images/floor_plan_blueprint.png",
+    "images/whiteboard_architecture.png",
+    "images/neural_network_diagram.png"
+  ],
+  "related_documents": [
+    "documents/ai_architecture_deck.pptx",
+    "documents/project_status_q1.docx",
+    "documents/ai_strategy_report.docx"
+  ],
+  "duration_seconds": 12,
+  "resolution": "480x270",
+  "fps": 12,
+  "text": "Office and system-architecture walkthrough with floor plan, whiteboard, model diagram, and milestone narration. Hybrid office walkthrough connecting a floor plan to system architecture decisions. Useful for queries about architecture walkthroughs, floor plans, system design, model diagrams, and project planning documents. The walkthrough starts on a floor plan, marking the meeting room and hallway where the demo will be installed. A whiteboard maps the API gateway, vector store, full-text index, and worker services. The presenter explains how embeddings, document sections, and media frames roll up into parent memories. The final note ties the physical walkthrough to the architecture deck and project milestone review.",
   "segments": [
     {
       "start": 0.0,
-      "end": 2.0,
-      "text": "Whiteboard diagram showing system architecture components."
+      "end": 3.0,
+      "text": "The walkthrough starts on a floor plan, marking the meeting room and hallway where the demo will be installed."
     },
     {
-      "start": 2.0,
-      "end": 4.0,
-      "text": "Detailed floor plan blueprint with room layouts."
+      "start": 3.0,
+      "end": 6.0,
+      "text": "A whiteboard maps the API gateway, vector store, full-text index, and worker services."
+    },
+    {
+      "start": 6.0,
+      "end": 9.0,
+      "text": "The presenter explains how embeddings, document sections, and media frames roll up into parent memories."
+    },
+    {
+      "start": 9.0,
+      "end": 12.0,
+      "text": "The final note ties the physical walkthrough to the architecture deck and project milestone review."
     }
   ]
 }

@@ -1,19 +1,44 @@
 {
   "video": "nature_timelapse.mp4",
-  "description": "Nature timelapse panning over forest and mountain landscapes.",
-  "duration_seconds": 4,
-  "resolution": "320x240",
-  "fps": 15,
+  "memory_type": "episodic_video_fixture",
+  "scenario": "Phone clip from a weekend trail scouting trip with field notes.",
+  "description": "Episodic outdoor trip clip spanning forest, mountain, and coastal scenes with field-note narration.",
+  "notes": "Useful for visual queries over outdoor scenes and transcript queries about route planning, parks, weather, and environmental memories.",
+  "related_images": [
+    "images/forest_landscape.png",
+    "images/mountain_landscape.png",
+    "images/ocean_beach.png"
+  ],
+  "related_documents": [
+    "text/nature_forests.md",
+    "text/nature_mountains.md",
+    "text/nature_oceans.md",
+    "text/travel_national_parks.md"
+  ],
+  "duration_seconds": 12,
+  "resolution": "480x270",
+  "fps": 12,
+  "text": "Episodic outdoor trip clip spanning forest, mountain, and coastal scenes with field-note narration. Phone clip from a weekend trail scouting trip with field notes. Useful for visual queries over outdoor scenes and transcript queries about route planning, parks, weather, and environmental memories. The walk begins under a dense forest canopy with notes about tree cover and the shaded trail. The camera pauses at a mountain overlook while the narrator mentions weather, elevation, and route planning. A short coastal stop captures waves and beach access for a possible return trip. The clip ends with a reminder to compare these views with national park and climate notes.",
   "segments": [
     {
       "start": 0.0,
-      "end": 2.0,
-      "text": "Dense forest landscape with green canopy."
+      "end": 3.5,
+      "text": "The walk begins under a dense forest canopy with notes about tree cover and the shaded trail."
     },
     {
-      "start": 2.0,
-      "end": 4.0,
-      "text": "Mountain range with peaks and valleys."
+      "start": 3.5,
+      "end": 7.5,
+      "text": "The camera pauses at a mountain overlook while the narrator mentions weather, elevation, and route planning."
+    },
+    {
+      "start": 7.5,
+      "end": 10.0,
+      "text": "A short coastal stop captures waves and beach access for a possible return trip."
+    },
+    {
+      "start": 10.0,
+      "end": 12.0,
+      "text": "The clip ends with a reminder to compare these views with national park and climate notes."
     }
   ]
 }

@@ -1,19 +1,42 @@
 {
   "video": "cooking_tutorial.mp4",
-  "description": "Cooking tutorial zooming into a pasta dish with recipe text overlay.",
-  "duration_seconds": 3,
-  "resolution": "320x240",
-  "fps": 15,
+  "memory_type": "episodic_video_fixture",
+  "scenario": "Kitchen memory from a weeknight family recipe session.",
+  "description": "Kitchen recipe memory with plated pasta, spoken substitutions, and handwritten cooking notes.",
+  "notes": "Useful for queries about pasta, family dinner, recipe substitutions, grocery planning, and handwritten cooking notes.",
+  "related_images": [
+    "images/food_pasta_dish.png",
+    "images/handwritten_notes.png"
+  ],
+  "related_documents": [
+    "text/cooking_pasta.md",
+    "text/cooking_spices.md",
+    "text/cooking_asian_cuisine.md"
+  ],
+  "duration_seconds": 9,
+  "resolution": "480x270",
+  "fps": 12,
+  "text": "Kitchen recipe memory with plated pasta, spoken substitutions, and handwritten cooking notes. Kitchen memory from a weeknight family recipe session. Useful for queries about pasta, family dinner, recipe substitutions, grocery planning, and handwritten cooking notes. The cook checks the pasta sauce and mentions basil, tomato, olive oil, and a lower-salt variation. A handwritten recipe note records timing changes and a reminder to try chili flakes next time. The plated pasta is compared with earlier cooking notes about fresh dough and sauce texture. The clip ends with a spoken tag for family dinner, recipe recall, and grocery planning.",
   "segments": [
     {
       "start": 0.0,
-      "end": 1.5,
-      "text": "Fresh pasta dish plated on a white plate."
+      "end": 2.5,
+      "text": "The cook checks the pasta sauce and mentions basil, tomato, olive oil, and a lower-salt variation."
     },
     {
-      "start": 1.5,
-      "end": 3.0,
-      "text": "Close-up of the pasta with sauce and garnish."
+      "start": 2.5,
+      "end": 5.5,
+      "text": "A handwritten recipe note records timing changes and a reminder to try chili flakes next time."
+    },
+    {
+      "start": 5.5,
+      "end": 7.5,
+      "text": "The plated pasta is compared with earlier cooking notes about fresh dough and sauce texture."
+    },
+    {
+      "start": 7.5,
+      "end": 9.0,
+      "text": "The clip ends with a spoken tag for family dinner, recipe recall, and grocery planning."
     }
   ]
 }

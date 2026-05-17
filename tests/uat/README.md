@@ -6,7 +6,7 @@ Manual end-to-end test suite for RecallForge. Validates correctness gates, bench
 
 - **Python 3.12+**
 - **RecallForge installed:** `pip install -e .` (from repo root)
-- **ffmpeg** (for video frame extraction and synthetic video generation)
+- **ffmpeg** (for video frame extraction and regenerating committed video fixtures)
 - **Backends:** torch (CPU/CUDA) and/or MLX (macOS ARM64)
 - **Memory requirements:**
   - MLX 4-bit embed mode: ~1.7GB
@@ -42,7 +42,7 @@ All tests live in `tests/uat/`. Each is self-contained and can be run independen
 | `test_tiered_modes.sh` | Tiered modes (embed/hybrid/full) loading and behavior |
 | `test_document_ingest.sh` | Document ingest (PDF/DOCX/PPTX extraction via CLI) |
 | `test_video_ingest.sh` | Video ingest (transcript fallback + ffmpeg frame extraction) |
-| `test_video_quality.sh` | Video retrieval quality (text/image/video query coverage) |
+| `test_video_quality.sh` | Video retrieval quality (deterministic by default; set `UAT_VIDEO_LIVE=1` for live model retrieval) |
 | `test_video_query_contract.sh` | Raw video query smoke test |
 | `test_cross_modal.sh` | ★ CROSS-MODAL SEARCH (key differentiator) |
 | `test_search_quality.sh` | Search quality (recall@5, MRR, edge cases, dedup) |
@@ -85,7 +85,7 @@ Benchmark tests are **informational** — they report metrics but don't block co
 Tests use a committed video corpus and built-in text/image fixtures in `tests/uat/corpus/`:
 
 ### Video Corpus
-A committed set of test videos with known transcripts and ground-truth frames. Used by `test_video_ingest.sh`, `test_video_quality.sh`, and `test_video_query_contract.sh` to validate cross-modal retrieval on temporal media.
+A committed set of compact episodic video fixtures with known transcripts, related-image/document metadata, and ground-truth frames. The clips cover a screen recording, outdoor field clip, architecture walkthrough, kitchen recipe memory, and product-planning whiteboard session. Used by `test_video_ingest.sh`, `test_video_quality.sh`, and `test_video_query_contract.sh` to validate cross-modal retrieval on temporal media.
 
 ### Text Documents (15 files)
 | Topic | Files |
@@ -171,7 +171,7 @@ Each test script exits 0 on success, 1 on any failure.
 
 1. **Torch video crash on Qwen3-VL (REC-44):** Known issue where torch backend crashes during video frame processing with Qwen3-VL models. Workaround: use MLX backend on Apple Silicon or skip video tests when using Qwen3-VL with torch.
 
-2. **Synthetic test images:** Generated images are simple drawings, not real photos. Cross-modal accuracy will be lower than with real-world images. This is expected.
+2. **Compact local fixtures:** Images and videos are generated/curated to stay small, deterministic, and license-safe. The video corpus now uses episodic memory scenarios with transcripts and related artifacts, but broad public benchmark claims should still be validated against larger real-world datasets.
 
 3. **First run is slow:** Models download on first use (~4GB per model). Subsequent runs use cached models.
 
@@ -185,7 +185,7 @@ Each test script exits 0 on success, 1 on any failure.
 
 8. **Video ingest depends on host capabilities:** Transcript sidecars (`.srt`, `.vtt`, `.txt`) are always supported. Frame extraction runs when `ffmpeg` and `ffprobe` are installed; otherwise video UAT validates transcript-only fallback.
 
-9. **Raw video query requires ffmpeg:** `test_video_query_contract.sh` and raw-video portions of CLI/MCP/video-quality UAT require `ffmpeg` to generate valid synthetic video fixtures. Without it, those checks skip cleanly.
+9. **Raw video query requires ffmpeg:** `test_video_query_contract.sh` and raw-video portions of CLI/MCP/video-quality UAT require `ffmpeg` for frame extraction and video fixture regeneration. Without it, those checks skip cleanly.
 
 10. **Document ingest is local-first:** DOCX and PPTX fixtures are extracted through built-in OOXML parsing. PDF ingestion uses a lightweight fallback extractor by default and gets richer parsing when optional PDF tooling is installed.
 

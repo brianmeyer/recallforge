@@ -43,6 +43,18 @@ Then run the expanded benchmark:
 .venv/bin/python benchmarks/cross_modal_ablation.py --backend mlx --expansion-profile caption_only --output benchmarks/results/cross_modal_ablation_results.json
 ```
 
+The committed video corpus is an episodic fixture set rather than generic toy clips. Before trusting video-related benchmark changes, confirm the generated sidecars still include searchable `text`, timed segments, and related image/document metadata:
+
+```bash
+.venv/bin/python -m pytest -q tests/test_video_corpus.py tests/test_video_sidecars.py
+```
+
+The shell video-quality UAT uses a deterministic backend by default so CI and local smoke runs are not gated on live model quality. To exercise the installed vision-language backend on this host, opt in explicitly:
+
+```bash
+UAT_VIDEO_LIVE=1 bash tests/uat/test_video_quality.sh
+```
+
 The benchmark now checkpoints to JSON as it runs. If the run is interrupted, the output file still contains partial results plus progress metadata.
 
 After a complete or partial benchmark run, generate the cross-modal diagnosis report:

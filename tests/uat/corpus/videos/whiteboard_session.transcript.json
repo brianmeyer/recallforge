@@ -1,19 +1,44 @@
 {
   "video": "whiteboard_session.mp4",
-  "description": "Whiteboard session panning over brainstorm board and handwritten notes.",
-  "duration_seconds": 4,
-  "resolution": "320x240",
-  "fps": 15,
+  "memory_type": "episodic_video_fixture",
+  "scenario": "Product planning meeting with whiteboard decisions and next-step notes.",
+  "description": "Planning-meeting recording with whiteboard brainstorms, memory rollup decisions, and handwritten action items.",
+  "notes": "Useful for meeting-memory queries, whiteboard recall, product planning, memory rollups, benchmark scoring, and release documentation.",
+  "related_images": [
+    "images/whiteboard_brainstorm.png",
+    "images/whiteboard_architecture.png",
+    "images/handwritten_notes.png"
+  ],
+  "related_documents": [
+    "documents/ai_strategy_report.docx",
+    "documents/project_status_q1.docx",
+    "documents/quarterly_review.pptx",
+    "documents/recallforge_spec.docx"
+  ],
+  "duration_seconds": 12,
+  "resolution": "480x270",
+  "fps": 12,
+  "text": "Planning-meeting recording with whiteboard brainstorms, memory rollup decisions, and handwritten action items. Product planning meeting with whiteboard decisions and next-step notes. Useful for meeting-memory queries, whiteboard recall, product planning, memory rollups, benchmark scoring, and release documentation. The team brainstorms how a user should ask for the last whiteboard from a meeting. The architecture sketch shows root memories with child frames, transcripts, OCR pages, and document sections. A decision is made to score parent memories separately from raw child assets in the benchmark. Handwritten action items assign documentation updates, benchmark reruns, and release checklist cleanup.",
   "segments": [
     {
       "start": 0.0,
-      "end": 2.0,
-      "text": "Brainstorming session on a whiteboard with ideas."
+      "end": 3.0,
+      "text": "The team brainstorms how a user should ask for the last whiteboard from a meeting."
     },
     {
-      "start": 2.0,
-      "end": 4.0,
-      "text": "Handwritten notes with key points and action items."
+      "start": 3.0,
+      "end": 6.0,
+      "text": "The architecture sketch shows root memories with child frames, transcripts, OCR pages, and document sections."
+    },
+    {
+      "start": 6.0,
+      "end": 9.0,
+      "text": "A decision is made to score parent memories separately from raw child assets in the benchmark."
+    },
+    {
+      "start": 9.0,
+      "end": 12.0,
+      "text": "Handwritten action items assign documentation updates, benchmark reruns, and release checklist cleanup."
     }
   ]
 }
