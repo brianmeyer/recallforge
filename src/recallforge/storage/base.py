@@ -115,6 +115,8 @@ class StorageBackend(ABC):
         memory_id: Optional[str] = None,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        active: int = 1,
+        index_batch_id: Optional[str] = None,
     ) -> str:
         """
         Insert or update a document.
@@ -175,6 +177,8 @@ class StorageBackend(ABC):
         importance: Optional[float] = None,
         ttl_seconds: Optional[int] = None,
         tags: Optional[List[str]] = None,
+        active: int = 1,
+        index_batch_id: Optional[str] = None,
     ) -> None:
         """Insert an embedding for a document chunk."""
         pass
@@ -273,6 +277,8 @@ class StorageBackend(ABC):
         _skip_delete: bool = False,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        _active: int = 1,
+        _index_batch_id: Optional[str] = None,
     ) -> str:
         """Create or update a memory entry and its embeddings."""
         pass

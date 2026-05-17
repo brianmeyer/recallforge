@@ -51,6 +51,17 @@ def _safe_filter(field: str, value: str) -> str:
     return f"{field} = '{escaped}'"
 
 
+def active_row_filter(field: str = "active") -> str:
+    """Filter rows that are visible to readers.
+
+    ``active IS NULL`` keeps stores created before the active column migration
+    visible until they are rewritten.
+    """
+    if not re.match(r"^[\w_]+$", field):
+        raise ValueError(f"Invalid field name: {field}")
+    return f"({field} IS NULL OR {field} = 1)"
+
+
 def escape_sql(s: str) -> str:
     return _validate_identifier(s, "value").replace("'", "''")
 

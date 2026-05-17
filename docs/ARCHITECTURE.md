@@ -106,24 +106,27 @@ embedded_at    | vector[2048]
 user/session/project/profile namespace fields
 memory_id      | memory_role | memory_root_path
 importance     | ttl_seconds | tags       | expires_at
+active          | index_batch_id
 ```
 
 **documents** (registry)
 ```
 id | collection | file_path | title | content_hash | content_type | active
-created_at | updated_at
+created_at | updated_at | index_batch_id
 ```
 
 **entities** (memory graph mentions)
 ```
 id | collection | entity_key | name | entity_type | memory_id | memory_root_path
 file_path | content_hash | hash_seq | seq | evidence | namespace fields | created_at
+active | index_batch_id
 ```
 
 **relations** (lightweight graph edges)
 ```
 id | collection | subject_key | subject_name | object_key | object_name | relation_type
 memory_id | memory_root_path | file_path | content_hash | hash_seq | evidence | namespace fields
+active | index_batch_id
 ```
 
 Conversation memories use the same parent/child layout as media-derived memories:
@@ -226,6 +229,8 @@ Key runtime details:
     │   ├── data/*.parquet
     │   └── _indices/text_body_fts/    # Tantivy FTS
     ├── documents/
+    ├── entities/
+    ├── relations/
     ├── content/
     └── cache/
 ```
@@ -251,6 +256,18 @@ path + text
                ▼
          ensure_fts_index()  ──> Tantivy index rebuild
 ```
+
+Complex file and conversation reindexes use a staging/promotion variant of this flow:
+
+```
+new root + children
+     │
+     ├──> write hidden rows (`active=0`, `index_batch_id=batch_*`)
+     ├──> keep old active rows visible to search/list/get/graph reads
+     └──> promote batch: activate new rows and deactivate old rows for the memory path
+```
+
+Failed staged ingests delete only the hidden batch, so readers continue to see the last complete memory.
 
 ## Data Flow: Audio
 

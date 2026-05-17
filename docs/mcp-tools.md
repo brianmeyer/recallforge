@@ -471,7 +471,7 @@ Example MCP client config (Claude Desktop):
 - `INVALID_INPUT`: returned by storage/validation for invalid combinations/inputs.
 - `INTERNAL_ERROR`: uncaught exceptions.
 
-**Notes:** This is the recommended ingest entry point. `set_config` can change default `collection`/`max_file_size_mb` used when omitted.
+**Notes:** This is the recommended ingest entry point. `set_config` can change default `collection`/`max_file_size_mb` used when omitted. Reindexing complex memories (documents, video, audio) stages replacement rows hidden from reads, then promotes the parent and child assets together when ingest succeeds.
 
 ---
 
@@ -710,7 +710,7 @@ Turn objects accept:
 - `BACKEND_ERROR`: when the storage backend does not support conversation memories.
 - `INTERNAL_ERROR`: uncaught exceptions.
 
-**Notes:** The root path becomes the stable `memory_id` identity seed. Child turns are stored at `path::turn:0001`, `path::turn:0002`, and so on with the same `memory_id` and `memory_root_path`.
+**Notes:** The root path becomes the stable `memory_id` identity seed. Child turns are stored at `path::turn:0001`, `path::turn:0002`, and so on with the same `memory_id` and `memory_root_path`. Replacing a conversation stages the new root and turn children first, so clients keep seeing the previous complete thread until the replacement is promoted.
 
 ---
 

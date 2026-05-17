@@ -453,6 +453,68 @@ class TestInlineMemoryOperations(unittest.TestCase):
             self.backend.list_memory_entities(path="notes/company.md", entity="Globex Labs", collection="test")
         )
 
+    def test_index_batch_rows_are_hidden_until_promoted(self):
+        path = "notes/batch-promotion.md"
+        self.backend.upsert_memory(
+            path=path,
+            text="Mira from Acme Robotics owns the launch checklist.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+        visible_embeddings_before = self.backend.count_embeddings()
+        self.assertEqual(self.backend.count_documents(), 1)
+
+        batch_id = self.backend.begin_index_batch()
+        self.backend.upsert_memory(
+            path=path,
+            text="Mira from Globex Labs owns the launch checklist.",
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+            _skip_delete=True,
+            _active=0,
+            _index_batch_id=batch_id,
+        )
+
+        self.assertEqual(self.backend.count_documents(), 1)
+        self.assertEqual(self.backend.count_embeddings(), visible_embeddings_before)
+        memory_before = self.backend.get_memory(path=path, collection="test")
+        self.assertIsNotNone(memory_before)
+        self.assertIn("Acme Robotics", memory_before["summary"])
+        self.assertNotIn("Globex Labs", memory_before["summary"])
+        self.assertTrue(
+            self.backend.list_memory_entities(path=path, entity="Acme Robotics", collection="test")
+        )
+        self.assertFalse(
+            self.backend.list_memory_entities(path=path, entity="Globex Labs", collection="test")
+        )
+
+        hidden_rows = self.backend._embeddings_table.search().where(
+            f"collection = 'test' AND file_path = '{path}' AND active = 0"
+        ).to_list()
+        self.assertGreater(len(hidden_rows), 0)
+
+        promoted = self.backend.promote_index_batch(
+            batch_id=batch_id,
+            collection="test",
+            logical_path=path,
+        )
+        self.assertGreater(promoted["activated_embeddings"], 0)
+        self.assertGreater(promoted["deactivated_embeddings"], 0)
+
+        memory_after = self.backend.get_memory(path=path, collection="test")
+        self.assertIsNotNone(memory_after)
+        self.assertEqual(self.backend.count_documents(), 1)
+        self.assertIn("Globex Labs", memory_after["summary"])
+        self.assertNotIn("Acme Robotics", memory_after["summary"])
+        self.assertFalse(
+            self.backend.list_memory_entities(path=path, entity="Acme Robotics", collection="test")
+        )
+        self.assertTrue(
+            self.backend.list_memory_entities(path=path, entity="Globex Labs", collection="test")
+        )
+
     def test_delete_memory_deactivates_doc_and_removes_embeddings(self):
         self.backend.upsert_memory(
             path="notes/delete-me.md",
@@ -969,6 +1031,49 @@ class TestConversationMemoryIndexing(unittest.TestCase):
         self.assertGreaterEqual(result.memory_hit_count, 2)
         evidence_paths = [result.memory_primary_evidence_path] + (result.memory_supporting_paths or [])
         self.assertIn("recallforge://test/threads/pricing-approval::turn:0002", evidence_paths)
+
+    def test_reindex_conversation_replaces_stale_children_as_one_batch(self):
+        path = "threads/reindex-consistency"
+        self.backend.index_conversation(
+            path=path,
+            title="Reindex Consistency",
+            turns=[
+                {"role": "user", "content": "Acme Robotics asked about launch readiness."},
+                {"role": "assistant", "content": "Globex Labs is the stale follow-up owner."},
+            ],
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        first_memory = self.backend.get_memory(path=path, collection="test")
+        self.assertIsNotNone(first_memory)
+        self.assertEqual(len(first_memory["children"]), 2)
+        self.assertTrue(
+            self.backend.list_memory_entities(path=path, entity="Globex Labs", collection="test")
+        )
+
+        self.backend.index_conversation(
+            path=path,
+            title="Reindex Consistency",
+            turns=[
+                {"role": "user", "content": "Initech is now the only launch readiness owner."},
+            ],
+            collection="test",
+            embed_func=mock_embed,
+            model="mock-embedder",
+        )
+
+        updated_memory = self.backend.get_memory(path=path, collection="test")
+        self.assertIsNotNone(updated_memory)
+        self.assertEqual(len(updated_memory["children"]), 1)
+        self.assertEqual(updated_memory["children"][0]["path"], f"{path}::turn:0001")
+        self.assertFalse(
+            self.backend.list_memory_entities(path=path, entity="Globex Labs", collection="test")
+        )
+        self.assertTrue(
+            self.backend.list_memory_entities(path=path, entity="Initech", collection="test")
+        )
 
 
 class TestFTSMissFallbackBehavior(unittest.TestCase):

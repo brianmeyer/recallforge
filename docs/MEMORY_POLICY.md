@@ -27,10 +27,17 @@ RecallForge stores complex files as a root memory plus child assets:
 
 The root memory uses `memory_role="root"` and child assets use `memory_role="child"` with `memory_root_path` pointing back to the root.
 
+## Ingest Consistency
+
+Complex reindexes are staged before they become visible. Documents, video, audio, and conversation memories write replacement parent/child rows with `active=0` and a private `index_batch_id`; search, memory listing, memory lookup, and graph navigation only read active rows. Once the replacement parent and all child assets are stored, RecallForge promotes the batch in one visibility step and deactivates the old rows for that memory path.
+
+This keeps agents from seeing half-updated memories during background ingest. If a staged ingest fails before promotion, RecallForge deletes the hidden batch and the previous active memory remains readable.
+
 ## Ranking
 
 RecallForge combines BM25 and vector search through RRF, then reranks in `hybrid` mode. Before fusion, storage search applies memory policy:
 
+- Hidden staging rows are filtered out until promotion.
 - Expired rows are filtered out with `expires_at`.
 - `importance` can add up to a 15% boost before score normalization.
 - Fresh rows receive a small recency boost.

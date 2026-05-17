@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -45,6 +46,7 @@ from .lancedb_shared import (
     _SQL_METACHARACTERS,
     _safe_filter,
     _validate_identifier,
+    active_row_filter,
     build_memory_id,
     escape_sql,
     extract_title,
@@ -105,6 +107,7 @@ class LanceDBBackend(StorageBackend):
         self._cache_table = None
         self._entities_table = None
         self._relations_table = None
+        self._visibility_lock = threading.RLock()
         
         # FTS rebuild debouncing state
         self._fts_rebuild_pending = 0
@@ -124,6 +127,12 @@ class LanceDBBackend(StorageBackend):
         self._fts = FTSManager(self)
         self._search = SearchOps(self)
         self._indexer = IndexingOps(self)
+
+    def _get_visibility_lock(self):
+        """Return the promotion/read visibility lock, creating it for __new__ tests."""
+        if not hasattr(self, "_visibility_lock") or self._visibility_lock is None:
+            self._visibility_lock = threading.RLock()
+        return self._visibility_lock
     
     def initialize(self, store_path: Optional[str] = None) -> None:
         """Initialize the LanceDB database."""
@@ -348,6 +357,8 @@ class LanceDBBackend(StorageBackend):
             pa.field("ttl_seconds", pa.int32(), nullable=True),
             pa.field("tags", pa.string(), nullable=True),  # JSON-encoded list of strings
             pa.field("expires_at", pa.int64(), nullable=True),  # Timestamp in ms when entry expires
+            pa.field("active", pa.int8(), nullable=True),
+            pa.field("index_batch_id", pa.string(), nullable=True),
         ])
     
     def _build_documents_schema(self) -> pa.Schema:
@@ -370,6 +381,7 @@ class LanceDBBackend(StorageBackend):
             pa.field("memory_id", pa.string(), nullable=True),
             pa.field("memory_role", pa.string(), nullable=True),
             pa.field("memory_root_path", pa.string(), nullable=True),
+            pa.field("index_batch_id", pa.string(), nullable=True),
         ])
     
     def _build_content_schema(self) -> pa.Schema:
@@ -409,6 +421,8 @@ class LanceDBBackend(StorageBackend):
             pa.field("project_id", pa.string(), nullable=True),
             pa.field("profile", pa.string(), nullable=True),
             pa.field("created_at", pa.int64(), nullable=False),
+            pa.field("active", pa.int8(), nullable=True),
+            pa.field("index_batch_id", pa.string(), nullable=True),
         ])
 
     def _build_relations_schema(self) -> pa.Schema:
@@ -433,6 +447,8 @@ class LanceDBBackend(StorageBackend):
             pa.field("project_id", pa.string(), nullable=True),
             pa.field("profile", pa.string(), nullable=True),
             pa.field("created_at", pa.int64(), nullable=False),
+            pa.field("active", pa.int8(), nullable=True),
+            pa.field("index_batch_id", pa.string(), nullable=True),
         ])
     
     def _has_scalar_index(self, table, column: str) -> bool:
@@ -589,6 +605,8 @@ class LanceDBBackend(StorageBackend):
         memory_id: Optional[str] = None,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        active: int = 1,
+        index_batch_id: Optional[str] = None,
     ) -> str:
         """Insert or update a document."""
         now = int(time.time() * 1000)
@@ -621,7 +639,7 @@ class LanceDBBackend(StorageBackend):
 
         # Check for existing (including staged bulk rows)
         existing_row = None
-        if self._bulk_mode:
+        if self._bulk_mode and index_batch_id is None:
             for row in self._pending_documents.values():
                 if (
                     row["collection"] == collection
@@ -634,7 +652,7 @@ class LanceDBBackend(StorageBackend):
                     existing_row = row
                     break
 
-        if existing_row is None:
+        if existing_row is None and index_batch_id is None:
             try:
                 existing = list(self._documents_table.search()
                     .where(ns_filter)
@@ -664,7 +682,9 @@ class LanceDBBackend(StorageBackend):
             "memory_id": normalized_memory_id,
             "memory_role": normalized_memory_role,
             "memory_root_path": normalized_memory_root_path,
+            "index_batch_id": index_batch_id,
         }
+        row["active"] = int(active)
 
         if self._bulk_mode:
             self._pending_documents[doc_id] = row
@@ -800,6 +820,8 @@ class LanceDBBackend(StorageBackend):
         importance: Optional[float] = None,
         ttl_seconds: Optional[int] = None,
         tags: Optional[List[str]] = None,
+        active: int = 1,
+        index_batch_id: Optional[str] = None,
     ) -> None:
         """Insert an embedding with optional metadata."""
         hash_seq = f"{content_hash}_{seq}"
@@ -829,15 +851,15 @@ class LanceDBBackend(StorageBackend):
 
         self._ensure_bulk_buffers()
 
-        if self._bulk_mode:
+        if self._bulk_mode and index_batch_id is None:
             self._pending_embedding_deletes.add(hash_seq)
-        else:
+        elif index_batch_id is None:
             # Delete existing
             try:
                 self._embeddings_table.delete(_safe_filter("hash_seq", hash_seq))
             except Exception as e:
                 logger.debug(f"insert_embedding: no existing embedding to delete for {hash_seq}: {e}")
-        self.delete_graph_entries(hash_seq=hash_seq)
+            self.delete_graph_entries(hash_seq=hash_seq)
 
         trace_log("insert_embedding", hash_seq=hash_seq, collection=collection, file_path=file_path, seq=seq,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile,
@@ -867,6 +889,8 @@ class LanceDBBackend(StorageBackend):
             "ttl_seconds": ttl_seconds,
             "tags": tags_json,
             "expires_at": expires_at,
+            "active": int(active),
+            "index_batch_id": index_batch_id,
         }
 
         if self._bulk_mode:
@@ -889,6 +913,8 @@ class LanceDBBackend(StorageBackend):
             memory_id=normalized_memory_id,
             memory_root_path=normalized_memory_root_path,
             created_at=now,
+            active=int(active),
+            index_batch_id=index_batch_id,
         )
 
     def _index_graph_rows_for_embedding(
@@ -907,6 +933,8 @@ class LanceDBBackend(StorageBackend):
         memory_id: Optional[str],
         memory_root_path: Optional[str],
         created_at: int,
+        active: int,
+        index_batch_id: Optional[str],
     ) -> None:
         """Persist deterministic entity/relation rows for one indexed evidence unit."""
         if getattr(self, "_entities_table", None) is None or not isinstance(text_body, str) or not text_body.strip():
@@ -936,6 +964,8 @@ class LanceDBBackend(StorageBackend):
                 "project_id": project_id,
                 "profile": profile,
                 "created_at": created_at,
+                "active": active,
+                "index_batch_id": index_batch_id,
             }
             for entity in entities
         ]
@@ -980,6 +1010,8 @@ class LanceDBBackend(StorageBackend):
                 "project_id": project_id,
                 "profile": profile,
                 "created_at": created_at,
+                "active": active,
+                "index_batch_id": index_batch_id,
             }
             for relation in relations
         ]
@@ -992,8 +1024,15 @@ class LanceDBBackend(StorageBackend):
     def has_vectors(self) -> bool:
         """Check if index has any vectors."""
         try:
-            count = self._embeddings_table.count_rows()
-            return count > 0
+            with self._get_visibility_lock():
+                rows = (
+                    self._embeddings_table.search()
+                    .where(active_row_filter())
+                    .select(["hash_seq"])
+                    .limit(1)
+                    .to_list()
+                )
+            return bool(rows)
         except Exception as e:
             logger.warning(f"has_vectors: failed to count rows: {e}")
             return False
@@ -1014,16 +1053,17 @@ class LanceDBBackend(StorageBackend):
         profile: Optional[str] = None
     ) -> List[Any]:
         """Full-text search using LanceDB Tantivy."""
-        return self._search.search_fts(
-            query=query,
-            limit=limit,
-            collection=collection,
-            content_type=content_type,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile
-        )
+        with self._get_visibility_lock():
+            return self._search.search_fts(
+                query=query,
+                limit=limit,
+                collection=collection,
+                content_type=content_type,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile
+            )
     
     def search_vec(
         self,
@@ -1037,16 +1077,17 @@ class LanceDBBackend(StorageBackend):
         profile: Optional[str] = None
     ) -> List[Any]:
         """Vector similarity search."""
-        return self._search.search_vec(
-            vector=vector,
-            limit=limit,
-            collection=collection,
-            content_type=content_type,
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile
-        )
+        with self._get_visibility_lock():
+            return self._search.search_vec(
+                vector=vector,
+                limit=limit,
+                collection=collection,
+                content_type=content_type,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile
+            )
     
     def list_collections(
         self,
@@ -1056,19 +1097,21 @@ class LanceDBBackend(StorageBackend):
         profile: Optional[str] = None,
     ) -> List[str]:
         """Return sorted list of unique collection names, with optional namespace filters."""
-        return self._search.list_collections(
-            user_id=user_id,
-            session_id=session_id,
-            project_id=project_id,
-            profile=profile
-        )
+        with self._get_visibility_lock():
+            return self._search.list_collections(
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile
+            )
     
     def list_namespaces(
         self,
         collection: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         """Return unique namespace combinations (user_id, session_id, project_id, profile)."""
-        return self._search.list_namespaces(collection=collection)
+        with self._get_visibility_lock():
+            return self._search.list_namespaces(collection=collection)
 
     def rename_collection(
         self,
@@ -1382,6 +1425,104 @@ class LanceDBBackend(StorageBackend):
             f"OR file_path LIKE '{escaped_path}::%')"
         )
 
+    def begin_index_batch(self) -> str:
+        """Create a staging batch ID for hidden background ingest rows."""
+        return f"batch_{uuid.uuid4().hex}"
+
+    def _batch_filter(self, batch_id: str) -> str:
+        return _safe_filter("index_batch_id", batch_id)
+
+    def _not_batch_filter(self, batch_id: str) -> str:
+        escaped = escape_sql(batch_id)
+        return f"(index_batch_id IS NULL OR index_batch_id != '{escaped}')"
+
+    def _apply_visibility_update(self, table, where: str, active: int, label: str) -> int:
+        if table is None:
+            return 0
+        try:
+            rows = table.search().where(where).select(["id"] if label != "embeddings" else ["hash_seq"]).limit(10_000_000).to_list()
+        except Exception:
+            rows = []
+        try:
+            table.update(where=where, values={"active": int(active)})
+        except Exception as exc:
+            logger.warning("promote_index_batch: failed to update %s visibility: %s", label, exc)
+            raise
+        return len(rows)
+
+    def promote_index_batch(
+        self,
+        *,
+        batch_id: str,
+        collection: str,
+        logical_path: str,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        include_children: bool = False,
+    ) -> Dict[str, int]:
+        """Promote a complete hidden ingest batch into the visible memory graph."""
+        self._flush_pending_writes(force=True)
+        path_clause = self._memory_path_clause(logical_path) if include_children else f"file_path = '{escape_sql(logical_path)}'"
+        filters = self._graph_namespace_filters(
+            collection=collection,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+        )
+        filters.append(path_clause)
+        base_filter = " AND ".join(filters)
+        staged_filter = f"{base_filter} AND {self._batch_filter(batch_id)}"
+        old_filter = f"{base_filter} AND {active_row_filter()} AND {self._not_batch_filter(batch_id)}"
+
+        with self._get_visibility_lock():
+            activated_embeddings = self._apply_visibility_update(self._embeddings_table, staged_filter, 1, "embeddings")
+            activated_documents = self._apply_visibility_update(self._documents_table, staged_filter, 1, "documents")
+            activated_entities = self._apply_visibility_update(self._entities_table, staged_filter, 1, "entities")
+            activated_relations = self._apply_visibility_update(self._relations_table, staged_filter, 1, "relations")
+
+            deactivated_embeddings = self._apply_visibility_update(self._embeddings_table, old_filter, 0, "embeddings")
+            deactivated_documents = self._apply_visibility_update(self._documents_table, old_filter, 0, "documents")
+            deactivated_entities = self._apply_visibility_update(self._entities_table, old_filter, 0, "entities")
+            deactivated_relations = self._apply_visibility_update(self._relations_table, old_filter, 0, "relations")
+
+        trace_log(
+            "promote_index_batch",
+            batch_id=batch_id,
+            collection=collection,
+            logical_path=logical_path,
+            activated_embeddings=activated_embeddings,
+            activated_documents=activated_documents,
+        )
+        return {
+            "activated_embeddings": activated_embeddings,
+            "activated_documents": activated_documents,
+            "activated_entities": activated_entities,
+            "activated_relations": activated_relations,
+            "deactivated_embeddings": deactivated_embeddings,
+            "deactivated_documents": deactivated_documents,
+            "deactivated_entities": deactivated_entities,
+            "deactivated_relations": deactivated_relations,
+        }
+
+    def delete_index_batch(self, batch_id: str) -> None:
+        """Remove hidden staging rows after a failed background ingest."""
+        batch_filter = self._batch_filter(batch_id)
+        for table, label in (
+            (self._embeddings_table, "embeddings"),
+            (self._documents_table, "documents"),
+            (self._entities_table, "entities"),
+            (self._relations_table, "relations"),
+        ):
+            if table is None:
+                continue
+            try:
+                table.delete(batch_filter)
+            except Exception as exc:
+                logger.debug("delete_index_batch: failed to cleanup %s rows: %s", label, exc)
+
     def _graph_namespace_filters(
         self,
         *,
@@ -1468,6 +1609,33 @@ class LanceDBBackend(StorageBackend):
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
         """List entity mentions with evidence for a memory, path, or entity key."""
+        with self._get_visibility_lock():
+            return self._list_memory_entities_unlocked(
+                memory_id=memory_id,
+                path=path,
+                entity=entity,
+                collection=collection,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                limit=limit,
+            )
+
+    def _list_memory_entities_unlocked(
+        self,
+        *,
+        memory_id: Optional[str] = None,
+        path: Optional[str] = None,
+        entity: Optional[str] = None,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """List entity mentions with evidence for a memory, path, or entity key."""
         if getattr(self, "_entities_table", None) is None:
             return []
 
@@ -1478,6 +1646,7 @@ class LanceDBBackend(StorageBackend):
             project_id=project_id,
             profile=profile,
         )
+        filters.append(active_row_filter())
         if memory_id:
             filters.append(_safe_filter("memory_id", memory_id))
         if path:
@@ -1515,6 +1684,33 @@ class LanceDBBackend(StorageBackend):
         return rows
 
     def find_related_memories(
+        self,
+        *,
+        memory_id: Optional[str] = None,
+        path: Optional[str] = None,
+        entity: Optional[str] = None,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Find memories that share graph entities with a seed memory/path/entity."""
+        with self._get_visibility_lock():
+            return self._find_related_memories_unlocked(
+                memory_id=memory_id,
+                path=path,
+                entity=entity,
+                collection=collection,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                limit=limit,
+            )
+
+    def _find_related_memories_unlocked(
         self,
         *,
         memory_id: Optional[str] = None,
@@ -1569,6 +1765,7 @@ class LanceDBBackend(StorageBackend):
             project_id=project_id,
             profile=profile,
         )
+        filters.append(active_row_filter())
         filters.append("(" + " OR ".join(_safe_filter("entity_key", key) for key in sorted(seed_keys)) + ")")
         try:
             rows = list(
@@ -1681,6 +1878,7 @@ class LanceDBBackend(StorageBackend):
             profile=profile,
             active_only=False,
         )
+        embed_filters.append(active_row_filter())
         embed_filters.append(
             "(" + " OR ".join(self._memory_path_clause(path) for path in unique_root_paths) + ")"
         )
@@ -1892,6 +2090,27 @@ class LanceDBBackend(StorageBackend):
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
         """List canonical root memories from the documents table."""
+        with self._get_visibility_lock():
+            return self._list_memories_unlocked(
+                collection=collection,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                limit=limit,
+            )
+
+    def _list_memories_unlocked(
+        self,
+        *,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """List canonical root memories from the documents table."""
         filters = self._memory_namespace_filters(
             collection=collection,
             user_id=user_id,
@@ -1965,6 +2184,29 @@ class LanceDBBackend(StorageBackend):
         path: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Return a canonical memory plus child assets and snippets."""
+        with self._get_visibility_lock():
+            return self._get_memory_unlocked(
+                memory_id=memory_id,
+                collection=collection,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                path=path,
+            )
+
+    def _get_memory_unlocked(
+        self,
+        memory_id: Optional[str] = None,
+        *,
+        collection: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+        path: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a canonical memory plus child assets and snippets."""
         if not memory_id and not path:
             return None
 
@@ -2025,6 +2267,7 @@ class LanceDBBackend(StorageBackend):
             profile=profile,
             active_only=False,
         )
+        embed_filters.append(active_row_filter())
         embed_filters.append(self._memory_path_clause(root_path))
 
         try:
@@ -2138,6 +2381,8 @@ class LanceDBBackend(StorageBackend):
         _skip_delete: bool = False,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        _active: int = 1,
+        _index_batch_id: Optional[str] = None,
     ) -> str:
         """Create or update a text memory, replacing old vectors for this path."""
         return self._indexer.upsert_memory(
@@ -2156,6 +2401,8 @@ class LanceDBBackend(StorageBackend):
             _skip_delete=_skip_delete,
             memory_role=memory_role,
             memory_root_path=memory_root_path,
+            _active=_active,
+            _index_batch_id=_index_batch_id,
         )
     
     def delete_memory(
@@ -2353,6 +2600,9 @@ class LanceDBBackend(StorageBackend):
         caption_media: bool = True,
         memory_role: str = "root",
         memory_root_path: Optional[str] = None,
+        _skip_delete: bool = False,
+        _active: int = 1,
+        _index_batch_id: Optional[str] = None,
     ) -> str:
         """Index an image file."""
         return self._indexer.index_image(
@@ -2369,6 +2619,9 @@ class LanceDBBackend(StorageBackend):
             caption_media=caption_media,
             memory_role=memory_role,
             memory_root_path=memory_root_path,
+            _skip_delete=_skip_delete,
+            _active=_active,
+            _index_batch_id=_index_batch_id,
         )
 
     def index_video(
@@ -2487,15 +2740,29 @@ class LanceDBBackend(StorageBackend):
     # =========================================================================
     
     def count_embeddings(self) -> int:
-        """Count total embeddings."""
+        """Count visible embeddings."""
         try:
-            return self._embeddings_table.count_rows()
+            with self._get_visibility_lock():
+                return len(
+                    self._embeddings_table.search()
+                    .where(active_row_filter())
+                    .select(["hash_seq"])
+                    .limit(10_000_000)
+                    .to_list()
+                )
         except Exception:
             return 0
     
     def count_documents(self) -> int:
-        """Count total documents."""
+        """Count visible documents."""
         try:
-            return self._documents_table.count_rows()
+            with self._get_visibility_lock():
+                return len(
+                    self._documents_table.search()
+                    .where("active = 1")
+                    .select(["id"])
+                    .limit(10_000_000)
+                    .to_list()
+                )
         except Exception:
             return 0
