@@ -23,7 +23,7 @@ import re
 import time
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
-from typing import List, Dict, Any, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from .backends.base import ModelBackend
 from .cache import EmbeddingCache
@@ -1769,6 +1769,7 @@ def search_batch(
     profile: Optional[str] = None,
     max_workers: int = 4,
     rrf_k: int = 60,
+    progress_callback: Optional[Callable[[int, int, int], None]] = None,
 ) -> List[BatchSearchResult]:
     """
     Run multiple search queries in parallel and merge results using RRF.
@@ -1789,6 +1790,8 @@ def search_batch(
         profile: Optional profile namespace filter
         max_workers: Maximum parallel threads
         rrf_k: RRF fusion constant
+        progress_callback: Optional callback invoked as each query branch
+            completes with (completed_count, total_count, branch_result_count)
 
     Returns:
         List of BatchSearchResult objects, sorted by best merged score
@@ -1845,6 +1848,7 @@ def search_batch(
 
     # Run all queries in parallel
     all_results: List[List[tuple]] = [[] for _ in batch_queries]
+    completed_queries = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {
             executor.submit(run_single_query, q): i
@@ -1857,6 +1861,12 @@ def search_batch(
             except Exception as e:
                 logger.error("Batch query %d failed: %s", idx, e)
                 all_results[idx] = []
+            completed_queries += 1
+            if progress_callback is not None:
+                try:
+                    progress_callback(completed_queries, len(batch_queries), len(all_results[idx]))
+                except Exception as exc:
+                    logger.debug("search_batch progress callback failed: %s", exc)
 
     # Merge results using RRF with best-score-wins
     merged: Dict[str, Dict[str, Any]] = {}

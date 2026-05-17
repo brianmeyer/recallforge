@@ -21,6 +21,17 @@ HTTP mode also exposes:
 - `/sse`
 - `/messages/`
 
+## Progress Notifications
+
+RecallForge supports MCP progress notifications for long-running tool calls. When a client includes `_meta.progressToken` in a request, compatible transports receive `notifications/progress` events with numeric progress, optional total, and a human-readable status message.
+
+Progress is best-effort and does not change the final tool response shape. It currently covers:
+
+- search and explain phases
+- vector and full-text search phases
+- `search_batch` per-query completion updates before the final merged result
+- `ingest`, individual index/memory writes, `batch`, and `rebuild_fts`
+
 Example MCP client config (Claude Desktop):
 
 ```json
