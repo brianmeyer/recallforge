@@ -7,8 +7,10 @@ Tests: RRF fusion, score blending, tiered mode branching.
 
 import os
 import sys
+import tempfile
 import unittest
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from unittest.mock import MagicMock, patch, call
 
@@ -780,6 +782,23 @@ class TestImageQueryHybridPipeline(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("original_fts", results[0].source)
         backend.rerank.assert_not_called()
+
+    def test_caption_video_query_uses_sidecar_transcript(self):
+        backend = StubBackend(mode="hybrid")
+        searcher = HybridSearcher(backend=backend, storage=StubStorage(), limit=1)
+        searcher._caption_image_query = MagicMock(return_value="")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = Path(tmpdir) / "query.mp4"
+            video_path.write_bytes(b"not a real video")
+            video_path.with_suffix("").with_name("query.transcript.json").write_text(
+                '{"segments":[{"start":0,"end":2,"text":"Coding demo transcript"}]}',
+                encoding="utf-8",
+            )
+
+            query_text = searcher._caption_video_query(str(video_path))
+
+        self.assertIn("Coding demo transcript", query_text)
 
     def test_search_video_expands_caption_probe_when_enabled(self):
         backend = StubBackend(

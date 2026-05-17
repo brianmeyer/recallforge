@@ -602,7 +602,22 @@ class HybridSearcher:
         return (caption or "").strip()
 
     def _caption_video_query(self, video_path: str) -> str:
-        """Extract a representative frame and caption it for BM25 probing."""
+        """Build safe BM25 probe text from a video transcript and first-frame caption."""
+        query_parts: List[str] = []
+        try:
+            from .video import load_transcript_segments
+
+            segments, _ = load_transcript_segments(video_path, video_path)
+            transcript_text = " ".join(
+                segment.text.strip()
+                for segment in segments
+                if isinstance(segment.text, str) and segment.text.strip()
+            ).strip()
+            if transcript_text:
+                query_parts.append(transcript_text)
+        except Exception as exc:
+            logger.debug("video query transcript probe failed: %s", exc)
+
         try:
             import subprocess
             import tempfile
@@ -625,10 +640,13 @@ class HybridSearcher:
                     timeout=10,
                 )
                 if os.path.exists(frame_path):
-                    return self._caption_image_query(frame_path)
+                    frame_caption = self._caption_image_query(frame_path)
+                    if frame_caption:
+                        query_parts.append(frame_caption)
         except Exception as exc:
             logger.warning("video query caption failed (is ffmpeg installed?): %s", exc)
-        return ""
+
+        return " ".join(dict.fromkeys(query_parts))[:2000].strip()
 
     def _query_media_probe(
         self,

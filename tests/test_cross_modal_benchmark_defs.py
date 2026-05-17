@@ -261,7 +261,7 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
             error="Interrupted by user",
         )
 
-        self.assertEqual(payload["version"], "0.2.0")
+        self.assertEqual(payload["version"], "0.2.1")
         self.assertEqual(payload["configuration"]["expansion_profile"], "caption_only")
         self.assertEqual(payload["configuration"]["smoke_profile"], "safe")
         self.assertEqual(payload["configuration"]["rss_limit_mb"], 4096)

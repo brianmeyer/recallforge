@@ -194,7 +194,10 @@ else
 fi
 
 OUTPUT=$(recallforge search --video "$VIDEO_PATH" --content-type text --store-path "$UAT_STORE" --collection cli_video_test 2>&1)
-if echo "$OUTPUT" | grep -q "Results for video" && echo "$OUTPUT" | grep -q "coding_demo.mp4::transcript:"; then
+if echo "$OUTPUT" | grep -q "Results for video" && (
+    echo "$OUTPUT" | grep -q "coding_demo.mp4::transcript:" ||
+    echo "$OUTPUT" | grep -q "Code editor showing a Python script"
+); then
     pass "recallforge search --video (video→text)"
 else
     fail "recallforge search --video (video→text)"

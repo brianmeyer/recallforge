@@ -699,7 +699,7 @@ Example MCP client config (Claude Desktop):
 **Example Response:**
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "models": {
     "backend": "mlx",
     "device": "mps",
@@ -889,7 +889,7 @@ Operation object schema:
 **Example Response:**
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "backend": "mlx",
   "mode": "hybrid",
   "quantize": "4bit",
@@ -933,7 +933,7 @@ Operation object schema:
 **Example Response:**
 ```json
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "backend": "mlx",
   "mode": "hybrid",
   "quantize": "4bit",

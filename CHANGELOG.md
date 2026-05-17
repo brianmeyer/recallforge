@@ -6,6 +6,34 @@ All notable changes to RecallForge will be documented in this file.
 
 *Nothing yet.*
 
+## [0.2.1] — 2026-05-17
+
+RecallForge 0.2.1 is a hardening release for the post-0.2.0 memory and MLX safety work. It keeps the local-first MCP surface intact while making Apple Silicon multimodal validation safer and memory behavior more predictable.
+
+### MLX Safety
+
+- Serialized heavy MLX multimodal operations by default to reduce overlapping unified-memory pressure
+- Added conservative MLX video frame/pixel budgets and runtime knobs for advanced operators
+- Made MLX raw video query embedding fail open to caption/transcript-first retrieval by default
+- Kept native qwen-vl-utils video decoding off the default MLX path unless explicitly enabled
+- Added a crash-safe MLX benchmark smoke profile with RSS telemetry and stop-limit support
+
+### Memory and Retrieval
+
+- Added Qwen-backed query expansion paths for text and media-query probes
+- Persisted canonical parent memory summaries during ingest
+- Added memory-summary and rollup provenance in search results
+- Added file-based query routing and stronger guards around expansion/file query behavior
+- Added derived media tags for root memories and hardened generated tag parsing
+- Added explicit memory-level benchmark scoring separate from child-asset hits
+
+### Reliability
+
+- Added OCR fallback support for scanned PDF memories
+- Fixed watch-folder startup race behavior and stabilized async watch tests
+- Hardened batch tag ordering and rolled memory path canonicalization
+- Expanded regression coverage for MLX guardrails, query expansion, storage, documents, watch folders, and benchmark output
+
 ## [0.2.0] — 2026-03-22
 
 RecallForge 0.2.0 makes the project much more usable as a local multimodal memory MCP. This release improves cross-modal retrieval, adds a stronger MCP surface for agents, and lays the foundation for memory-level results instead of isolated file fragments.
