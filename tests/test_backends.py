@@ -7,6 +7,8 @@ Uses mock/stub implementations — NO real model inference.
 
 import os
 import sys
+import threading
+import time
 import unittest
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
@@ -151,6 +153,42 @@ class TestTieredModes(unittest.TestCase):
         backend = StubBackend()
         backend.set_mode("hybrid")
         self.assertTrue(backend.needs_reranker())
+
+
+class TestMLXCaptionerLifecycle(unittest.TestCase):
+    """Tests for MLX captioner memory lifecycle helpers without loading MLX."""
+
+    def _make_uninitialized_backend(self):
+        from recallforge.backends.mlx_backend import MLXBackend
+
+        backend = object.__new__(MLXBackend)
+        backend._model_lock = threading.RLock()
+        backend._captioner_model = object()
+        backend._captioner_processor = object()
+        backend._captioner_idle_timer = None
+        backend._captioner_idle_seconds = 0.05
+        return backend
+
+    def test_captioner_idle_timer_unloads_model(self):
+        backend = self._make_uninitialized_backend()
+
+        backend._schedule_captioner_idle_unload()
+        self.assertIsNotNone(backend._captioner_idle_timer)
+
+        time.sleep(0.15)
+        self.assertIsNone(backend._captioner_model)
+        self.assertIsNone(backend._captioner_processor)
+        self.assertIsNone(backend._captioner_idle_timer)
+
+    def test_manual_unload_cancels_captioner_idle_timer(self):
+        backend = self._make_uninitialized_backend()
+        backend._schedule_captioner_idle_unload()
+
+        backend._unload_captioner()
+
+        self.assertIsNone(backend._captioner_model)
+        self.assertIsNone(backend._captioner_processor)
+        self.assertIsNone(backend._captioner_idle_timer)
 
 
 class TestBackendInfo(unittest.TestCase):

@@ -40,6 +40,8 @@ class SearchResult:
     memory_role: str = "root"
     memory_root_path: Optional[str] = None
     tags: Optional[List[str]] = None
+    importance: Optional[float] = None
+    expires_at: Optional[int] = None
 
 
 @dataclass
@@ -325,6 +327,22 @@ class StorageBackend(ABC):
         profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Extract and index a document file into structured text assets."""
+        pass
+
+    @abstractmethod
+    def index_audio(
+        self,
+        path: str,
+        collection: str,
+        embed_text_func: Callable[[str], List[float]],
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Index an audio file through transcript sidecars."""
         pass
 
     @abstractmethod

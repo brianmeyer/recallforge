@@ -6,7 +6,7 @@
 
 ![RecallForge — Your Files → One Search](docs/hero-banner.png)
 
-Standard RAG only works on text. Drop a PDF with charts, a photo of a whiteboard, or a video recording — and your AI agent goes blind. RecallForge gives agents **eyes and ears over your local filesystem**. Text, images, documents, and video all live in one unified search space, and nothing ever leaves your machine.
+Standard RAG only works on text. Drop a PDF with charts, a photo of a whiteboard, a video recording, or a transcript-backed audio note — and your AI agent goes blind. RecallForge gives agents **eyes and ears over your local filesystem**. Text, images, documents, video, and audio transcripts all live in one unified search space, and nothing ever leaves your machine.
 
 ## What this enables
 
@@ -30,21 +30,22 @@ One query. Any modality. All local.
 |------------|-------------|--------|------|--------|----------|
 | Cross-modal search | ✅ Native | ✅ OpenCLIP | ❌ Text only | ❌ | ✅ CLIP modules |
 | Video support [Beta] | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Audio transcript ingest | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Document ingest (PDF/DOCX/PPTX) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Built-in reranking | ✅ Multimodal | ❌ | ❌ | ✅ ColBERT | ✅ Modules |
-| MCP-native | ✅ 20 tools | ❌ | ❌ | ❌ | ❌ |
+| MCP-native | ✅ 21 tools | ❌ | ❌ | ❌ | ❌ |
 | 100% local | ✅ | ✅ | ⚠️ Cloud default | ✅ | ✅ Docker |
 | Apple Silicon optimized | ✅ MLX 4-bit | ❌ | ❌ | ❌ | ❌ |
 | Cloud option | ❌ | ✅ | ✅ | ✅ | ✅ |
 | JS/TS SDK | ❌ | ✅ | ✅ | ✅ | ✅ |
 
-**Use RecallForge when:** You need multimodal memory for AI agents that runs entirely on your machine, especially on Apple Silicon. One search across text, images, documents, and video.
+**Use RecallForge when:** You need multimodal memory for AI agents that runs entirely on your machine, especially on Apple Silicon. One search across text, images, documents, video, and transcript-backed audio.
 
 **Use something else when:** You need cloud hosting, massive scale (millions+ vectors), or a JS/TS-first ecosystem.
 
 ## Performance
 
-4 modalities (text, images, documents, video) unified in a single MLX-optimized local vector space. Sub-60ms search latency in embed mode. Under 400MB resident memory.
+5 modalities (text, images, documents, video, transcript-backed audio) unified in a single MLX-optimized local vector space. Sub-60ms search latency in embed mode. Under 400MB resident memory.
 
 ### Pipeline ablation (Mac mini M4 16GB, MLX 4-bit)
 
@@ -115,6 +116,7 @@ pip install -e ".[mlx]"
 - Disk: ~2-5GB free for model downloads on first run
 - RAM (MLX 4-bit): ~1.7GB (`embed`) to ~3.4GB (`hybrid`)
 - `ffmpeg` recommended for video indexing/search
+- Audio indexing is transcript-first: add a `.srt`, `.vtt`, `.txt`, or `.transcript.json` sidecar next to the audio file
 - First run downloads models automatically and may take a few minutes
 
 ## MCP Server (primary use)
@@ -144,7 +146,7 @@ Run over HTTP/SSE:
 recallforge serve --http --host 127.0.0.1 --port 7433 --mode embed
 ```
 
-RecallForge now exposes **20 MCP tools** across search, ingest, memory, collection admin, and runtime config. HTTP/SSE mode also exposes `/health`, `/sse`, and `/messages/`.
+RecallForge now exposes **21 MCP tools** across search, ingest, memory, collection admin, and runtime config. HTTP/SSE mode also exposes `/health`, `/sse`, and `/messages/`.
 
 See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 
@@ -159,7 +161,7 @@ See [docs/mcp-tools.md](docs/mcp-tools.md) for the full tool reference.
 
 ## How it works
 
-RecallForge encodes text, images, and video frames into the same 2048-dimensional vector space using Qwen3-VL. This means "find notes about this diagram" works whether the diagram is text, an image, or a frame from a video. A 3-stage pipeline handles the rest:
+RecallForge encodes text, images, video frames, documents, and audio transcripts into the same 2048-dimensional vector space using Qwen3-VL. This means "find notes about this diagram" works whether the diagram is text, an image, or a frame from a video. A 3-stage pipeline handles the rest:
 
 ```mermaid
 graph TD
@@ -167,12 +169,14 @@ graph TD
         Docs[📄 Documents]
         Imgs[🖼️ Images]
         Vids[🎬 Video]
+        Aud[🎙️ Audio + Transcript]
     end
 
     subgraph RecallForge Ingest
         Docs --> TxtExt[Text Extractor]
         Imgs --> VLM[Qwen3-VL Encoder]
         Vids --> Frame[Frame & Audio Extractor]
+        Aud --> TxtExt
         Frame --> VLM
         TxtExt --> VLM
     end
@@ -200,6 +204,7 @@ graph TD
 # Index anything
 recallforge index ./photos ./docs
 recallforge index ~/Movies/demo.mp4
+recallforge index ~/Recordings/standup.wav   # requires standup.srt/.vtt/.txt/.transcript.json
 recallforge index ~/Documents/roadmap.pptx
 
 # Search any modality
@@ -253,8 +258,10 @@ for r in results:
 | `RECALLFORGE_MLX_QUANTIZE` | `4bit` | `4bit`, `bf16` |
 | `RECALLFORGE_STORE_PATH` | `~/.recallforge` | Storage directory |
 
-Full reference (including advanced tuning and server/storage internals):
-[`docs/ENV_VARS.md`](docs/ENV_VARS.md)
+Full references:
+[`docs/ENV_VARS.md`](docs/ENV_VARS.md),
+[`docs/MEMORY_POLICY.md`](docs/MEMORY_POLICY.md), and
+[`docs/RUNTIME_BUDGETS.md`](docs/RUNTIME_BUDGETS.md)
 
 ## Project structure
 
@@ -267,9 +274,10 @@ src/recallforge/
 │   └── lancedb_backend.py # LanceDB + Tantivy FTS
 ├── cache.py              # LRU embedding cache
 ├── search.py             # Hybrid search pipeline (BM25 + vector + RRF)
-├── server.py             # MCP server (20 tools, stdio + HTTP/SSE)
+├── server.py             # MCP server (21 tools, stdio + HTTP/SSE)
 ├── documents.py          # PDF/DOCX/PPTX extraction
 ├── video.py              # Frame/transcript extraction
+├── audio.py              # Transcript-first audio ingest
 ├── watch_folder.py       # Folder monitoring with dedup
 └── cli.py                # CLI interface
 ```

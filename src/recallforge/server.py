@@ -3,7 +3,7 @@ server.py - MCP Server for RecallForge.
 
 MCP protocol server with stdio or HTTP/SSE transport.
 Tools: search, search_fts, search_vec, explain_results, search_batch, ingest,
-index_document, index_image, memory_add, memory_update, memory_delete,
+index_document, index_image, index_audio, memory_add, memory_update, memory_delete,
 memory_get, list_memories, status, rebuild_fts, list_collections,
 list_namespaces, rename_collection, delete_collection, batch, get_config,
 set_config. Resources expose canonical memories via memory:// URIs.
@@ -28,6 +28,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import EmbeddedResource, ImageContent, Resource, ResourceTemplate, TextContent, Tool
 
 from . import __version__, get_backend, get_storage, warmup_backend
+from .audio import is_audio_file, load_audio_transcript_segments
 from .documents import extract_document_artifacts, is_document_file
 from .search import HybridSearcher
 from .video import is_video_file
@@ -107,6 +108,21 @@ def _resolve_file_query_input(
         return None, resolved_str, None, None
     if is_video_file(resolved):
         return None, None, resolved_str, None
+    if is_audio_file(resolved):
+        try:
+            segments, sidecar_path = load_audio_transcript_segments(resolved, resolved_str)
+        except Exception as exc:
+            return None, None, None, f"Failed to extract audio transcript query from {resolved.name}: {exc}"
+        text = _normalize_query_text(
+            "\n".join(segment.text.strip() for segment in segments if segment.text.strip())
+        )
+        if not text:
+            return None, None, None, (
+                f"No transcript sidecar found for {resolved.name}. "
+                "Add .srt, .vtt, .txt, or .transcript.json next to the audio file."
+            )
+        label = f"Transcript from {Path(sidecar_path).name}: " if sidecar_path else ""
+        return f"{label}{text}", None, None, None
     if is_document_file(resolved):
         try:
             artifacts = extract_document_artifacts(resolved, resolved_str)
@@ -319,7 +335,7 @@ async def create_server(
                         "file_path": {"type": "string", "description": "Optional generic file query path (mutually exclusive with query/image_path/video_path). Text files are read directly; image/video/document files auto-route through the matching query path."},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
                         "collection": {"type": "string", "description": "Optional collection filter"},
-                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video", "audio"], "description": "Optional content type filter"},
                         "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
@@ -339,7 +355,7 @@ async def create_server(
                         "query": {"type": "string", "description": "Search query"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
                         "collection": {"type": "string", "description": "Optional collection filter"},
-                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video", "audio"], "description": "Optional content type filter"},
                         "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
@@ -359,7 +375,7 @@ async def create_server(
                         "file_path": {"type": "string", "description": "Optional generic file query path (mutually exclusive with query/image_path/video_path)"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 20},
                         "collection": {"type": "string", "description": "Optional collection filter"},
-                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video", "audio"], "description": "Optional content type filter"},
                         "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
@@ -369,21 +385,21 @@ async def create_server(
             ),
             Tool(
                 name="ingest",
-                description="Unified ingest for text, image, video, document, file, or folder. Auto-detects modality and routes accordingly.",
+                description="Unified ingest for text, image, video, audio, document, file, or folder. Auto-detects modality and routes accordingly.",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "text": {"type": "string", "description": "Raw text content to ingest"},
                         "path": {"type": "string", "description": "Optional memory path for raw text ingest"},
-                        "file_path": {"type": "string", "description": "Path to a single file (text, image, video, or office document)"},
+                        "file_path": {"type": "string", "description": "Path to a single file (text, image, video, audio, or office document)"},
                         "folder_path": {"type": "string", "description": "Path to a folder to ingest"},
                         "recursive": {"type": "boolean", "description": "Recursively ingest subfolders", "default": True},
                         "collection": {"type": "string", "description": "Collection name", "default": "default"},
                         "content_types": {
                             "type": "array",
-                            "items": {"type": "string", "enum": ["text", "image", "video", "document"]},
+                            "items": {"type": "string", "enum": ["text", "image", "video", "audio", "document"]},
                             "description": "Allowed content types to ingest",
-                            "default": ["text", "image", "video", "document"]
+                            "default": ["text", "image", "video", "audio", "document"]
                         },
                         "include_globs": {"type": "array", "items": {"type": "string"}, "description": "Include globs relative to folder root"},
                         "exclude_globs": {"type": "array", "items": {"type": "string"}, "description": "Exclude globs relative to folder root"},
@@ -416,6 +432,18 @@ async def create_server(
                     "type": "object",
                     "properties": {
                         "path": {"type": "string", "description": "Absolute path to image file"},
+                        "collection": {"type": "string", "description": "Collection name", "default": "default"},
+                    },
+                    "required": ["path"],
+                },
+            ),
+            Tool(
+                name="index_audio",
+                description="Index an audio file through transcript sidecars for transcript-first search",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Absolute path to audio file"},
                         "collection": {"type": "string", "description": "Collection name", "default": "default"},
                     },
                     "required": ["path"],
@@ -621,7 +649,7 @@ async def create_server(
                         },
                         "limit": {"type": "integer", "description": "Maximum final results to return", "default": 10},
                         "collection": {"type": "string", "description": "Optional collection filter"},
-                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video", "audio"], "description": "Optional content type filter"},
                         "user_id": {"type": "string", "description": "Optional user namespace filter"},
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
@@ -642,7 +670,7 @@ async def create_server(
                         "file_path": {"type": "string", "description": "Optional generic file query path (mutually exclusive with query/image_path/video_path)"},
                         "limit": {"type": "integer", "description": "Maximum results to return", "default": 10},
                         "collection": {"type": "string", "description": "Optional collection filter"},
-                        "content_type": {"type": "string", "enum": ["text", "image", "video"], "description": "Optional content type filter"},
+                        "content_type": {"type": "string", "enum": ["text", "image", "video", "audio"], "description": "Optional content type filter"},
                         "user_id": {"type": "string", "description": "Optional user namespace filter for multi-tenant isolation"},
                         "session_id": {"type": "string", "description": "Optional session namespace filter"},
                         "project_id": {"type": "string", "description": "Optional project namespace filter"},
@@ -756,6 +784,8 @@ async def _dispatch_tool(
         return await _handle_index_document(arguments, backend, storage)
     elif name == "index_image":
         return await _handle_index_image(arguments, backend, storage)
+    elif name == "index_audio":
+        return await _handle_index_audio(arguments, backend, storage)
     elif name == "memory_add":
         return await _handle_memory_add(arguments, backend, storage)
     elif name == "memory_update":
@@ -1277,7 +1307,7 @@ async def _handle_ingest(arguments: dict, backend, storage) -> list[TextContent]
     folder_path = arguments.get("folder_path")
     recursive = arguments.get("recursive", True)
     collection = arguments.get("collection", "default")
-    content_types = arguments.get("content_types", ["text", "image", "video", "document"])
+    content_types = arguments.get("content_types", ["text", "image", "video", "audio", "document"])
     include_globs = arguments.get("include_globs")
     exclude_globs = arguments.get("exclude_globs")
     max_file_size_mb = arguments.get("max_file_size_mb", 100)
@@ -1378,6 +1408,30 @@ async def _handle_index_image(arguments: dict, backend, storage) -> list[TextCon
         "hash": content_hash,
     }
     
+    return [TextContent(type="text", text=json.dumps(output, indent=2))]
+
+
+async def _handle_index_audio(arguments: dict, backend, storage) -> list[TextContent]:
+    """Handle transcript-first audio indexing."""
+    path = arguments.get("path", "")
+    collection = arguments.get("collection", "default")
+
+    trace_log("index_audio_start", path=path, collection=collection)
+
+    if not path:
+        return _error_response("INVALID_INPUT", "path is required")
+
+    if not os.path.exists(path):
+        return _error_response("NOT_FOUND", f"File not found: {path}", {"path": path})
+
+    output = await _run_blocking(
+        storage.index_audio,
+        path=path,
+        collection=collection,
+        embed_text_func=backend.embed_text,
+    )
+
+    trace_log("index_audio_done", path=path, hash=str(output.get("hash", ""))[:8])
     return [TextContent(type="text", text=json.dumps(output, indent=2))]
 
 

@@ -56,7 +56,7 @@ class SearchOps:
                 .select(["collection", "file_path", "content_hash", "content_type", "title",
                          "text_body", "embedded_at", "modified_at", "user_id", "session_id",
                          "project_id", "profile", "memory_id", "memory_role",
-                         "memory_root_path", "tags", "expires_at"])
+                         "memory_root_path", "importance", "tags", "expires_at"])
                 .limit(row_limit)
             )
             rows = builder.to_pandas()
@@ -95,7 +95,14 @@ class SearchOps:
                 tf_comp = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avgdl))
                 score += idf * tf_comp
             if score > 0:
-                results.append(self._make_search_result(dict(row), score, "fts"))
+                row_dict = dict(row)
+                results.append(
+                    self._make_search_result(
+                        row_dict,
+                        score * self._memory_policy_multiplier(row_dict),
+                        "fts",
+                    )
+                )
 
         results.sort(key=lambda x: x.score, reverse=True)
         if results:
@@ -169,7 +176,7 @@ class SearchOps:
         seen: Dict[str, SearchResult] = {}
         for r in results:
             filepath = f"recallforge://{r['collection']}/{r['file_path']}"
-            score = r.get("_score", 0) / max_score
+            score = (r.get("_score", 0) / max_score) * self._memory_policy_multiplier(r)
 
             if filepath in seen:
                 if score > seen[filepath].score:
@@ -177,7 +184,9 @@ class SearchOps:
             else:
                 seen[filepath] = self._make_search_result(r, score, "fts")
 
-        final_results = sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
+        final_results = self._normalize_ranked_scores(
+            sorted(seen.values(), key=lambda x: x.score, reverse=True)
+        )[:limit]
         trace_log("search_fts_done", count=len(final_results), query=trimmed[:50])
         return final_results
 
@@ -235,7 +244,7 @@ class SearchOps:
         for r in results:
             filepath = f"recallforge://{r['collection']}/{r['file_path']}"
             distance = r.get("_distance", 1.0)
-            score = 1.0 - distance / 2.0
+            score = (1.0 - distance / 2.0) * self._memory_policy_multiplier(r)
 
             if filepath in seen:
                 if score > seen[filepath].score:
@@ -243,9 +252,48 @@ class SearchOps:
             else:
                 seen[filepath] = self._make_search_result(r, score, "vec")
 
-        final_results = sorted(seen.values(), key=lambda x: x.score, reverse=True)[:limit]
+        final_results = self._normalize_ranked_scores(
+            sorted(seen.values(), key=lambda x: x.score, reverse=True)
+        )[:limit]
         trace_log("search_vec_done", count=len(final_results))
         return final_results
+
+    def _memory_policy_multiplier(self, row: Dict[str, Any]) -> float:
+        """Return a modest ranking multiplier from memory metadata."""
+        boost = 1.0
+
+        raw_importance = row.get("importance")
+        if raw_importance is not None:
+            try:
+                importance = max(0.0, min(1.0, float(raw_importance)))
+                boost += 0.15 * importance
+            except (TypeError, ValueError):
+                pass
+
+        embedded_at = row.get("embedded_at")
+        try:
+            age_ms = int(time.time() * 1000) - int(embedded_at)
+        except (TypeError, ValueError):
+            age_ms = None
+        if age_ms is not None and age_ms >= 0:
+            age_days = age_ms / 86_400_000
+            if age_days <= 7:
+                boost += 0.05
+            elif age_days <= 30:
+                boost += 0.025
+
+        return boost
+
+    def _normalize_ranked_scores(self, results: List[SearchResult]) -> List[SearchResult]:
+        """Keep policy-boosted scores on the familiar 0..1 scale."""
+        if not results:
+            return results
+        max_score = max((result.score for result in results), default=0.0)
+        if max_score <= 0:
+            return results
+        for result in results:
+            result.score = result.score / max_score
+        return results
 
     def _make_search_result(self, row: Dict[str, Any], score: float, source: str) -> SearchResult:
         """Convert LanceDB row to SearchResult.
@@ -322,6 +370,8 @@ class SearchOps:
             memory_role=memory_role,
             memory_root_path=memory_root_path,
             tags=decoded_tags,
+            importance=row.get("importance"),
+            expires_at=row.get("expires_at"),
         )
 
     def _get_ttl_filter(self) -> str:

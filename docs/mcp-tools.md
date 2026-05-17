@@ -1,7 +1,7 @@
 # RecallForge MCP Tool Reference
 
 ## Overview
-RecallForge exposes a local Model Context Protocol (MCP) server over stdio or HTTP/SSE for multimodal retrieval and memory operations. It supports text, images, video, and document ingest/search, collection administration, and runtime configuration.
+RecallForge exposes a local Model Context Protocol (MCP) server over stdio or HTTP/SSE for multimodal retrieval and memory operations. It supports text, images, video, transcript-backed audio, and document ingest/search, collection administration, and runtime configuration.
 
 Start the server over stdio:
 
@@ -47,6 +47,7 @@ Example MCP client config (Claude Desktop):
 - `ingest`
 - `index_document`
 - `index_image`
+- `index_audio`
 
 ### Memory
 - `memory_add`
@@ -78,7 +79,7 @@ Example MCP client config (Claude Desktop):
 | video_path | string | Conditionally* | — | Video query path |
 | limit | integer | No | 10 | Max results |
 | collection | string | No | server default collection | Collection filter |
-| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| content_type | string (`text`\|`image`\|`video`\|`audio`) | No | — | Content type filter |
 | user_id | string | No | — | User namespace filter |
 | session_id | string | No | — | Session namespace filter |
 | project_id | string | No | — | Project namespace filter |
@@ -142,7 +143,7 @@ Example MCP client config (Claude Desktop):
 | video_path | string | Conditionally* | — | Video query path |
 | limit | integer | No | 10 | Max results |
 | collection | string | No | server default collection | Collection filter |
-| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| content_type | string (`text`\|`image`\|`video`\|`audio`) | No | — | Content type filter |
 | user_id | string | No | — | User namespace filter |
 | session_id | string | No | — | Session namespace filter |
 | project_id | string | No | — | Project namespace filter |
@@ -220,7 +221,7 @@ Example MCP client config (Claude Desktop):
 | query | string | Yes (runtime) | — | Search query |
 | limit | integer | No | 20 | Max results |
 | collection | string | No | server default collection | Collection filter |
-| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| content_type | string (`text`\|`image`\|`video`\|`audio`) | No | — | Content type filter |
 | user_id | string | No | — | User namespace filter |
 | session_id | string | No | — | Session namespace filter |
 | project_id | string | No | — | Project namespace filter |
@@ -274,7 +275,7 @@ Example MCP client config (Claude Desktop):
 | video_path | string | Conditionally* | — | Video query path |
 | limit | integer | No | 20 | Max results |
 | collection | string | No | server default collection | Collection filter |
-| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| content_type | string (`text`\|`image`\|`video`\|`audio`) | No | — | Content type filter |
 | user_id | string | No | — | User namespace filter |
 | session_id | string | No | — | Session namespace filter |
 | project_id | string | No | — | Project namespace filter |
@@ -331,7 +332,7 @@ Example MCP client config (Claude Desktop):
 | queries | array | Yes | — | List of queries (1-20 items) |
 | limit | integer | No | 10 | Max final results after merge |
 | collection | string | No | server default collection | Collection filter |
-| content_type | string (`text`\|`image`\|`video`) | No | — | Content type filter |
+| content_type | string (`text`\|`image`\|`video`\|`audio`) | No | — | Content type filter |
 | user_id | string | No | — | User namespace filter |
 | session_id | string | No | — | Session namespace filter |
 | project_id | string | No | — | Project namespace filter |
@@ -419,7 +420,7 @@ Example MCP client config (Claude Desktop):
 | folder_path | string | Conditionally* | — | Path to folder |
 | recursive | boolean | No | true | Recurse subfolders |
 | collection | string | No | server default collection | Collection name |
-| content_types | array[string] | No | ["text","image","video","document"] | Allowed content types |
+| content_types | array[string] | No | ["text","image","video","audio","document"] | Allowed content types |
 | include_globs | array[string] | No | — | Include globs |
 | exclude_globs | array[string] | No | — | Exclude globs |
 | max_file_size_mb | integer | No | server default (100) | Max file size in MB |
@@ -449,6 +450,7 @@ Example MCP client config (Claude Desktop):
   "indexed_text": 42,
   "indexed_images": 0,
   "indexed_videos": 0,
+  "indexed_audio": 0,
   "indexed_documents": 17,
   "skipped": 3
 }
@@ -534,6 +536,45 @@ Example MCP client config (Claude Desktop):
 - `INTERNAL_ERROR`: uncaught exceptions.
 
 **Notes:** Requires a readable local file path on the server host.
+
+---
+
+## index_audio
+
+**Description:** Index an audio file through transcript sidecars.
+
+**Parameters:**
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| path | string | Yes | — | Audio file path |
+| collection | string | No | server default collection | Collection name |
+
+**Example Request:**
+```json
+{
+  "path": "/Users/me/Recordings/standup.wav",
+  "collection": "default"
+}
+```
+
+**Example Response:**
+```json
+{
+  "success": true,
+  "path": "/Users/me/Recordings/standup.wav",
+  "collection": "default",
+  "hash": "fed789...",
+  "indexed_transcripts": 4,
+  "transcript_path": "/Users/me/Recordings/standup.transcript.json"
+}
+```
+
+**Errors:**
+- `INVALID_INPUT`: when `path` is missing/empty.
+- `NOT_FOUND`: when file does not exist.
+- `INTERNAL_ERROR`: uncaught exceptions, including missing transcript sidecars.
+
+**Notes:** Audio ingest is transcript-first. Add `.srt`, `.vtt`, `.txt`, or `.transcript.json` next to the audio file.
 
 ---
 
@@ -699,7 +740,7 @@ Example MCP client config (Claude Desktop):
 **Example Response:**
 ```json
 {
-  "version": "0.2.1",
+  "version": "0.3.0",
   "models": {
     "backend": "mlx",
     "device": "mps",
@@ -889,7 +930,7 @@ Operation object schema:
 **Example Response:**
 ```json
 {
-  "version": "0.2.1",
+  "version": "0.3.0",
   "backend": "mlx",
   "mode": "hybrid",
   "quantize": "4bit",
@@ -933,7 +974,7 @@ Operation object schema:
 **Example Response:**
 ```json
 {
-  "version": "0.2.1",
+  "version": "0.3.0",
   "backend": "mlx",
   "mode": "hybrid",
   "quantize": "4bit",

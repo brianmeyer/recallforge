@@ -448,7 +448,7 @@ class TestConfigToolsInServer(unittest.IsolatedAsyncioTestCase):
         names = await self._get_tool_names()
         expected = {
             "search", "search_fts", "search_vec", "ingest",
-            "index_document", "index_image",
+            "index_document", "index_image", "index_audio",
             "memory_add", "memory_update", "memory_delete",
             "status", "rebuild_fts", "batch",
             "list_collections", "list_namespaces",

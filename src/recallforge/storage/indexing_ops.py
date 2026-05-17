@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from ..audio import is_audio_file, load_audio_transcript_segments
 from ..documents import extract_document_artifacts, is_document_file
 from ..video import extract_video_artifacts, is_video_file
 from .chunking import chunk_document
@@ -559,6 +560,10 @@ class IndexingOps:
         """Best-effort video file detection by extension."""
         return is_video_file(file_path)
 
+    def _is_audio_file(self, file_path: Path) -> bool:
+        """Best-effort audio file detection by extension."""
+        return is_audio_file(file_path)
+
     def _is_document_file(self, file_path: Path) -> bool:
         """Best-effort office-document detection by extension."""
         return is_document_file(file_path)
@@ -801,10 +806,10 @@ class IndexingOps:
         caption_media: bool = True,
     ) -> Dict[str, Any]:
         """Unified multimodal ingest for text, file, or folder inputs."""
-        content_types = content_types or ["text", "image", "video", "document"]
+        content_types = content_types or ["text", "image", "video", "audio", "document"]
         allowed = set(content_types)
-        if not allowed.issubset({"text", "image", "video", "document"}):
-            raise ValueError("content_types must be subset of ['text', 'image', 'video', 'document']")
+        if not allowed.issubset({"text", "image", "video", "audio", "document"}):
+            raise ValueError("content_types must be subset of ['text', 'image', 'video', 'audio', 'document']")
 
         trace_log("ingest_start", collection=collection, text=text is not None, file_path=file_path, folder_path=folder_path,
                   user_id=user_id, session_id=session_id, project_id=project_id, profile=profile)
@@ -815,11 +820,13 @@ class IndexingOps:
             "indexed_text": 0,
             "indexed_images": 0,
             "indexed_videos": 0,
+            "indexed_audio": 0,
             "indexed_documents": 0,
             "indexed_document_sections": 0,
             "indexed_video_embeddings": 0,
             "indexed_video_frames": 0,
             "indexed_video_transcripts": 0,
+            "indexed_audio_transcripts": 0,
             "skipped": 0,
             "errors": 0,
             "items": [],
@@ -853,6 +860,7 @@ class IndexingOps:
             item_path = rel_hint or str(candidate)
             is_image = self._is_image_file(candidate)
             is_video = self._is_video_file(candidate)
+            is_audio = self._is_audio_file(candidate)
             is_document = self._is_document_file(candidate)
 
             try:
@@ -903,6 +911,28 @@ class IndexingOps:
                     summary["indexed_video_frames"] += video_summary["indexed_frames"]
                     summary["indexed_video_transcripts"] += video_summary["indexed_transcripts"]
                     mark(item_path, "video", "indexed")
+                    return
+
+                if is_audio:
+                    if "audio" not in allowed:
+                        summary["skipped"] += 1
+                        mark(item_path, "audio", "skipped", reason="not_in_content_types")
+                        return
+                    audio_summary = self.index_audio(
+                        path=str(candidate),
+                        collection=collection,
+                        embed_text_func=embed_text_func,
+                        model=model,
+                        stored_path=item_path,
+                        user_id=user_id,
+                        session_id=session_id,
+                        project_id=project_id,
+                        profile=profile,
+                    )
+                    summary["indexed_audio"] += 1
+                    summary["indexed_text"] += audio_summary["indexed_transcripts"]
+                    summary["indexed_audio_transcripts"] += audio_summary["indexed_transcripts"]
+                    mark(item_path, "audio", "indexed")
                     return
 
                 if is_document:
@@ -967,6 +997,8 @@ class IndexingOps:
                     item_type = "image"
                 elif is_video:
                     item_type = "video"
+                elif is_audio:
+                    item_type = "audio"
                 elif is_document:
                     item_type = "document"
                 else:
@@ -1378,6 +1410,128 @@ class IndexingOps:
             "duration_seconds": artifacts.duration_seconds,
             "transcript_path": artifacts.transcript_path,
             "ffmpeg_available": artifacts.ffmpeg_available,
+        }
+
+    def index_audio(
+        self,
+        path: str,
+        collection: str,
+        embed_text_func,
+        model: str = "Qwen3-VL-Embedding-2B",
+        stored_path: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        profile: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Index an audio file through transcript sidecars."""
+        actual_path = str(Path(path).expanduser().resolve())
+        logical_path = stored_path or actual_path
+        resolved_title = os.path.splitext(os.path.basename(logical_path))[0]
+
+        transcripts, transcript_path = load_audio_transcript_segments(actual_path, logical_path)
+        if not transcripts:
+            raise ValueError(
+                "Audio ingest is transcript-first. Add a .srt, .vtt, .txt, "
+                "or .transcript.json sidecar next to the audio file."
+            )
+
+        self._delete_path_entries(
+            collection=collection,
+            logical_path=logical_path,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            include_children=True,
+        )
+
+        try:
+            content_hash = hash_file_bytes(actual_path)
+        except Exception:
+            content_hash = hash_content(f"audio:{logical_path}")
+
+        try:
+            modified_at = int(os.path.getmtime(actual_path) * 1000)
+            created_at = int(os.path.getctime(actual_path) * 1000)
+        except OSError:
+            modified_at = int(time.time() * 1000)
+            created_at = modified_at
+
+        self._backend.insert_content(content_hash, actual_path, content_type="audio")
+        self._backend.insert_document(
+            collection=collection,
+            file_path=logical_path,
+            title=resolved_title,
+            content_hash=content_hash,
+            content_type="audio",
+            created_at=created_at,
+            modified_at=modified_at,
+            user_id=user_id,
+            session_id=session_id,
+            project_id=project_id,
+            profile=profile,
+            memory_role="root",
+            memory_root_path=logical_path,
+        )
+
+        transcript_summary = self._build_parent_summary(
+            [segment.text for segment in transcripts],
+            fallback=resolved_title,
+        )
+        if transcript_summary:
+            try:
+                root_vector = embed_text_func(transcript_summary)
+                self._backend.insert_embedding(
+                    content_hash=content_hash,
+                    seq=0,
+                    pos=0,
+                    vector=root_vector.tolist() if hasattr(root_vector, "tolist") else list(root_vector),
+                    model=model,
+                    collection=collection,
+                    file_path=logical_path,
+                    title=resolved_title,
+                    text_body=transcript_summary,
+                    content_type="audio",
+                    user_id=user_id,
+                    session_id=session_id,
+                    project_id=project_id,
+                    profile=profile,
+                    memory_role="root",
+                    memory_root_path=logical_path,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "index_audio: root summary embedding failed for %s; continuing with transcript assets: %s",
+                    actual_path,
+                    exc,
+                )
+
+        indexed_transcripts = 0
+        for segment in transcripts:
+            self.upsert_memory(
+                path=segment.logical_path,
+                text=segment.text,
+                collection=collection,
+                embed_func=embed_text_func,
+                model=model,
+                user_id=user_id,
+                session_id=session_id,
+                project_id=project_id,
+                profile=profile,
+                _skip_delete=True,
+                memory_role="child",
+                memory_root_path=logical_path,
+            )
+            indexed_transcripts += 1
+
+        return {
+            "success": True,
+            "path": logical_path,
+            "collection": collection,
+            "hash": content_hash,
+            "indexed_transcripts": indexed_transcripts,
+            "transcript_path": transcript_path,
         }
 
     def index_document_file(

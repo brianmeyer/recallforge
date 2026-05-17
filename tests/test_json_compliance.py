@@ -12,6 +12,7 @@ from mcp.types import TextContent
 from recallforge.server import (
     _handle_batch,
     _handle_get_config,
+    _handle_index_audio,
     _handle_index_document,
     _handle_index_image,
     _handle_ingest,
@@ -80,6 +81,9 @@ class _DummyStorage:
 
     def index_image(self, **_kwargs):
         return "hash-img"
+
+    def index_audio(self, **_kwargs):
+        return {"success": True, "hash": "hash-audio", "indexed_transcripts": 1}
 
     def upsert_memory(self, **_kwargs):
         return "hash-mem"
@@ -190,6 +194,10 @@ class TestMCPJsonCompliance(unittest.IsolatedAsyncioTestCase):
                     (
                         lambda: _handle_index_image({"path": image_path}, self.backend, self.storage),
                         lambda: _handle_index_image({"path": "/definitely/missing.png"}, self.backend, self.storage),
+                    ),
+                    (
+                        lambda: _handle_index_audio({"path": image_path}, self.backend, self.storage),
+                        lambda: _handle_index_audio({"path": "/definitely/missing.wav"}, self.backend, self.storage),
                     ),
                     (
                         lambda: _handle_memory_add({"path": "mem/1", "text": "x"}, self.backend, self.storage),
