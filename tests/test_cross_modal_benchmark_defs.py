@@ -68,6 +68,43 @@ class TestCrossModalBenchmarkDefinitions(unittest.TestCase):
             all(gt.category == "text_to_document" for gt in module.TEXT_TO_DOCUMENT)
         )
 
+    def test_weak_cross_modal_categories_have_query_floor(self):
+        module = _load_cross_modal_ablation()
+
+        counts = {
+            category: sum(1 for gt in module.ALL_GROUND_TRUTH if gt.category == category)
+            for category in module.WEAK_CROSS_MODAL_BENCHMARK_CATEGORIES
+        }
+
+        self.assertEqual(
+            counts,
+            {
+                "image_to_document": module.MIN_WEAK_CATEGORY_QUERIES,
+                "image_to_text": module.MIN_WEAK_CATEGORY_QUERIES,
+                "video_to_document": module.MIN_WEAK_CATEGORY_QUERIES,
+                "video_to_image": module.MIN_WEAK_CATEGORY_QUERIES,
+                "video_to_text": module.MIN_WEAK_CATEGORY_QUERIES,
+            },
+        )
+
+    def test_expanded_media_queries_keep_source_path_provenance(self):
+        module = _load_cross_modal_ablation()
+
+        weak_queries = [
+            gt
+            for gt in module.ALL_GROUND_TRUTH
+            if gt.category in module.WEAK_CROSS_MODAL_BENCHMARK_CATEGORIES
+        ]
+
+        self.assertTrue(weak_queries)
+        for gt in weak_queries:
+            if gt.query_type == "image":
+                self.assertTrue(gt.image_query_path)
+            elif gt.query_type == "video":
+                self.assertTrue(gt.video_query_path)
+            else:
+                self.fail(f"Unexpected query_type for weak media category: {gt.query_type}")
+
     def test_bm25_skip_helper_skips_image_and_video_query_categories(self):
         module = _load_cross_modal_ablation()
 

@@ -10,7 +10,7 @@ This document describes the expanded RecallForge benchmark corpus and what addit
 - **Documents**: 8 generated `.docx` / `.pptx` / `.pdf` files
 - **Total corpus documents**: 82 registered in `CORPUS_DOCS`
 - **Total indexed benchmark items**: 77 searchable items (the transcript JSON placeholders are empty and not indexed)
-- **Total benchmark queries**: 154 queries across all modalities
+- **Total benchmark queries**: 231 queries across all modalities
 
 ## New Text Documents Added (39 files)
 
@@ -139,18 +139,28 @@ To further expand the corpus for more comprehensive cross-modal testing, the fol
 |----------|-------|------|--------|------|-------------------|
 | text_to_text | 60 | 26 | 24 | 10 | 5 |
 | text_to_image | 18 | 8 | 8 | 2 | 0 |
-| image_to_text | 15 | 6 | 6 | 3 | 0 |
+| image_to_text | 20 | 6 | 9 | 5 | 0 |
 | image_to_image | 3 | 1 | 2 | 0 | 1 |
 | image_to_video | 2 | 0 | 0 | 2 | 0 |
-| image_to_document | 2 | 0 | 0 | 2 | 0 |
-| video_to_text | 3 | 0 | 2 | 1 | 0 |
-| video_to_image | 2 | 0 | 1 | 1 | 0 |
+| image_to_document | 20 | 0 | 0 | 20 | 0 |
+| video_to_text | 20 | 0 | 12 | 8 | 0 |
+| video_to_image | 20 | 0 | 9 | 11 | 0 |
 | video_to_video | 1 | 1 | 0 | 0 | 1 |
-| video_to_document | 1 | 0 | 0 | 1 | 0 |
+| video_to_document | 20 | 0 | 0 | 20 | 0 |
 | mixed_modal | 20 | 8 | 8 | 4 | 0 |
 | text_to_video | 15 | 6 | 6 | 3 | 0 |
 | text_to_document | 12 | 6 | 5 | 1 | 0 |
-| **Total** | **154** | **62** | **62** | **30** | **7** |
+| **Total** | **231** | **62** | **83** | **86** | **7** |
+
+REC-160 expanded the weakest media-query categories to 20 queries each:
+
+- `image_to_text`
+- `image_to_document`
+- `video_to_text`
+- `video_to_image`
+- `video_to_document`
+
+Those added queries reuse the existing UAT media corpus with more grounded intent labels and explicit source-path provenance. The corpus should still grow real additional images/videos before treating these as a broad public benchmark.
 
 ## New Metrics Added
 
@@ -158,6 +168,7 @@ To further expand the corpus for more comprehensive cross-modal testing, the fol
 2. **Graded Relevance** - Supports 0/1/2 scores (irrelevant/partial/full)
 3. **Query Difficulty Annotation** - Each query tagged as easy/medium/hard
 4. **Per-Difficulty Metrics** - Recall reported separately for each difficulty tier
+5. **Parent-Memory vs Asset-Level Metrics** - Child assets such as video frames, transcripts, document sections, and OCR pages can credit their canonical parent memory while raw asset metrics remain visible for diagnosis
 
 ## Hard Negatives
 

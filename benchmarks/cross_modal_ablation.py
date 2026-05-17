@@ -169,6 +169,48 @@ class GroundTruth:
         return self.graded_relevance.get(path, 0)
 
 
+WEAK_CROSS_MODAL_BENCHMARK_CATEGORIES = {
+    "image_to_text",
+    "image_to_document",
+    "video_to_text",
+    "video_to_image",
+    "video_to_document",
+}
+
+MIN_WEAK_CATEGORY_QUERIES = 20
+
+
+def _media_query_variants(
+    *,
+    category: str,
+    query_type: str,
+    source_path: str,
+    relevant_paths: List[str],
+    queries: List[str],
+    difficulty: str,
+    graded_relevance: Optional[Dict[str, int]] = None,
+) -> List[GroundTruth]:
+    """Build grounded media-query variants without duplicating path metadata."""
+    variants: List[GroundTruth] = []
+    for query in queries:
+        kwargs: Dict[str, Any] = {
+            "query": query,
+            "query_type": query_type,
+            "relevant_paths": relevant_paths,
+            "category": category,
+            "difficulty": difficulty,
+            "graded_relevance": graded_relevance,
+        }
+        if query_type == "image":
+            kwargs["image_query_path"] = source_path
+        elif query_type == "video":
+            kwargs["video_query_path"] = source_path
+        else:
+            raise ValueError(f"Unsupported media query_type: {query_type}")
+        variants.append(GroundTruth(**kwargs))
+    return variants
+
+
 # ============================================================================
 # TEXT → TEXT QUERIES (50 queries)
 # ============================================================================
@@ -613,7 +655,7 @@ TEXT_TO_IMAGE = [
 ]
 
 # ============================================================================
-# IMAGE → TEXT QUERIES (15 queries)
+# IMAGE → TEXT QUERIES (20 queries)
 # ============================================================================
 
 IMAGE_TO_TEXT = [
@@ -753,6 +795,52 @@ IMAGE_TO_TEXT = [
         graded_relevance={"text/tech_cybersecurity.md": 1, "text/tech_blockchain.md": 1, "text/tech_cloud_computing.md": 1},
     ),
 ]
+
+IMAGE_TO_TEXT += _media_query_variants(
+    category="image_to_text",
+    query_type="image",
+    source_path="images/neural_network_diagram.png",
+    relevant_paths=["text/ai_transformers.md", "text/ai_embeddings.md", "text/science_neuroscience.md"],
+    queries=["neural network diagram connected to transformer and embedding notes"],
+    difficulty="medium",
+    graded_relevance={"text/ai_transformers.md": 2, "text/ai_embeddings.md": 2, "text/science_neuroscience.md": 1},
+)
+IMAGE_TO_TEXT += _media_query_variants(
+    category="image_to_text",
+    query_type="image",
+    source_path="images/code_editor_screenshot.png",
+    relevant_paths=["text/tech_edge_ai.md", "text/tech_cybersecurity.md", "text/tech_cloud_computing.md"],
+    queries=["code editor screenshot linked to edge AI and cloud engineering notes"],
+    difficulty="medium",
+    graded_relevance={"text/tech_edge_ai.md": 2, "text/tech_cloud_computing.md": 1, "text/tech_cybersecurity.md": 1},
+)
+IMAGE_TO_TEXT += _media_query_variants(
+    category="image_to_text",
+    query_type="image",
+    source_path="images/handwritten_notes.png",
+    relevant_paths=["text/ai_agents.md", "text/tech_cloud_computing.md", "text/finance_investing.md"],
+    queries=["handwritten planning notes connected to agent roadmap and budget context"],
+    difficulty="hard",
+    graded_relevance={"text/ai_agents.md": 2, "text/tech_cloud_computing.md": 1, "text/finance_investing.md": 1},
+)
+IMAGE_TO_TEXT += _media_query_variants(
+    category="image_to_text",
+    query_type="image",
+    source_path="images/whiteboard_brainstorm.png",
+    relevant_paths=["text/ai_agents.md", "text/tech_cloud_computing.md", "text/tech_edge_ai.md"],
+    queries=["brainstorm whiteboard should retrieve agent architecture notes"],
+    difficulty="hard",
+    graded_relevance={"text/ai_agents.md": 2, "text/tech_cloud_computing.md": 1, "text/tech_edge_ai.md": 1},
+)
+IMAGE_TO_TEXT += _media_query_variants(
+    category="image_to_text",
+    query_type="image",
+    source_path="images/floor_plan_blueprint.png",
+    relevant_paths=["text/architecture_blueprints.md", "text/architecture_modern.md", "text/architecture_gothic.md"],
+    queries=["floor plan image tied to architecture blueprint reference notes"],
+    difficulty="medium",
+    graded_relevance={"text/architecture_blueprints.md": 2, "text/architecture_modern.md": 1, "text/architecture_gothic.md": 1},
+)
 
 # ============================================================================
 # MIXED MODAL QUERIES (20 queries) - find BOTH text and image
@@ -1253,6 +1341,85 @@ IMAGE_TO_DOCUMENT = [
     ),
 ]
 
+IMAGE_TO_DOCUMENT += _media_query_variants(
+    category="image_to_document",
+    query_type="image",
+    source_path="images/neural_network_diagram.png",
+    relevant_paths=["documents/ai_strategy_report.docx", "documents/ai_architecture_deck.pptx", "documents/embedding_research.pdf"],
+    queries=[
+        "neural network diagram should recall AI strategy document",
+        "embedding architecture image linked to research paper and slides",
+        "visual AI model graph connected to cross-modal embedding documents",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/ai_strategy_report.docx": 2, "documents/ai_architecture_deck.pptx": 2, "documents/embedding_research.pdf": 2},
+)
+IMAGE_TO_DOCUMENT += _media_query_variants(
+    category="image_to_document",
+    query_type="image",
+    source_path="images/whiteboard_architecture.png",
+    relevant_paths=["documents/recallforge_spec.docx", "documents/ai_architecture_deck.pptx", "documents/ai_strategy_report.docx"],
+    queries=[
+        "whiteboard architecture sketch should find RecallForge specification",
+        "system design drawing linked to architecture presentation",
+        "AI service diagram should retrieve strategy roadmap docs",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/recallforge_spec.docx": 2, "documents/ai_architecture_deck.pptx": 2, "documents/ai_strategy_report.docx": 1},
+)
+IMAGE_TO_DOCUMENT += _media_query_variants(
+    category="image_to_document",
+    query_type="image",
+    source_path="images/whiteboard_brainstorm.png",
+    relevant_paths=["documents/ai_strategy_report.docx", "documents/project_status_q1.docx", "documents/quarterly_review.pptx"],
+    queries=[
+        "brainstorm board linked to AI roadmap and quarterly review",
+        "planning whiteboard should recall project status documentation",
+        "strategy workshop image connected to portfolio review slides",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/ai_strategy_report.docx": 2, "documents/project_status_q1.docx": 2, "documents/quarterly_review.pptx": 1},
+)
+IMAGE_TO_DOCUMENT += _media_query_variants(
+    category="image_to_document",
+    query_type="image",
+    source_path="images/code_editor_screenshot.png",
+    relevant_paths=["documents/recallforge_spec.docx", "documents/operations_manual.pdf", "documents/edge_deployment_guide.pdf"],
+    queries=[
+        "developer screenshot should retrieve RecallForge technical specification",
+        "code editor image linked to install and operations manual",
+        "local deployment screen should find edge deployment guide",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/recallforge_spec.docx": 2, "documents/operations_manual.pdf": 2, "documents/edge_deployment_guide.pdf": 1},
+)
+IMAGE_TO_DOCUMENT += _media_query_variants(
+    category="image_to_document",
+    query_type="image",
+    source_path="images/floor_plan_blueprint.png",
+    relevant_paths=["documents/ai_architecture_deck.pptx", "documents/operations_manual.pdf", "documents/project_status_q1.docx"],
+    queries=[
+        "blueprint image connected to architecture presentation",
+        "floor plan drawing should recall operations and planning docs",
+        "building layout visual tied to project review documentation",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/ai_architecture_deck.pptx": 2, "documents/operations_manual.pdf": 1, "documents/project_status_q1.docx": 1},
+)
+IMAGE_TO_DOCUMENT += _media_query_variants(
+    category="image_to_document",
+    query_type="image",
+    source_path="images/handwritten_notes.png",
+    relevant_paths=["documents/project_status_q1.docx", "documents/quarterly_review.pptx", "documents/ai_strategy_report.docx"],
+    queries=[
+        "handwritten meeting notes should find project status report",
+        "notebook planning image linked to quarterly review deck",
+        "planning notes connected to AI strategy report",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/project_status_q1.docx": 2, "documents/quarterly_review.pptx": 2, "documents/ai_strategy_report.docx": 1},
+)
+
 # ── Video → Text queries ──────────────────────────────────────
 VIDEO_TO_TEXT = [
     GroundTruth(
@@ -1281,6 +1448,74 @@ VIDEO_TO_TEXT = [
     ),
 ]
 
+VIDEO_TO_TEXT += _media_query_variants(
+    category="video_to_text",
+    query_type="video",
+    source_path="videos/nature_timelapse.mp4",
+    relevant_paths=["text/nature_forests.md", "text/nature_mountains.md", "text/nature_oceans.md", "text/science_climate.md", "text/travel_national_parks.md"],
+    queries=[
+        "nature timelapse should recall forest mountain and ocean notes",
+        "outdoor landscape video connected to climate and park memories",
+        "scenic video with forests mountains and water reference text",
+        "environment footage linked to nature and national parks docs",
+    ],
+    difficulty="medium",
+    graded_relevance={"text/nature_forests.md": 2, "text/nature_mountains.md": 2, "text/nature_oceans.md": 2, "text/science_climate.md": 1, "text/travel_national_parks.md": 1},
+)
+VIDEO_TO_TEXT += _media_query_variants(
+    category="video_to_text",
+    query_type="video",
+    source_path="videos/coding_demo.mp4",
+    relevant_paths=["text/ai_agents.md", "text/tech_cloud_computing.md", "text/tech_edge_ai.md", "text/tech_cybersecurity.md"],
+    queries=[
+        "coding demo should retrieve software agents and cloud notes",
+        "developer video connected to backend architecture text memories",
+        "programming walkthrough linked to edge AI implementation notes",
+        "software tutorial video should recall cybersecurity and cloud docs",
+    ],
+    difficulty="hard",
+    graded_relevance={"text/ai_agents.md": 2, "text/tech_cloud_computing.md": 2, "text/tech_edge_ai.md": 1, "text/tech_cybersecurity.md": 1},
+)
+VIDEO_TO_TEXT += _media_query_variants(
+    category="video_to_text",
+    query_type="video",
+    source_path="videos/architecture_walkthrough.mp4",
+    relevant_paths=["text/architecture_blueprints.md", "text/architecture_modern.md", "text/architecture_gothic.md", "text/tech_cloud_computing.md"],
+    queries=[
+        "building walkthrough video connected to architecture reference notes",
+        "architecture tour should recall blueprint and modern design text",
+        "walkthrough recording linked to systems architecture notes",
+    ],
+    difficulty="medium",
+    graded_relevance={"text/architecture_blueprints.md": 2, "text/architecture_modern.md": 2, "text/architecture_gothic.md": 1, "text/tech_cloud_computing.md": 1},
+)
+VIDEO_TO_TEXT += _media_query_variants(
+    category="video_to_text",
+    query_type="video",
+    source_path="videos/cooking_tutorial.mp4",
+    relevant_paths=["text/cooking_pasta.md", "text/cooking_grilling.md", "text/cooking_spices.md", "text/cooking_asian_cuisine.md"],
+    queries=[
+        "cooking tutorial video should find recipe and spice notes",
+        "food preparation recording connected to pasta cooking memory",
+        "culinary demonstration linked to cooking technique documents",
+    ],
+    difficulty="medium",
+    graded_relevance={"text/cooking_pasta.md": 2, "text/cooking_spices.md": 1, "text/cooking_asian_cuisine.md": 1, "text/cooking_grilling.md": 1},
+)
+VIDEO_TO_TEXT += _media_query_variants(
+    category="video_to_text",
+    query_type="video",
+    source_path="videos/whiteboard_session.mp4",
+    relevant_paths=["text/ai_agents.md", "text/tech_cloud_computing.md", "text/tech_edge_ai.md", "text/ai_embeddings.md"],
+    queries=[
+        "whiteboard session video should retrieve AI agent design notes",
+        "planning meeting recording linked to cloud architecture memory",
+        "brainstorming video connected to embedding and edge AI notes",
+    ],
+    difficulty="hard",
+    graded_relevance={"text/ai_agents.md": 2, "text/tech_cloud_computing.md": 2, "text/tech_edge_ai.md": 1, "text/ai_embeddings.md": 1},
+)
+
 # ── Video → Image queries ─────────────────────────────────────
 VIDEO_TO_IMAGE = [
     GroundTruth(
@@ -1300,6 +1535,74 @@ VIDEO_TO_IMAGE = [
         difficulty="hard",
     ),
 ]
+
+VIDEO_TO_IMAGE += _media_query_variants(
+    category="video_to_image",
+    query_type="video",
+    source_path="videos/nature_timelapse.mp4",
+    relevant_paths=["images/forest_landscape.png", "images/mountain_landscape.png", "images/ocean_beach.png"],
+    queries=[
+        "nature video should match forest and mountain images",
+        "timelapse landscape recording connected to outdoor photos",
+        "scenic footage should recall ocean beach and mountain visuals",
+        "environment video linked to landscape image memories",
+    ],
+    difficulty="medium",
+    graded_relevance={"images/forest_landscape.png": 2, "images/mountain_landscape.png": 2, "images/ocean_beach.png": 2},
+)
+VIDEO_TO_IMAGE += _media_query_variants(
+    category="video_to_image",
+    query_type="video",
+    source_path="videos/whiteboard_session.mp4",
+    relevant_paths=["images/whiteboard_brainstorm.png", "images/whiteboard_architecture.png", "images/handwritten_notes.png"],
+    queries=[
+        "whiteboard meeting video should match brainstorm images",
+        "planning session recording connected to whiteboard photos",
+        "team board video should recall architecture sketch image",
+        "meeting notes video linked to handwritten planning image",
+    ],
+    difficulty="hard",
+    graded_relevance={"images/whiteboard_brainstorm.png": 2, "images/whiteboard_architecture.png": 2, "images/handwritten_notes.png": 1},
+)
+VIDEO_TO_IMAGE += _media_query_variants(
+    category="video_to_image",
+    query_type="video",
+    source_path="videos/architecture_walkthrough.mp4",
+    relevant_paths=["images/floor_plan_blueprint.png", "images/whiteboard_architecture.png", "images/neural_network_diagram.png"],
+    queries=[
+        "architecture walkthrough should match blueprint and system diagrams",
+        "building tour video connected to floor plan visual memory",
+        "architecture recording linked to whiteboard design image",
+    ],
+    difficulty="hard",
+    graded_relevance={"images/floor_plan_blueprint.png": 2, "images/whiteboard_architecture.png": 1, "images/neural_network_diagram.png": 1},
+)
+VIDEO_TO_IMAGE += _media_query_variants(
+    category="video_to_image",
+    query_type="video",
+    source_path="videos/coding_demo.mp4",
+    relevant_paths=["images/code_editor_screenshot.png", "images/neural_network_diagram.png", "images/whiteboard_architecture.png"],
+    queries=[
+        "coding demo should match code editor screenshot",
+        "software video connected to neural network diagram image",
+        "developer recording linked to architecture whiteboard visual",
+    ],
+    difficulty="hard",
+    graded_relevance={"images/code_editor_screenshot.png": 2, "images/neural_network_diagram.png": 1, "images/whiteboard_architecture.png": 1},
+)
+VIDEO_TO_IMAGE += _media_query_variants(
+    category="video_to_image",
+    query_type="video",
+    source_path="videos/cooking_tutorial.mp4",
+    relevant_paths=["images/food_pasta_dish.png"],
+    queries=[
+        "cooking tutorial should match pasta dish image",
+        "recipe video connected to plated food photo",
+        "culinary demonstration linked to food image memory",
+        "kitchen video should recall pasta visual",
+    ],
+    difficulty="medium",
+)
 
 # ── Video → Video queries (similarity) ────────────────────────
 VIDEO_TO_VIDEO = [
@@ -1325,6 +1628,56 @@ VIDEO_TO_DOCUMENT = [
         difficulty="hard",
     ),
 ]
+
+VIDEO_TO_DOCUMENT += _media_query_variants(
+    category="video_to_document",
+    query_type="video",
+    source_path="videos/architecture_walkthrough.mp4",
+    relevant_paths=["documents/ai_architecture_deck.pptx", "documents/project_status_q1.docx", "documents/ai_strategy_report.docx"],
+    queries=[
+        "architecture walkthrough should retrieve architecture deck",
+        "building tour video connected to planning and status docs",
+        "walkthrough recording linked to AI strategy architecture slides",
+        "architecture video should recall project milestone deck",
+        "tour footage connected to enterprise AI roadmap documents",
+        "system walkthrough recording linked to architecture presentation",
+        "architecture recording tied to portfolio planning documents",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/ai_architecture_deck.pptx": 2, "documents/project_status_q1.docx": 1, "documents/ai_strategy_report.docx": 1},
+)
+VIDEO_TO_DOCUMENT += _media_query_variants(
+    category="video_to_document",
+    query_type="video",
+    source_path="videos/coding_demo.mp4",
+    relevant_paths=["documents/recallforge_spec.docx", "documents/operations_manual.pdf", "documents/edge_deployment_guide.pdf", "documents/embedding_research.pdf"],
+    queries=[
+        "coding demo should find RecallForge technical specification",
+        "developer video connected to operations manual",
+        "software walkthrough linked to edge deployment guide",
+        "code demonstration should recall embedding research paper",
+        "implementation video tied to install and configuration docs",
+        "developer recording connected to local multimodal search spec",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/recallforge_spec.docx": 2, "documents/operations_manual.pdf": 2, "documents/edge_deployment_guide.pdf": 1, "documents/embedding_research.pdf": 1},
+)
+VIDEO_TO_DOCUMENT += _media_query_variants(
+    category="video_to_document",
+    query_type="video",
+    source_path="videos/whiteboard_session.mp4",
+    relevant_paths=["documents/ai_strategy_report.docx", "documents/project_status_q1.docx", "documents/quarterly_review.pptx", "documents/recallforge_spec.docx"],
+    queries=[
+        "whiteboard session should retrieve strategy roadmap documents",
+        "planning video connected to quarterly review presentation",
+        "brainstorm recording linked to project status report",
+        "whiteboard meeting should recall RecallForge spec",
+        "roadmap discussion video tied to portfolio review deck",
+        "team planning recording connected to AI strategy docs",
+    ],
+    difficulty="hard",
+    graded_relevance={"documents/ai_strategy_report.docx": 2, "documents/project_status_q1.docx": 2, "documents/quarterly_review.pptx": 1, "documents/recallforge_spec.docx": 1},
+)
 
 ALL_GROUND_TRUTH = (
     TEXT_TO_TEXT + 
